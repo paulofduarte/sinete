@@ -21,7 +21,7 @@
 
           # Vendor hash of the Go module set (incl. the paulofduarte/sks fork).
           # Regenerate with `nix build` if go.mod/go.sum change; it prints the new hash.
-          vendorHash = "sha256-18hUroLOoT+U/C0MpT0cVmwnxVJUjdFSfFPeMGFl0EY=";
+          vendorHash = "sha256-R65f6oelTFFOfQixRWegDW8de6O8MqoIR9ZLox6svdM=";
 
           # sks talks to the platform secure element via cgo.
           env.CGO_ENABLED = "1";

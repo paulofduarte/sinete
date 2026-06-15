@@ -24,4 +24,4 @@ require (
 	golang.org/x/sys v0.46.0 // indirect
 )
 
-replace github.com/facebookincubator/sks => github.com/paulofduarte/sks v0.0.0-20260414012743-2ba33de48bd7
+replace github.com/facebookincubator/sks => github.com/paulofduarte/sks v0.0.0-20260615223229-fa0db12c2a65
