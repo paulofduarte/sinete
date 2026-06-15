@@ -23,3 +23,5 @@ require (
 	github.com/peterbourgon/diskv v2.0.1+incompatible // indirect
 	golang.org/x/sys v0.46.0 // indirect
 )
+
+replace github.com/facebookincubator/sks => github.com/paulofduarte/sks v0.0.0-20260414012743-2ba33de48bd7

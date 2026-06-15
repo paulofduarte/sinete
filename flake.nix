@@ -2,7 +2,7 @@
   description = "sinete — hardware-backed SSH agent (Secure Enclave / TPM)";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
@@ -19,24 +19,16 @@
           version = "0.0.0-dev";
           src = ./.;
 
-          # TODO: replace with the real hash after the first build.
-          # `nix build` will fail and print the expected vendorHash; paste it here.
-          vendorHash = pkgs.lib.fakeHash;
+          # Vendor hash of the Go module set (incl. the paulofduarte/sks fork).
+          # Regenerate with `nix build` if go.mod/go.sum change; it prints the new hash.
+          vendorHash = "sha256-18hUroLOoT+U/C0MpT0cVmwnxVJUjdFSfFPeMGFl0EY=";
 
           # sks talks to the platform secure element via cgo.
           env.CGO_ENABLED = "1";
 
-          # Darwin needs the Security / LocalAuthentication frameworks for the
-          # Secure Enclave. (On recent nixpkgs the SDK is implicit — verify and
-          # trim this list against the pinned nixpkgs.)
-          buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin (
-            with pkgs.darwin.apple_sdk.frameworks;
-            [
-              Security
-              CoreFoundation
-              LocalAuthentication
-            ]
-          );
+          # On nixpkgs 26.05 the Darwin SDK (Security / LocalAuthentication, etc.)
+          # is provided implicitly by stdenv, so no explicit framework buildInputs
+          # are needed — the legacy `darwin.apple_sdk.frameworks` stubs were removed.
 
           meta = {
             description = "Hardware-backed SSH agent (Secure Enclave / TPM)";

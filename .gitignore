@@ -10,6 +10,13 @@
 /result
 /result-*
 
+# macOS code-signing / bundle artifacts (never commit signing material)
+/sinete.app/
+*.provisionprofile
+*.p12
+*.key
+*.certSigningRequest
+
 # Claude local specs / working notes (not published)
 /.claude/
 

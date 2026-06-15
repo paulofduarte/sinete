@@ -12,7 +12,7 @@ The crypto/hardware core is [`facebookincubator/sks`](https://github.com/faceboo
 
 ## Current state
 
-The repo is at the **PoC spike** stage: `./main.go` is a single-file proof that the secure-element round-trip works (create Touch-ID-gated SE key → export plain `ecdsa` public key → sign in-enclave → verify). It is *not* the final structure. The first real implementation task is to restructure into the target layout (see SPEC §10):
+The repo is at the **PoC spike** stage: `./main.go` is a single-file round-trip (create SE key → export plain `ecdsa` public key → sign in-enclave → verify), **verified on Apple Silicon (M4 Pro) — but only when run from a code-signed `.app` bundle with a provisioning profile** (see *Build & test*). A bare `go run` / `nix build` binary is SIGKILLed by AMFI or rejected by the Secure Enclave (`-34018`). **Caveat:** no Touch ID prompt fired on signing, so user-presence gating is *not yet verified*. It is *not* the final structure. The first real implementation task is to restructure into the target layout (see SPEC §10):
 
 ```
 cmd/sinete/        # CLI entrypoint (replaces ./main.go)
@@ -42,19 +42,20 @@ nix develop -c go vet ./...
 nix flake check
 ```
 
-Run the spike directly (macOS, Apple Silicon — taps Touch ID):
+**Running the spike requires code-signing.** The Secure Enclave rejects an unsigned/unentitled binary (`-34018`), and macOS (AMFI) SIGKILLs a bare CLI that claims the required restricted `application-identifier` entitlement — so `go run .` and a plain `nix build` binary cannot do SE ops. It must run from a signed `.app` bundle with a provisioning profile:
 
 ```sh
-nix shell nixpkgs#go --command sh -c 'go mod tidy && go run . -keep'
+nix build
+bash scripts/bundle-and-sign.sh /path/to/<dev>.provisionprofile -keep
 ```
 
-`-keep` retains the key so you can register the printed public key with a server/GitHub and test real `ssh`; omitting it removes the key after the round-trip.
+This builds `sinete.app` (binary + `Info.plist` + `embedded.provisionprofile`), signs it with `sinete.entitlements` (Apple Development identity, **no** hardened runtime so the ad-hoc-signed nix dylibs load), and runs it. `-keep` retains the key so you can register the printed public key with GitHub/a server. Prereqs: an Apple Development identity, the WWDR **G3** intermediate installed, and a dev provisioning profile for this device + App ID `me.paulofduarte.*`. Full chain: `.claude/ROADMAP.md` Phase 1.
 
 Run a single test: `nix develop -c go test ./internal/registry -run TestName`.
 
-## Build gotcha: vendorHash
+## Build notes
 
-`flake.nix` sets `vendorHash = pkgs.lib.fakeHash` as a placeholder. The first `nix build` will fail and print the expected hash — paste that into `flake.nix`. Until then `nix build` does not succeed. Also re-verify the darwin `buildInputs` framework list against the pinned nixpkgs (recent nixpkgs make the SDK implicit).
+`flake.nix` pins nixpkgs to `nixos-26.05` (locked in `flake.lock`), sets a real `vendorHash`, and no longer references the removed `darwin.apple_sdk.frameworks` (the SDK is implicit on 26.05). `sks` is pinned to the `paulofduarte/sks` fork via a `replace` in `go.mod`. If `go.mod`/`go.sum` change, regenerate the `vendorHash` — `nix build` fails and prints the new hash to paste into `flake.nix`.
 
 ## Branching
 
