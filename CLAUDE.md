@@ -1,0 +1,63 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+`sinete` is a hardware-backed SSH agent + key-management CLI. Private keys are generated inside, and never leave, the platform secure element (macOS Secure Enclave via Touch ID; Linux TPM 2.0 via PIN). Only public keys are ever exported; every signature happens in-hardware. Keys are presented as plain `ecdsa-sha2-nistp256` so they work with GitHub, OpenSSH servers, and SSH-based git commit signing — the whole reason the project exists (macOS's native SE path yields `sk-ecdsa-...@openssh.com`, which GitHub rejects).
+
+The crypto/hardware core is [`facebookincubator/sks`](https://github.com/facebookincubator/sks) (Apache-2.0), which abstracts Secure Enclave + TPM behind one Go API. `sinete` adds the SSH/agent/CLI layer on top.
+
+**Read `.claude/SPEC.md` first.** It is the authoritative design reference (rationale, CLI surface, key model, roadmap, open questions). The entire `.claude/` directory is gitignored, so SPEC.md is local-only and not on any branch.
+
+## Current state
+
+The repo is at the **PoC spike** stage: `./main.go` is a single-file proof that the secure-element round-trip works (create Touch-ID-gated SE key → export plain `ecdsa` public key → sign in-enclave → verify). It is *not* the final structure. The first real implementation task is to restructure into the target layout (see SPEC §10):
+
+```
+cmd/sinete/        # CLI entrypoint (replaces ./main.go)
+internal/enclave/  # thin sks wrapper: create/open/sign/remove, pubkey export, name ↔ (label,tag)
+internal/agent/    # ssh-agent (golang.org/x/crypto/ssh/agent.Agent), read-only, unix socket
+internal/registry/ # local key index at $XDG_CONFIG_HOME/sinete/keys.json (sks can't enumerate keys)
+```
+
+## Architecture notes that aren't obvious from the code
+
+- **The agent is read-only.** It implements `ssh/agent.Agent` but `List`/`Sign` only — `Add`/`Remove`/`Lock`/`Unlock` must return "unsupported". Key lifecycle is the CLI's job, not the agent protocol's.
+- **A local registry exists because `sks` cannot enumerate an app's keys.** `internal/registry` maps `name → {label, tag, publicKey, created, options}` and caches public keys so `list`/`export`/`fingerprint` never touch hardware (no Touch ID prompt). It holds no secret material.
+- **`sks.Key` is a `crypto.Signer`.** Wrap it with `ssh.NewSignerFromSigner` to get the ECDSA→SSH wire-format conversion and signing for free; `Sign` is where the Touch ID / PIN prompt fires.
+- **`sks.NewKey(label, tag, useBiometrics, accessibleWhenUnlockedOnly, hash)`**: `hash == nil` generates a new key; non-nil looks one up. If the key already exists the two bool flags are ignored. Algorithm is always ECDSA **P-256** — Secure Enclave does nothing else (no RSA, no other curves).
+- Platform differences (biometrics vs PIN) stay behind `sks`; don't special-case them above the `internal/enclave` boundary. Note `sks` biometrics is macOS-only — Linux TPM presence/PIN handling is still TBD (SPEC §7, §13).
+
+## Build & test
+
+cgo is **required** — `sks` calls platform crypto APIs (Security/LocalAuthentication on macOS, TPM libs on Linux). Plain `go build` works only with `CGO_ENABLED=1` and the platform toolchain present (macOS: `xcode-select --install`).
+
+Preferred (Nix, matches CI):
+
+```sh
+nix build                          # → ./result/bin/sinete
+nix develop -c go test ./...       # tests inside the dev shell (go, gopls, golangci-lint)
+nix develop -c go vet ./...
+nix flake check
+```
+
+Run the spike directly (macOS, Apple Silicon — taps Touch ID):
+
+```sh
+nix shell nixpkgs#go --command sh -c 'go mod tidy && go run . -keep'
+```
+
+`-keep` retains the key so you can register the printed public key with a server/GitHub and test real `ssh`; omitting it removes the key after the round-trip.
+
+Run a single test: `nix develop -c go test ./internal/registry -run TestName`.
+
+## Build gotcha: vendorHash
+
+`flake.nix` sets `vendorHash = pkgs.lib.fakeHash` as a placeholder. The first `nix build` will fail and print the expected hash — paste that into `flake.nix`. Until then `nix build` does not succeed. Also re-verify the darwin `buildInputs` framework list against the pinned nixpkgs (recent nixpkgs make the SDK implicit).
+
+## Branching
+
+- **`develop`** — active development (all code, flake, CI). **Work here.**
+- **`main`** (default) — clean landing page: only `README.md`, `LICENSE.md`, `.gitignore`. Releases merge/tag here.
+- Module path: `github.com/paulofduarte/sinete`. CI (`nix flake check`/`build`/`go test`/`go vet`) runs on push to `develop` and PRs to `develop`/`main`, on a `macos-14` + `ubuntu-latest` matrix.

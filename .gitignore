@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 Paulo Duarte
+# SPDX-License-Identifier: Apache-2.0
+
+# Go build output
+/sinete
+*.test
+*.out
+
+# Nix build output
+/result
+/result-*
+
+# Claude local specs / working notes (not published)
+/.claude/
+
+# Local MCP config (personal tooling, absolute paths)
+/.mcp.json
+
+# Editor / OS
+.DS_Store
