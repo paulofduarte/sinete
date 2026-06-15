@@ -1,0 +1,27 @@
+name: ci
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+    branches: [develop, main]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-latest] # arm64-darwin, x86_64-linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - name: flake check
+        run: nix flake check --accept-flake-config
+      - name: build
+        run: nix build --accept-flake-config
+      - name: test
+        run: nix develop --accept-flake-config -c go test ./...
+      - name: vet
+        run: nix develop --accept-flake-config -c go vet ./...
