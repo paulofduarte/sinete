@@ -34,12 +34,14 @@ type Key struct {
 
 func label(prefix, name string) string { return prefix + "-" + name }
 
-// Create generates a new key for name. When requirePresence is set, signing
-// requires user presence (Touch ID, or the device passcode where biometrics is
-// unavailable).
-func Create(prefix, name string, requirePresence bool) (*Key, error) {
+// Create generates a new presence-less key for name. Under sinete's v2 model the
+// agent gates user presence at sign time (LocalAuthentication, with a TTL cache),
+// so the key itself carries no per-signature ACL: sks.NewKey is called with
+// useBiometrics=false (which upstream sks honours by creating a key that signs
+// without a hardware prompt).
+func Create(prefix, name string) (*Key, error) {
 	l := label(prefix, name)
-	k, err := sks.NewKey(l, Tag, requirePresence, false, nil)
+	k, err := sks.NewKey(l, Tag, false, false, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create key %q: %w", name, err)
 	}
@@ -84,8 +86,10 @@ func (k *Key) PublicKey() (ssh.PublicKey, error) {
 	return ssh.NewPublicKey(pub)
 }
 
-// Signer returns an ssh.Signer backed by the secure element. Producing a
-// signature fires the user-presence prompt.
+// Signer returns an ssh.Signer backed by the secure element. It is a handle, not
+// key material: every signature is computed in-hardware. For sinete's v2
+// presence-less keys it produces no prompt of its own; the agent gates presence
+// separately (see internal/agent).
 func (k *Key) Signer() (ssh.Signer, error) {
 	return ssh.NewSignerFromSigner(k.inner)
 }
