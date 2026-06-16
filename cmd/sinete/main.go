@@ -4,6 +4,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -23,6 +25,11 @@ import (
 )
 
 func main() {
+	// Pin the main goroutine to the main OS thread up front: the agent performs
+	// in-enclave signing here, and macOS only presents the Touch ID prompt from
+	// the main thread.
+	runtime.LockOSThread()
+
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
@@ -34,6 +41,7 @@ func main() {
 		"export":   cmdExport,
 		"remove":   cmdRemove,
 		"agent":    cmdAgent,
+		"sign":     cmdSign,
 	}
 	cmd, ok := cmds[os.Args[1]]
 	if !ok {
@@ -156,6 +164,33 @@ func cmdRemove(args []string) error {
 	return reg.Save()
 }
 
+// cmdSign signs a fixed test message with the named key using the agent's exact
+// open path (enclave.Open), but foreground. Diagnostic: isolates the open method
+// from the agent's socket/goroutine context when probing the presence prompt.
+func cmdSign(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: sinete sign <name>")
+	}
+	name := args[0]
+	reg, err := openRegistry()
+	if err != nil {
+		return err
+	}
+	if _, ok := reg.Get(name); !ok {
+		return fmt.Errorf("no key named %q", name)
+	}
+	signer, err := enclave.Open(enclave.DefaultLabelPrefix, name).Signer()
+	if err != nil {
+		return err
+	}
+	sig, err := signer.Sign(rand.Reader, []byte("sinete sign diagnostic"))
+	if err != nil {
+		return err
+	}
+	fmt.Printf("signed with %s (%d-byte signature)\n", sig.Format, len(sig.Blob))
+	return nil
+}
+
 func cmdAgent(args []string) error {
 	fs := flag.NewFlagSet("agent", flag.ExitOnError)
 	socket := fs.String("socket", "", "unix socket path (default: per-user runtime dir)")
@@ -189,16 +224,24 @@ func cmdAgent(args []string) error {
 
 	a := agent.New(enclave.DefaultLabelPrefix, reg)
 	fmt.Printf("export SSH_AUTH_SOCK=%s\n", path)
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			return err
+
+	// Accept and serve connections off the main thread; signing is dispatched
+	// back to the main thread by a.Run below (so the Touch ID prompt can draw).
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				_ = xagent.ServeAgent(a, conn)
+			}()
 		}
-		go func() {
-			defer conn.Close()
-			_ = xagent.ServeAgent(a, conn)
-		}()
-	}
+	}()
+
+	a.Run() // process sign requests on the main OS thread; blocks
+	return nil
 }
 
 // defaultSocket returns the per-user agent socket path.

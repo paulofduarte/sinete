@@ -22,16 +22,47 @@ import (
 var errReadOnly = errors.New("sinete agent is read-only; manage keys with the sinete CLI")
 
 // Agent serves the keys recorded in a registry over the ssh-agent protocol.
+//
+// Sign requests are dispatched to Run, which the caller executes on the main OS
+// thread: macOS only presents the Touch ID prompt for in-enclave signing from
+// there, while connections are served on other goroutines.
 type Agent struct {
 	prefix string
 	reg    *registry.Registry
+	jobs   chan signJob
+}
+
+type signJob struct {
+	name  string
+	data  []byte
+	reply chan signResult
+}
+
+type signResult struct {
+	sig *ssh.Signature
+	err error
 }
 
 var _ xagent.Agent = (*Agent)(nil)
 
 // New returns an agent serving the keys in reg, opened under the given label prefix.
 func New(prefix string, reg *registry.Registry) *Agent {
-	return &Agent{prefix: prefix, reg: reg}
+	return &Agent{prefix: prefix, reg: reg, jobs: make(chan signJob)}
+}
+
+// Run executes signing requests on the calling goroutine. It must run on the
+// main OS thread (see runtime.LockOSThread) so macOS can present the Touch ID
+// prompt; it blocks until the jobs channel is closed.
+func (a *Agent) Run() {
+	for j := range a.jobs {
+		signer, err := enclave.Open(a.prefix, j.name).Signer()
+		if err != nil {
+			j.reply <- signResult{err: err}
+			continue
+		}
+		sig, err := signer.Sign(rand.Reader, j.data)
+		j.reply <- signResult{sig: sig, err: err}
+	}
 }
 
 // List reports the registry's public keys. It does not touch the secure element.
@@ -55,11 +86,10 @@ func (a *Agent) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
 	if !ok {
 		return nil, errors.New("no matching key")
 	}
-	signer, err := enclave.Open(a.prefix, name).Signer()
-	if err != nil {
-		return nil, err
-	}
-	return signer.Sign(rand.Reader, data)
+	reply := make(chan signResult, 1)
+	a.jobs <- signJob{name: name, data: data, reply: reply}
+	r := <-reply
+	return r.sig, r.err
 }
 
 // nameFor returns the registry name whose public key matches key.
