@@ -95,6 +95,16 @@ func cmdGenerate(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Roll back the freshly created enclave key if anything fails before it is
+	// indexed, so a partial generate doesn't leave an orphan: remove needs a
+	// registry entry, and a re-run would fail because the key already exists.
+	committed := false
+	defer func() {
+		if !committed {
+			_ = key.Remove()
+		}
+	}()
+
 	pub, err := key.PublicKey()
 	if err != nil {
 		return err
@@ -111,6 +121,7 @@ func cmdGenerate(args []string) error {
 	if err := reg.Save(); err != nil {
 		return err
 	}
+	committed = true
 	fmt.Println(line)
 	return nil
 }
@@ -198,7 +209,8 @@ func cmdAgent(args []string) error {
 	_ = fs.Parse(args)
 
 	path := *socket
-	if path == "" {
+	usingDefault := path == ""
+	if usingDefault {
 		path = defaultSocket()
 	}
 	reg, err := openRegistry()
@@ -210,9 +222,13 @@ func cmdAgent(args []string) error {
 		return err
 	}
 	// MkdirAll only sets the mode on directories it creates (and is subject to
-	// umask), so tighten an existing one to keep the socket user-only.
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return err
+	// umask), so tighten the default per-user dir to keep the socket user-only.
+	// An explicit --socket dir is left untouched: it may be a shared location
+	// like /tmp where chmod would fail or be harmful.
+	if usingDefault {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return err
+		}
 	}
 	_ = os.Remove(path) // clear a stale socket from a previous run
 	ln, err := net.Listen("unix", path)

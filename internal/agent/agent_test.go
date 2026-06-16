@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/paulofduarte/sinete/internal/registry"
 	"golang.org/x/crypto/ssh"
@@ -65,6 +66,29 @@ func TestEntryForMatches(t *testing.T) {
 	}
 	if _, ok := a.entryFor(other); ok {
 		t.Error("entryFor(unknown) matched")
+	}
+}
+
+// TestSignNoMatchDoesNotBlock guards the fast path: an unknown key must return
+// an error immediately, before dispatching to Run (which isn't running here), so
+// a missing key can never deadlock a caller.
+func TestSignNoMatchDoesNotBlock(t *testing.T) {
+	a := New(newReg(t)) // empty registry: nothing matches
+	unknown, _ := testPub(t)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.Sign(unknown, []byte("data"))
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Sign with no matching key should return an error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Sign blocked on the Run loop for an unknown key; want an immediate error")
 	}
 }
 

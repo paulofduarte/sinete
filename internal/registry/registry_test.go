@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -43,6 +44,20 @@ func TestRoundTrip(t *testing.T) {
 	r2.Remove("work")
 	if _, ok := r2.Get("work"); ok {
 		t.Error("entry still present after remove")
+	}
+}
+
+func TestOpenEmptyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "keys.json")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Open(path)
+	if err != nil {
+		t.Fatalf("empty file should open as an empty registry: %v", err)
+	}
+	if got := len(r.List()); got != 0 {
+		t.Fatalf("got %d entries, want 0", got)
 	}
 }
 

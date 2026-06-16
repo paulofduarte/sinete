@@ -7,6 +7,7 @@
 package registry
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,6 +56,11 @@ func Open(path string) (*Registry, error) {
 	}
 	if err != nil {
 		return nil, err
+	}
+	// An empty or whitespace-only file is a valid empty registry; json would
+	// otherwise reject it with "unexpected end of JSON input".
+	if len(bytes.TrimSpace(data)) == 0 {
+		return r, nil
 	}
 	var list []Entry
 	if err := json.Unmarshal(data, &list); err != nil {
