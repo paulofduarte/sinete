@@ -16,7 +16,10 @@ sock="$2"
 # restarts.
 for ((i = 0; i < 50; i++)); do
   up="$(launchctl getenv SSH_AUTH_SOCK || true)"
-  if [ -n "$up" ] && [ "$up" != "$sock" ]; then
+  if [ "$up" = "$sock" ]; then
+    break # already took over on an earlier run; upstream was captured then
+  fi
+  if [ -n "$up" ]; then
     launchctl setenv SINETE_UPSTREAM_SOCK "$up"
     break
   fi

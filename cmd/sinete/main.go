@@ -297,16 +297,22 @@ func printConfig(reg *registry.Registry) {
 }
 
 // cmdPresent runs the user-presence check directly (no signing). Diagnostic for
-// verifying the Touch ID / LocalAuthentication prompt on hardware.
+// verifying the Touch ID / LocalAuthentication prompt on hardware. With -n it
+// authenticates repeatedly in one process, reproducing the agent's re-entry.
 func cmdPresent(args []string) error {
+	fs := flag.NewFlagSet("present", flag.ExitOnError)
+	n := fs.Int("n", 1, "number of times to authenticate in this process")
+	_ = fs.Parse(args)
 	reason := "sinete presence test"
-	if len(args) > 0 {
-		reason = args[0]
+	if fs.Arg(0) != "" {
+		reason = fs.Arg(0)
 	}
-	if err := presence.Authenticate(reason); err != nil {
-		return err
+	for i := 1; i <= *n; i++ {
+		if err := presence.Authenticate(reason); err != nil {
+			return fmt.Errorf("attempt %d: %w", i, err)
+		}
+		fmt.Printf("presence verified (%d/%d)\n", i, *n)
 	}
-	fmt.Println("presence verified")
 	return nil
 }
 
