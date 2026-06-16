@@ -21,6 +21,7 @@ identity="${SINETE_SIGN_IDENTITY:-Apple Development: Paulo Duarte (P6K8K4X996)}"
 bin="$repo/result/bin/sinete"
 ent="$repo/sinete.entitlements"
 app="$repo/sinete.app"
+iconfile="$repo/assets/AppIcon.icon"
 bundle_id="me.paulofduarte.sinete"
 
 [ -x "$bin" ] || {
@@ -38,6 +39,21 @@ cp -f "$bin" "$app/Contents/MacOS/sinete"
 chmod u+w "$app/Contents/MacOS/sinete"
 cp -f "$profile" "$app/Contents/embedded.provisionprofile"
 
+# App icon (Liquid Glass: light/dark/tinted). actool (Xcode 26+) compiles the
+# Icon Composer .icon into a layered Assets.car plus a backward-compatible
+# AppIcon.icns. Skipped (no icon) if actool is unavailable.
+icon_keys=""
+if [ -d "$iconfile" ] && actool="$(xcrun --find actool 2>/dev/null)"; then
+  mkdir -p "$app/Contents/Resources"
+  "$actool" "$iconfile" --compile "$app/Contents/Resources" --app-icon AppIcon \
+    --output-partial-info-plist "$(mktemp)" \
+    --platform macosx --minimum-deployment-target 26.0 >/dev/null 2>&1 || true
+  if [ -f "$app/Contents/Resources/Assets.car" ]; then
+    icon_keys=$'    <key>CFBundleIconFile</key><string>AppIcon</string>\n    <key>CFBundleIconName</key><string>AppIcon</string>'
+    echo "embedded app icon (light/dark/tinted)"
+  fi
+fi
+
 cat >"$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -49,6 +65,7 @@ cat >"$app/Contents/Info.plist" <<PLIST
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.0.0-dev</string>
     <key>LSBackgroundOnly</key><true/>
+${icon_keys}
 </dict>
 </plist>
 PLIST
