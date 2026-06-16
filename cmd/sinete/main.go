@@ -231,7 +231,12 @@ func cmdAgent(args []string) error {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
-				return
+				if errors.Is(err, net.ErrClosed) {
+					return
+				}
+				fmt.Fprintln(os.Stderr, "sinete agent: accept:", err)
+				time.Sleep(10 * time.Millisecond)
+				continue
 			}
 			go func() {
 				defer conn.Close()
