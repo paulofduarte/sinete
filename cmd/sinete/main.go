@@ -74,7 +74,6 @@ sinete manages the secure-element key storage:
   ssh-setup <name>  write the .pub + print ssh/git config to use the key
   delete <name>     delete a key from the enclave and the index
   config            view/set presence TTLs (--list, --key <name>)
-  sign <name>       sign a test message with a key (diagnostic)
   agent             run the ssh-agent (foreground)
 
 The agent advertises every created key, so ssh/git use them automatically once

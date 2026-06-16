@@ -10,21 +10,16 @@ set -euo pipefail
 bin="$1"
 sock="$2"
 
-# Wait briefly for the system ssh-agent to publish SSH_AUTH_SOCK at login (so we
-# run "late" enough to capture it), then record it as the upstream -- but never
-# our own socket, which would make sinete its own upstream across KeepAlive
-# restarts.
-for ((i = 0; i < 50; i++)); do
-  up="$(launchctl getenv SSH_AUTH_SOCK || true)"
-  if [ "$up" = "$sock" ]; then
-    break # already took over on an earlier run; upstream was captured then
-  fi
-  if [ -n "$up" ]; then
-    launchctl setenv SINETE_UPSTREAM_SOCK "$up"
-    break
-  fi
-  sleep 0.2
-done
+# Record the session's existing agent as the upstream. The system ssh-agent
+# publishes SSH_AUTH_SOCK at login, before this RunAtLoad agent, so one read is
+# enough. We never capture our own socket: on a KeepAlive restart SSH_AUTH_SOCK
+# is already ours, so we skip and keep the upstream captured on the first run.
+# (To delegate to a fixed-socket agent instead, set SINETE_UPSTREAM_SOCK in the
+# launchd environment and this is a no-op.)
+up="$(launchctl getenv SSH_AUTH_SOCK || true)"
+if [ -n "$up" ] && [ "$up" != "$sock" ]; then
+  launchctl setenv SINETE_UPSTREAM_SOCK "$up"
+fi
 
 # Take over the session socket so ssh/git transparently use sinete.
 launchctl setenv SSH_AUTH_SOCK "$sock"
