@@ -30,11 +30,6 @@ import (
 	xagent "golang.org/x/crypto/ssh/agent"
 )
 
-// defaultPresenceTTL is how long a Touch ID stays valid for a key before the
-// next signature prompts again. 10 min mirrors gpg-agent's default signing-key
-// cache (default-cache-ttl); made configurable per key via `sinete config`.
-const defaultPresenceTTL = 10 * time.Minute
-
 func main() {
 	// Pin the main goroutine to the main OS thread up front: the agent presents
 	// the sign-time Touch ID prompt here, and macOS only draws it from the main
@@ -54,6 +49,7 @@ func main() {
 		"agent":    cmdAgent,
 		"sign":     cmdSign,
 		"present":  cmdPresent,
+		"config":   cmdConfig,
 	}
 	cmd, ok := cmds[os.Args[1]]
 	if !ok {
@@ -75,6 +71,7 @@ sinete manages the secure-element key storage:
   list              list created keys (name, type, fingerprint)
   export <name>     print a key's public key
   delete <name>     delete a key from the enclave and the index
+  config            view/set presence TTLs (--list, --key <name>)
   sign <name>       sign a test message with a key (diagnostic)
   agent             run the ssh-agent (foreground)
 
@@ -226,6 +223,79 @@ func cmdSign(args []string) error {
 	return nil
 }
 
+// cmdConfig views and sets presence config: a global default, or a per-key
+// override with --key. Settings are durations (e.g. 10m, 2h).
+func cmdConfig(args []string) error {
+	fs := flag.NewFlagSet("config", flag.ExitOnError)
+	keyName := fs.String("key", "", "set/get for a specific key instead of the global default")
+	list := fs.Bool("list", false, "print all config")
+	_ = fs.Parse(args)
+
+	reg, err := openRegistry()
+	if err != nil {
+		return err
+	}
+
+	if *list {
+		printConfig(reg)
+		return nil
+	}
+
+	rest := fs.Args()
+	if len(rest) == 0 {
+		return errors.New("usage: sinete config [--key <name>] <setting> [<value>]  (--list to show all)")
+	}
+	setting := rest[0]
+	if !registry.ValidSetting(setting) {
+		return fmt.Errorf("unknown setting %q (valid: %s)", setting, strings.Join(registry.Settings, ", "))
+	}
+
+	if len(rest) == 1 { // get
+		if *keyName != "" {
+			fmt.Println(reg.Effective(*keyName, setting))
+		} else {
+			fmt.Println(reg.Defaults()[setting])
+		}
+		return nil
+	}
+
+	value := rest[1] // set
+	if _, err := time.ParseDuration(value); err != nil {
+		return fmt.Errorf("invalid duration %q: %w", value, err)
+	}
+	if *keyName != "" {
+		if err := reg.SetKeyConfig(*keyName, setting, value); err != nil {
+			return err
+		}
+	} else {
+		reg.SetDefault(setting, value)
+	}
+	return reg.Save()
+}
+
+func printConfig(reg *registry.Registry) {
+	defaults := reg.Defaults()
+	fmt.Println("defaults:")
+	for _, s := range registry.Settings {
+		v := defaults[s]
+		if v == "" {
+			v = "(built-in)"
+		}
+		fmt.Printf("  %-16s %s\n", s, v)
+	}
+	for _, e := range reg.List() {
+		if len(e.Config) == 0 {
+			continue
+		}
+		fmt.Printf("%s:\n", e.Name)
+		for _, s := range registry.Settings {
+			if v := e.Config[s]; v != "" {
+				fmt.Printf("  %-16s %s\n", s, v)
+			}
+		}
+	}
+}
+
 // cmdPresent runs the user-presence check directly (no signing). Diagnostic for
 // verifying the Touch ID / LocalAuthentication prompt on hardware.
 func cmdPresent(args []string) error {
@@ -297,11 +367,11 @@ func cmdAgent(args []string) error {
 		os.Exit(0)
 	}()
 
-	reg, err := openRegistry()
+	regPath, err := registry.DefaultPath()
 	if err != nil {
 		return err
 	}
-	a := agent.New(reg, agent.EnclaveSource{}, presence.Authenticate, defaultPresenceTTL)
+	a := agent.New(agent.RegistryStore{Path: regPath}, agent.EnclaveSource{}, presence.Authenticate)
 	fmt.Printf("export SSH_AUTH_SOCK=%s\n", path)
 
 	// Accept and serve connections off the main thread; signing (and its Touch ID

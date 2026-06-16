@@ -9,7 +9,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +18,15 @@ import (
 	"golang.org/x/crypto/ssh"
 	xagent "golang.org/x/crypto/ssh/agent"
 )
+
+// fakeStore serves fixed entries and TTLs, standing in for the registry.
+type fakeStore struct {
+	entries   []registry.Entry
+	idle, max time.Duration
+}
+
+func (s fakeStore) Keys() ([]registry.Entry, error)      { return s.entries, nil }
+func (s fakeStore) TTL(string) (idle, max time.Duration) { return s.idle, s.max }
 
 // fakeSource resolves labels to in-memory signers, standing in for the enclave.
 type fakeSource struct{ signers map[string]ssh.Signer }
@@ -51,18 +59,6 @@ func (c *counter) count() int {
 	return c.n
 }
 
-func newReg(t *testing.T, entries ...registry.Entry) *registry.Registry {
-	t.Helper()
-	r, err := registry.Open(filepath.Join(t.TempDir(), "keys.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range entries {
-		r.Add(e)
-	}
-	return r
-}
-
 func testEntry(t *testing.T, name string) (registry.Entry, ssh.PublicKey, ssh.Signer) {
 	t.Helper()
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -79,14 +75,15 @@ func testEntry(t *testing.T, name string) (registry.Entry, ssh.PublicKey, ssh.Si
 	return e, pub, signer
 }
 
-func newAgent(t *testing.T, c *counter, ttl time.Duration, e registry.Entry, signer ssh.Signer) *Agent {
+func newAgent(t *testing.T, c *counter, idle, max time.Duration, e registry.Entry, signer ssh.Signer) *Agent {
 	t.Helper()
-	return New(newReg(t, e), fakeSource{map[string]ssh.Signer{e.Label: signer}}, c.present, ttl)
+	store := fakeStore{entries: []registry.Entry{e}, idle: idle, max: max}
+	return New(store, fakeSource{map[string]ssh.Signer{e.Label: signer}}, c.present)
 }
 
-func TestListAdvertisesRegistry(t *testing.T) {
+func TestListAdvertisesStore(t *testing.T) {
 	e, pub, signer := testEntry(t, "work")
-	a := newAgent(t, &counter{}, time.Hour, e, signer)
+	a := newAgent(t, &counter{}, time.Hour, time.Hour, e, signer)
 
 	keys, err := a.List()
 	if err != nil {
@@ -103,7 +100,7 @@ func TestListAdvertisesRegistry(t *testing.T) {
 func TestSignPromptsThenCaches(t *testing.T) {
 	e, pub, signer := testEntry(t, "work")
 	c := &counter{}
-	a := newAgent(t, c, time.Hour, e, signer)
+	a := newAgent(t, c, time.Hour, time.Hour, e, signer)
 	go a.Run()
 
 	for i := 0; i < 2; i++ {
@@ -120,10 +117,10 @@ func TestSignPromptsThenCaches(t *testing.T) {
 	}
 }
 
-func TestSignPromptsEverySignatureWhenTTLZero(t *testing.T) {
+func TestSignPromptsEverySignatureWhenIdleZero(t *testing.T) {
 	e, pub, signer := testEntry(t, "work")
 	c := &counter{}
-	a := newAgent(t, c, 0, e, signer)
+	a := newAgent(t, c, 0, time.Hour, e, signer)
 	go a.Run()
 
 	for i := 0; i < 2; i++ {
@@ -132,14 +129,32 @@ func TestSignPromptsEverySignatureWhenTTLZero(t *testing.T) {
 		}
 	}
 	if got := c.count(); got != 2 {
-		t.Fatalf("present called %d times, want 2 (TTL=0 ⇒ every signature)", got)
+		t.Fatalf("present called %d times, want 2 (idle=0 ⇒ every signature)", got)
+	}
+}
+
+func TestAbsoluteCapForcesReprompt(t *testing.T) {
+	e, pub, signer := testEntry(t, "work")
+	c := &counter{}
+	// Large idle, zero cap: the absolute cap is exceeded immediately, so even a
+	// back-to-back signature must re-prompt.
+	a := newAgent(t, c, time.Hour, 0, e, signer)
+	go a.Run()
+
+	for i := 0; i < 2; i++ {
+		if _, err := a.Sign(pub, []byte("data")); err != nil {
+			t.Fatalf("sign %d: %v", i, err)
+		}
+	}
+	if got := c.count(); got != 2 {
+		t.Fatalf("present called %d times, want 2 (max cap forces re-prompt)", got)
 	}
 }
 
 func TestSignPresenceDenied(t *testing.T) {
 	e, pub, signer := testEntry(t, "work")
 	c := &counter{err: errors.New("denied")}
-	a := newAgent(t, c, time.Hour, e, signer)
+	a := newAgent(t, c, time.Hour, time.Hour, e, signer)
 	go a.Run()
 
 	if _, err := a.Sign(pub, []byte("data")); err == nil {
@@ -150,7 +165,7 @@ func TestSignPresenceDenied(t *testing.T) {
 func TestRemoveAllForgetsWindow(t *testing.T) {
 	e, pub, signer := testEntry(t, "work")
 	c := &counter{}
-	a := newAgent(t, c, time.Hour, e, signer)
+	a := newAgent(t, c, time.Hour, time.Hour, e, signer)
 	go a.Run()
 
 	if _, err := a.Sign(pub, []byte("a")); err != nil {
@@ -170,7 +185,7 @@ func TestRemoveAllForgetsWindow(t *testing.T) {
 func TestSignNoMatch(t *testing.T) {
 	e, _, signer := testEntry(t, "work")
 	_, other, _ := testEntry(t, "other")
-	a := newAgent(t, &counter{}, time.Hour, e, signer)
+	a := newAgent(t, &counter{}, time.Hour, time.Hour, e, signer)
 
 	if _, err := a.Sign(other, []byte("x")); err == nil {
 		t.Fatal("Sign with an unknown key should error")
@@ -179,7 +194,7 @@ func TestSignNoMatch(t *testing.T) {
 
 func TestMutationsUnsupported(t *testing.T) {
 	e, _, signer := testEntry(t, "work")
-	a := newAgent(t, &counter{}, time.Hour, e, signer)
+	a := newAgent(t, &counter{}, time.Hour, time.Hour, e, signer)
 	if err := a.Lock(nil); err == nil {
 		t.Error("Lock should be unsupported")
 	}
