@@ -1,0 +1,211 @@
+// Command sinete is a hardware-backed SSH key manager and agent. Private keys
+// are generated in, and never leave, the platform secure element; only public
+// keys are exported and every signature happens in-hardware, presence-gated.
+package main
+
+import (
+	"errors"
+	"flag"
+	"fmt"
+	"net"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/paulofduarte/sinete/internal/agent"
+	"github.com/paulofduarte/sinete/internal/enclave"
+	"github.com/paulofduarte/sinete/internal/registry"
+	"golang.org/x/crypto/ssh"
+	xagent "golang.org/x/crypto/ssh/agent"
+)
+
+func main() {
+	if len(os.Args) < 2 {
+		usage()
+		os.Exit(2)
+	}
+
+	cmds := map[string]func([]string) error{
+		"generate": cmdGenerate,
+		"list":     cmdList,
+		"export":   cmdExport,
+		"remove":   cmdRemove,
+		"agent":    cmdAgent,
+	}
+	cmd, ok := cmds[os.Args[1]]
+	if !ok {
+		usage()
+		os.Exit(2)
+	}
+	if err := cmd(os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, "sinete: "+err.Error())
+		os.Exit(1)
+	}
+}
+
+func usage() {
+	fmt.Fprintln(os.Stderr, `usage: sinete <command> [args]
+
+  generate <name>   create an enclave key and print its public key
+  list              list keys (name, type, fingerprint)
+  export <name>     print a key's public key
+  remove <name>     delete a key from the enclave and the index
+  agent             run the ssh-agent (foreground)`)
+}
+
+// openRegistry loads the local key index.
+func openRegistry() (*registry.Registry, error) {
+	path, err := registry.DefaultPath()
+	if err != nil {
+		return nil, err
+	}
+	return registry.Open(path)
+}
+
+func cmdGenerate(args []string) error {
+	fs := flag.NewFlagSet("generate", flag.ExitOnError)
+	noPresence := fs.Bool("no-presence", false, "do not require user presence (Touch ID) to sign")
+	_ = fs.Parse(args)
+	name := fs.Arg(0)
+	if name == "" {
+		return errors.New("usage: sinete generate <name> [--no-presence]")
+	}
+
+	reg, err := openRegistry()
+	if err != nil {
+		return err
+	}
+	if _, ok := reg.Get(name); ok {
+		return fmt.Errorf("key %q already exists", name)
+	}
+
+	key, err := enclave.Create(enclave.DefaultLabelPrefix, name, !*noPresence)
+	if err != nil {
+		return err
+	}
+	pub, err := key.PublicKey()
+	if err != nil {
+		return err
+	}
+	line := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub))) + " " + name
+
+	reg.Add(registry.Entry{
+		Name:      name,
+		Label:     key.Label(),
+		Tag:       enclave.Tag,
+		PublicKey: line,
+		Created:   time.Now().UTC(),
+	})
+	if err := reg.Save(); err != nil {
+		return err
+	}
+	fmt.Println(line)
+	return nil
+}
+
+func cmdList(args []string) error {
+	reg, err := openRegistry()
+	if err != nil {
+		return err
+	}
+	for _, e := range reg.List() {
+		pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(e.PublicKey))
+		if err != nil {
+			return fmt.Errorf("registry key %q: %w", e.Name, err)
+		}
+		fmt.Printf("%-20s %-22s %s\n", e.Name, pub.Type(), ssh.FingerprintSHA256(pub))
+	}
+	return nil
+}
+
+func cmdExport(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: sinete export <name>")
+	}
+	reg, err := openRegistry()
+	if err != nil {
+		return err
+	}
+	e, ok := reg.Get(args[0])
+	if !ok {
+		return fmt.Errorf("no key named %q", args[0])
+	}
+	fmt.Println(e.PublicKey)
+	return nil
+}
+
+func cmdRemove(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: sinete remove <name>")
+	}
+	name := args[0]
+	reg, err := openRegistry()
+	if err != nil {
+		return err
+	}
+	if _, ok := reg.Get(name); !ok {
+		return fmt.Errorf("no key named %q", name)
+	}
+	if err := enclave.Open(enclave.DefaultLabelPrefix, name).Remove(); err != nil {
+		return err
+	}
+	reg.Remove(name)
+	return reg.Save()
+}
+
+func cmdAgent(args []string) error {
+	fs := flag.NewFlagSet("agent", flag.ExitOnError)
+	socket := fs.String("socket", "", "unix socket path (default: per-user runtime dir)")
+	_ = fs.Parse(args)
+
+	path := *socket
+	if path == "" {
+		path = defaultSocket()
+	}
+	reg, err := openRegistry()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	_ = os.Remove(path) // clear a stale socket from a previous run
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(path)
+
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigs
+		_ = os.Remove(path)
+		os.Exit(0)
+	}()
+
+	a := agent.New(enclave.DefaultLabelPrefix, reg)
+	fmt.Printf("export SSH_AUTH_SOCK=%s\n", path)
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return err
+		}
+		go func() {
+			defer conn.Close()
+			_ = xagent.ServeAgent(a, conn)
+		}()
+	}
+}
+
+// defaultSocket returns the per-user agent socket path.
+func defaultSocket() string {
+	dir := os.Getenv("XDG_RUNTIME_DIR")
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	return filepath.Join(dir, "sinete", "agent.sock")
+}
