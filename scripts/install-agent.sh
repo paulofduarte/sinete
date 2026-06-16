@@ -24,8 +24,14 @@ plist="$HOME/Library/LaunchAgents/$label.plist"
 mkdir -p "$run_dir" "$HOME/Library/LaunchAgents"
 chmod 700 "$run_dir" # only the user may reach the agent socket
 
-# Escape sed replacement metacharacters (&, \, and the # delimiter) in the paths.
-esc() { printf '%s' "$1" | sed 's/[&\\#]/\\&/g'; }
+# Substitute paths into the plist's XML <string> nodes. XML-escape first (&, <, >)
+# so special characters can't corrupt the XML, then escape sed replacement
+# metacharacters (&, \, and the # delimiter).
+esc() {
+	printf '%s' "$1" \
+		| sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' \
+		| sed 's/[&\\#]/\\&/g'
+}
 sed -e "s#__BIN__#$(esc "$bin")#" \
 	-e "s#__SOCKET__#$(esc "$sock")#" \
 	-e "s#__LOG__#$(esc "$log")#" \

@@ -238,13 +238,15 @@ func cmdAgent(args []string) error {
 	if err != nil {
 		return err
 	}
+	defer os.Remove(path)
+	defer ln.Close()
+
 	// Restrict the socket file itself: umask may otherwise leave it group/world
 	// reachable, letting other local users connect and trigger signing prompts.
 	// Matters most for an explicit --socket in a shared directory like /tmp.
 	if err := os.Chmod(path, 0o600); err != nil {
 		return err
 	}
-	defer os.Remove(path)
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
