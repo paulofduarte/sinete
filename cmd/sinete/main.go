@@ -166,19 +166,21 @@ func cmdRemove(args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, ok := reg.Get(name); !ok {
+	e, ok := reg.Get(name)
+	if !ok {
 		return fmt.Errorf("no key named %q", name)
 	}
-	if err := enclave.Open(enclave.DefaultLabelPrefix, name).Remove(); err != nil {
+	if err := enclave.OpenLabelTag(e.Label, e.Tag).Remove(); err != nil {
 		return err
 	}
 	reg.Remove(name)
 	return reg.Save()
 }
 
-// cmdSign signs a fixed test message with the named key using the agent's exact
-// open path (enclave.Open), but foreground. Diagnostic: isolates the open method
-// from the agent's socket/goroutine context when probing the presence prompt.
+// cmdSign signs a fixed test message with the named key, foreground. Diagnostic:
+// it opens the key by the registry's authoritative label/tag (the agent's path)
+// and signs on the main thread, isolating the presence prompt from the agent's
+// socket/goroutine context.
 func cmdSign(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: sinete sign <name>")
@@ -188,10 +190,11 @@ func cmdSign(args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, ok := reg.Get(name); !ok {
+	e, ok := reg.Get(name)
+	if !ok {
 		return fmt.Errorf("no key named %q", name)
 	}
-	signer, err := enclave.Open(enclave.DefaultLabelPrefix, name).Signer()
+	signer, err := enclave.OpenLabelTag(e.Label, e.Tag).Signer()
 	if err != nil {
 		return err
 	}
