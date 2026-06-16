@@ -4,12 +4,13 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>dev.sinete.agent</string>
+    <string>me.paulofduarte.sinete.agent</string>
+    <!-- Runs the wrapper, which captures the existing agent as upstream and
+         republishes SSH_AUTH_SOCK before exec'ing `__BIN__ agent --socket`. -->
     <key>ProgramArguments</key>
     <array>
+        <string>__WRAPPER__</string>
         <string>__BIN__</string>
-        <string>agent</string>
-        <string>--socket</string>
         <string>__SOCKET__</string>
     </array>
     <key>RunAtLoad</key>

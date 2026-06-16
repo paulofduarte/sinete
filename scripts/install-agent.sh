@@ -23,8 +23,10 @@ bin="$app/Contents/MacOS/sinete"
   echo "no runnable binary at $bin -- bundle looks incomplete; re-run scripts/bundle-and-sign.sh" >&2
   exit 1
 }
+wrapper="$repo/scripts/sinete-agent.sh"
+chmod +x "$wrapper"
 
-label="dev.sinete.agent"
+label="me.paulofduarte.sinete.agent"
 run_dir="$HOME/Library/Caches/sinete"
 sock="$run_dir/agent.sock"
 log="$run_dir/agent.log"
@@ -41,7 +43,8 @@ esc() {
     sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' |
     sed 's/[&\\#]/\\&/g'
 }
-sed -e "s#__BIN__#$(esc "$bin")#" \
+sed -e "s#__WRAPPER__#$(esc "$wrapper")#" \
+  -e "s#__BIN__#$(esc "$bin")#" \
   -e "s#__SOCKET__#$(esc "$sock")#" \
   -e "s#__LOG__#$(esc "$log")#" \
   "$repo/launchd/$label.plist" >"$plist"
@@ -50,12 +53,20 @@ uid="$(id -u)"
 launchctl bootout "gui/$uid/$label" 2>/dev/null || true
 launchctl bootstrap "gui/$uid" "$plist"
 
+# Put `sinete` on PATH. The symlink resolves into the signed bundle, so the
+# binary keeps its Secure Enclave entitlements.
+link="/usr/local/bin/sinete"
+if ln -sfn "$bin" "$link" 2>/dev/null || sudo ln -sfn "$bin" "$link" 2>/dev/null; then
+  echo "linked:                $link"
+else
+  echo "could not link $link; run: sudo ln -sfn '$bin' '$link'"
+fi
+
 echo "installed and started: $plist"
 echo "agent bundle:          $app"
 echo "socket:                $sock"
 echo
-echo "Point ssh at it per host (~/.ssh/config) so it uses the enclave key:"
-echo "  Host github.com"
-echo "      IdentityAgent $sock"
-echo "      IdentitiesOnly yes"
-echo "      IdentityFile <your sinete public key file>"
+echo "The agent owns SSH_AUTH_SOCK for the session and delegates non-enclave keys"
+echo "to your existing agent, so ssh/git use the enclave keys with no ~/.ssh/config"
+echo "changes. Open a NEW terminal (or log out and back in) for it to take effect,"
+echo "then check:  ssh-add -l"

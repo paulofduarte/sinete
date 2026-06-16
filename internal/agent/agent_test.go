@@ -71,7 +71,7 @@ func testEntry(t *testing.T, name string) (registry.Entry, ssh.PublicKey, ssh.Si
 	}
 	pub := signer.PublicKey()
 	line := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub))) + " " + name
-	e := registry.Entry{Name: name, Label: "sinete-" + name, Tag: "dev.sinete", PublicKey: line}
+	e := registry.Entry{Name: name, Label: "sinete-" + name, Tag: "me.paulofduarte.sinete", PublicKey: line}
 	return e, pub, signer
 }
 

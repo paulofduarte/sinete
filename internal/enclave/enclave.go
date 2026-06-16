@@ -22,7 +22,7 @@ const (
 	// DefaultLabelPrefix is prepended to a key's name to form its sks label.
 	DefaultLabelPrefix = "sinete"
 	// Tag is the sks application tag shared by all sinete keys.
-	Tag = "dev.sinete"
+	Tag = "me.paulofduarte.sinete"
 )
 
 // Key is a secure-element key identified by a human name.

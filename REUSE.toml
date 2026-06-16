@@ -13,7 +13,7 @@ path = [
   "flake.lock",
   "go.mod",
   "go.sum",
-  "launchd/dev.sinete.agent.plist",
+  "launchd/me.paulofduarte.sinete.agent.plist",
   "sinete.entitlements",
 ]
 SPDX-FileCopyrightText = "2026 Paulo Duarte"

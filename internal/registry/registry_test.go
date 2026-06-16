@@ -24,7 +24,7 @@ func TestRoundTrip(t *testing.T) {
 	r.Add(Entry{
 		Name:      "work",
 		Label:     "sinete-work",
-		Tag:       "dev.sinete",
+		Tag:       "me.paulofduarte.sinete",
 		PublicKey: "ecdsa-sha2-nistp256 AAAA work",
 		Created:   time.Unix(0, 0).UTC(),
 	})
@@ -70,7 +70,7 @@ func TestConfigDefaultsAndOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.Add(Entry{Name: "work", Label: "sinete-work", Tag: "dev.sinete"})
+	r.Add(Entry{Name: "work", Label: "sinete-work", Tag: "me.paulofduarte.sinete"})
 	r.SetDefault(PresenceTTL, "10m")
 	if err := r.SetKeyConfig("work", PresenceTTL, "8h"); err != nil {
 		t.Fatal(err)
@@ -99,7 +99,7 @@ func TestConfigDefaultsAndOverrides(t *testing.T) {
 
 func TestOpenLegacyArrayFormat(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "keys.json")
-	if err := os.WriteFile(path, []byte(`[{"name":"old","label":"sinete-old","tag":"dev.sinete"}]`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`[{"name":"old","label":"sinete-old","tag":"me.paulofduarte.sinete"}]`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	r, err := Open(path)
