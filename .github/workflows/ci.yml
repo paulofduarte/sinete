@@ -24,6 +24,8 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v22
       - name: lint + format
         run: nix flake check --accept-flake-config
+      - name: golangci-lint
+        run: nix develop --accept-flake-config -c golangci-lint run ./...
 
   build:
     needs: lint

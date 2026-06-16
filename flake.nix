@@ -32,27 +32,39 @@
         # One `nix fmt` for every tree; also a `nix flake check` formatting gate.
         treefmtEval = treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
 
-        # Pre-commit hooks, installed into .git/hooks on entering the dev shell
-        # and run as a `nix flake check`. golangci-lint needs the Go/cgo toolchain.
-        pre-commit = git-hooks.lib.${system}.run {
+        # Network-free hooks, safe to run inside the `nix flake check` sandbox.
+        sandboxHooks = {
+          treefmt = {
+            enable = true;
+            package = treefmtEval.config.build.wrapper;
+          };
+          shellcheck.enable = true;
+          # SPDX / license compliance for the whole tree (inline headers +
+          # REUSE.toml for files that don't carry one). reuse.software.
+          reuse = {
+            enable = true;
+            name = "reuse";
+            entry = "${pkgs.reuse}/bin/reuse lint";
+            pass_filenames = false;
+          };
+        };
+
+        # The sandboxed flake-check gate omits golangci-lint: it would fetch the
+        # Go module graph, and the build sandbox has no network. CI runs
+        # golangci-lint in the dev shell instead (see .github/workflows).
+        pre-commit-check = git-hooks.lib.${system}.run {
           src = ./.;
-          hooks = {
-            treefmt = {
-              enable = true;
-              package = treefmtEval.config.build.wrapper;
-            };
+          hooks = sandboxHooks;
+        };
+
+        # Local hooks (installed into .git/hooks on entering the dev shell) add
+        # golangci-lint — the dev machine has the Go module cache and a toolchain.
+        pre-commit-local = git-hooks.lib.${system}.run {
+          src = ./.;
+          hooks = sandboxHooks // {
             golangci-lint = {
               enable = true;
               extraPackages = [ pkgs.go ];
-            };
-            shellcheck.enable = true;
-            # SPDX / license compliance for the whole tree (inline headers +
-            # REUSE.toml for files that don't carry one). reuse.software.
-            reuse = {
-              enable = true;
-              name = "reuse";
-              entry = "${pkgs.reuse}/bin/reuse lint";
-              pass_filenames = false;
             };
           };
         };
@@ -85,18 +97,18 @@
 
         checks = {
           formatting = treefmtEval.config.build.check self;
-          inherit pre-commit;
+          pre-commit = pre-commit-check;
         };
 
         devShells.default = pkgs.mkShell {
-          inherit (pre-commit) shellHook;
+          inherit (pre-commit-local) shellHook;
           packages = [
             pkgs.go
             pkgs.gopls
             pkgs.golangci-lint
             treefmtEval.config.build.wrapper
           ]
-          ++ pre-commit.enabledPackages;
+          ++ pre-commit-local.enabledPackages;
         };
       }
     );
