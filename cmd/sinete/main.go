@@ -233,7 +233,18 @@ func cmdAgent(args []string) error {
 			return err
 		}
 	}
-	_ = os.Remove(path) // clear a stale socket from a previous run
+	// Clear a stale socket from a previous run, but only if it really is a socket:
+	// never delete a regular file the user may have pointed --socket at.
+	if fi, err := os.Lstat(path); err == nil {
+		if fi.Mode()&os.ModeSocket == 0 {
+			return fmt.Errorf("refusing to remove %s: not a socket", path)
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		return err
