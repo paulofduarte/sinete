@@ -16,13 +16,25 @@ SPDX-License-Identifier: Apache-2.0
 
 ## Status
 
-Proof-of-concept spike. See the planned work below.
+Working key manager and ssh-agent. Pre-release.
 
-## Planned
+## Usage
 
-- `sinete generate <name>` -- create a key.
-- `sinete export <name>` -- print the public key.
-- `sinete daemon` -- run as an ssh-agent.
+`sinete` manages the keys; its agent serves them to `ssh` and `git`.
+
+    sinete generate <name>      create a key, print its public key
+    sinete list                 list keys
+    sinete export <name>        print a key's public key
+    sinete ssh-setup <name>     write the public key and print ssh/git config
+    sinete delete <name>        delete a key
+    sinete config <key> <val>   set presence-ttl / presence-max-ttl
+    sinete agent                run the agent (usually started at login)
+
+The agent advertises every key, so `ssh`/`git` use them automatically once
+`SSH_AUTH_SOCK` points at it. The first signature with a key checks user
+presence; further signatures within the configured window are silent. It also
+forwards keys it does not own to your existing agent, so it can take over
+`SSH_AUTH_SOCK` without losing anything.
 
 ## License
 

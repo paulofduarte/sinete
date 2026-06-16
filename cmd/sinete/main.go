@@ -42,14 +42,15 @@ func main() {
 	}
 
 	cmds := map[string]func([]string) error{
-		"generate": cmdGenerate,
-		"list":     cmdList,
-		"export":   cmdExport,
-		"delete":   cmdDelete,
-		"agent":    cmdAgent,
-		"sign":     cmdSign,
-		"present":  cmdPresent,
-		"config":   cmdConfig,
+		"generate":  cmdGenerate,
+		"list":      cmdList,
+		"export":    cmdExport,
+		"ssh-setup": cmdSshSetup,
+		"delete":    cmdDelete,
+		"agent":     cmdAgent,
+		"sign":      cmdSign,
+		"present":   cmdPresent,
+		"config":    cmdConfig,
 	}
 	cmd, ok := cmds[os.Args[1]]
 	if !ok {
@@ -70,6 +71,7 @@ sinete manages the secure-element key storage:
   generate <name>   create an enclave key and print its public key
   list              list created keys (name, type, fingerprint)
   export <name>     print a key's public key
+  ssh-setup <name>  write the .pub + print ssh/git config to use the key
   delete <name>     delete a key from the enclave and the index
   config            view/set presence TTLs (--list, --key <name>)
   sign <name>       sign a test message with a key (diagnostic)
@@ -169,6 +171,63 @@ func cmdExport(args []string) error {
 		return fmt.Errorf("no key named %q", args[0])
 	}
 	fmt.Println(e.PublicKey)
+	return nil
+}
+
+// cmdSshSetup writes a key's public key to a file and prints the ssh/git config
+// needed to use it (commit signing, local verification, optional per-host pin).
+func cmdSshSetup(args []string) error {
+	fs := flag.NewFlagSet("ssh-setup", flag.ExitOnError)
+	out := fs.String("out", "", "path for the public key (default: ~/.ssh/sinete-<name>.pub)")
+	_ = fs.Parse(args)
+	name := fs.Arg(0)
+	if name == "" {
+		return errors.New("usage: sinete ssh-setup <name> [--out <path>]")
+	}
+
+	reg, err := openRegistry()
+	if err != nil {
+		return err
+	}
+	e, ok := reg.Get(name)
+	if !ok {
+		return fmt.Errorf("no key named %q (create it with: sinete generate %s)", name, name)
+	}
+
+	pubPath := *out
+	if pubPath == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		pubPath = filepath.Join(home, ".ssh", "sinete-"+name+".pub")
+	}
+	if err := os.MkdirAll(filepath.Dir(pubPath), 0o700); err != nil {
+		return err
+	}
+	pub := strings.TrimRight(e.PublicKey, "\n")
+	if err := os.WriteFile(pubPath, []byte(pub+"\n"), 0o644); err != nil { //nolint:gosec // a public key is not secret
+		return err
+	}
+
+	fmt.Printf("wrote %s\n\n", pubPath)
+	fmt.Printf(`# commit signing
+git config gpg.format ssh
+git config user.signingkey %[1]s
+git config commit.gpgsign true
+
+# verify your own signatures locally
+mkdir -p ~/.config/git
+echo '%[2]s %[3]s' >> ~/.config/git/allowed_signers
+
+# optional: pin this key for a host (~/.ssh/config)
+Host github.com
+    IdentityAgent %[4]s
+    IdentityFile %[1]s
+    IdentitiesOnly yes
+
+# then add the key (cat %[1]s) on your git host as BOTH an authentication and a signing key.
+`, pubPath, name, pub, agentSocketHint())
 	return nil
 }
 
@@ -425,4 +484,16 @@ func defaultSocket() string {
 		dir = os.TempDir()
 	}
 	return filepath.Join(dir, "sinete", "agent.sock")
+}
+
+// agentSocketHint guesses the agent socket for printed config: the session
+// SSH_AUTH_SOCK if set, else the launchd install's default path.
+func agentSocketHint() string {
+	if s := os.Getenv("SSH_AUTH_SOCK"); s != "" {
+		return s
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, "Library", "Caches", "sinete", "agent.sock")
+	}
+	return defaultSocket()
 }
