@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Paulo Duarte
+# SPDX-License-Identifier: Apache-2.0
+#
 # Wrap the nix-built sinete CLI in a minimal signed .app bundle so macOS will
 # launch it with Secure Enclave entitlements.
 #

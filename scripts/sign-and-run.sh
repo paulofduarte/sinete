@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Paulo Duarte
+# SPDX-License-Identifier: Apache-2.0
+#
 # Sign the nix-built sinete binary with Secure Enclave entitlements and run it.
 #
 # The Secure Enclave rejects key operations from an unsigned/unentitled binary

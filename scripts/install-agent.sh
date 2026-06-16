@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Paulo Duarte
+# SPDX-License-Identifier: Apache-2.0
+#
 # Install sinete's ssh-agent as a launchd user agent.
 #
 # A LaunchAgent runs in the user's Aqua (GUI) session, where macOS can present the

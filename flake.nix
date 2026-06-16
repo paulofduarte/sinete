@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Paulo Duarte
+# SPDX-License-Identifier: Apache-2.0
 {
   description = "sinete — hardware-backed SSH agent (Secure Enclave / TPM)";
 
@@ -44,6 +46,14 @@
               extraPackages = [ pkgs.go ];
             };
             shellcheck.enable = true;
+            # SPDX / license compliance for the whole tree (inline headers +
+            # REUSE.toml for files that don't carry one). reuse.software.
+            reuse = {
+              enable = true;
+              name = "reuse";
+              entry = "${pkgs.reuse}/bin/reuse lint";
+              pass_filenames = false;
+            };
           };
         };
       in

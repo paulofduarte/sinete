@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Paulo Duarte
+// SPDX-License-Identifier: Apache-2.0
+
 // Command sinete is a hardware-backed SSH key manager and agent. Private keys
 // are generated in, and never leave, the platform secure element; only public
 // keys are exported and every signature happens in-hardware, presence-gated.

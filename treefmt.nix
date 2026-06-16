@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Paulo Duarte
+# SPDX-License-Identifier: Apache-2.0
+
 # treefmt: one `nix fmt` for the whole tree. Formatters only — linting is
 # golangci-lint (see .golangci.yml). Markdown and binary assets are left alone.
 { ... }:
