@@ -62,12 +62,21 @@ func (k *Key) Name() string { return k.name }
 // Label returns the sks label of the key.
 func (k *Key) Label() string { return k.label }
 
+// ident returns a human-meaningful identifier for diagnostics: the name when
+// set, otherwise the sks label (e.g. for keys opened via OpenLabelTag).
+func (k *Key) ident() string {
+	if k.name != "" {
+		return k.name
+	}
+	return k.label
+}
+
 // PublicKey returns the SSH public key. It reads the public half from the
 // secure element but requires no user presence.
 func (k *Key) PublicKey() (ssh.PublicKey, error) {
 	pub, ok := k.inner.Public().(*ecdsa.PublicKey)
 	if !ok {
-		return nil, fmt.Errorf("key %q: secure element returned no ECDSA public key", k.name)
+		return nil, fmt.Errorf("key %q: secure element returned no ECDSA public key", k.ident())
 	}
 	return ssh.NewPublicKey(pub)
 }

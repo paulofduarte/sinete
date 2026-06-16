@@ -205,7 +205,13 @@ func cmdAgent(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	// MkdirAll only sets the mode on directories it creates (and is subject to
+	// umask), so tighten an existing one to keep the socket user-only.
+	if err := os.Chmod(dir, 0o700); err != nil {
 		return err
 	}
 	_ = os.Remove(path) // clear a stale socket from a previous run
