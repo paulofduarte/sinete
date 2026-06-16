@@ -1,31 +1,34 @@
 #!/usr/bin/env bash
 # Install sinete's ssh-agent as a launchd user agent.
 #
-# A LaunchAgent runs in the user's Aqua (GUI) session, which is where macOS can
-# present the Secure Enclave Touch ID prompt. The signed .app bundle is copied to
-# ~/Applications so launchd has a stable, entitled binary to run.
+# A LaunchAgent runs in the user's Aqua (GUI) session, where macOS can present the
+# Secure Enclave Touch ID prompt. The agent runs from the signed .app bundle at the
+# path you give -- it is not moved or copied, so it works wherever the bundle lives.
 #
 # Usage: scripts/install-agent.sh [path-to-sinete.app]   (default: ./sinete.app)
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-src_app="${1:-$repo/sinete.app}"
-[ -d "$src_app" ] || { echo "no app bundle at $src_app — run scripts/bundle-and-sign.sh first" >&2; exit 1; }
+src="${1:-$repo/sinete.app}"
+[ -d "$src" ] || { echo "no app bundle at $src -- run scripts/bundle-and-sign.sh first" >&2; exit 1; }
+app="$(cd "$src" && pwd)" # resolve to an absolute path, wherever it lives
+bin="$app/Contents/MacOS/sinete"
 
 label="dev.sinete.agent"
-app="$HOME/Applications/sinete.app"
-bin="$app/Contents/MacOS/sinete"
 run_dir="$HOME/Library/Caches/sinete"
 sock="$run_dir/agent.sock"
 log="$run_dir/agent.log"
 plist="$HOME/Library/LaunchAgents/$label.plist"
 
-mkdir -p "$HOME/Applications" "$run_dir" "$HOME/Library/LaunchAgents"
-rm -rf "$app"
-cp -R "$src_app" "$app"
+mkdir -p "$run_dir" "$HOME/Library/LaunchAgents"
+chmod 700 "$run_dir" # only the user may reach the agent socket
 
-sed -e "s#__BIN__#$bin#" -e "s#__SOCKET__#$sock#" -e "s#__LOG__#$log#" \
-    "$repo/launchd/$label.plist" > "$plist"
+# Escape sed replacement metacharacters (&, \, and the # delimiter) in the paths.
+esc() { printf '%s' "$1" | sed 's/[&\\#]/\\&/g'; }
+sed -e "s#__BIN__#$(esc "$bin")#" \
+	-e "s#__SOCKET__#$(esc "$sock")#" \
+	-e "s#__LOG__#$(esc "$log")#" \
+	"$repo/launchd/$label.plist" >"$plist"
 
 uid="$(id -u)"
 launchctl bootout "gui/$uid/$label" 2>/dev/null || true

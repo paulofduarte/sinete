@@ -38,7 +38,7 @@ func newReg(t *testing.T, entries ...registry.Entry) *registry.Registry {
 
 func TestListReportsRegistryKeys(t *testing.T) {
 	pub, line := testPub(t)
-	a := New("sinete", newReg(t, registry.Entry{Name: "work", PublicKey: line}))
+	a := New(newReg(t, registry.Entry{Name: "work", PublicKey: line}))
 
 	keys, err := a.List()
 	if err != nil {
@@ -55,21 +55,21 @@ func TestListReportsRegistryKeys(t *testing.T) {
 	}
 }
 
-func TestNameForMatches(t *testing.T) {
+func TestEntryForMatches(t *testing.T) {
 	pub, line := testPub(t)
 	other, _ := testPub(t)
-	a := New("sinete", newReg(t, registry.Entry{Name: "work", PublicKey: line}))
+	a := New(newReg(t, registry.Entry{Name: "work", PublicKey: line}))
 
-	if name, ok := a.nameFor(pub); !ok || name != "work" {
-		t.Errorf("nameFor(known) = %q,%v; want work,true", name, ok)
+	if e, ok := a.entryFor(pub); !ok || e.Name != "work" {
+		t.Errorf("entryFor(known) = %q,%v; want work,true", e.Name, ok)
 	}
-	if _, ok := a.nameFor(other); ok {
-		t.Error("nameFor(unknown) matched")
+	if _, ok := a.entryFor(other); ok {
+		t.Error("entryFor(unknown) matched")
 	}
 }
 
 func TestMutationsUnsupported(t *testing.T) {
-	a := New("sinete", newReg(t))
+	a := New(newReg(t))
 	if err := a.RemoveAll(); err == nil {
 		t.Error("RemoveAll should be unsupported")
 	}

@@ -61,6 +61,7 @@ func usage() {
   list              list keys (name, type, fingerprint)
   export <name>     print a key's public key
   remove <name>     delete a key from the enclave and the index
+  sign <name>       sign a test message with a key (diagnostic)
   agent             run the ssh-agent (foreground)`)
 }
 
@@ -222,7 +223,7 @@ func cmdAgent(args []string) error {
 		os.Exit(0)
 	}()
 
-	a := agent.New(enclave.DefaultLabelPrefix, reg)
+	a := agent.New(reg)
 	fmt.Printf("export SSH_AUTH_SOCK=%s\n", path)
 
 	// Accept and serve connections off the main thread; signing is dispatched

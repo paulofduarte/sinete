@@ -27,13 +27,13 @@ var errReadOnly = errors.New("sinete agent is read-only; manage keys with the si
 // thread: macOS only presents the Touch ID prompt for in-enclave signing from
 // there, while connections are served on other goroutines.
 type Agent struct {
-	prefix string
-	reg    *registry.Registry
-	jobs   chan signJob
+	reg  *registry.Registry
+	jobs chan signJob
 }
 
 type signJob struct {
-	name  string
+	label string
+	tag   string
 	data  []byte
 	reply chan signResult
 }
@@ -45,9 +45,9 @@ type signResult struct {
 
 var _ xagent.Agent = (*Agent)(nil)
 
-// New returns an agent serving the keys in reg, opened under the given label prefix.
-func New(prefix string, reg *registry.Registry) *Agent {
-	return &Agent{prefix: prefix, reg: reg, jobs: make(chan signJob)}
+// New returns an agent serving the keys in reg.
+func New(reg *registry.Registry) *Agent {
+	return &Agent{reg: reg, jobs: make(chan signJob)}
 }
 
 // Run executes signing requests on the calling goroutine. It must run on the
@@ -55,7 +55,7 @@ func New(prefix string, reg *registry.Registry) *Agent {
 // prompt; it blocks until the jobs channel is closed.
 func (a *Agent) Run() {
 	for j := range a.jobs {
-		signer, err := enclave.Open(a.prefix, j.name).Signer()
+		signer, err := enclave.OpenLabelTag(j.label, j.tag).Signer()
 		if err != nil {
 			j.reply <- signResult{err: err}
 			continue
@@ -82,18 +82,19 @@ func (a *Agent) List() ([]*xagent.Key, error) {
 // Sign signs data with the enclave key whose public key matches key, prompting
 // for user presence.
 func (a *Agent) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
-	name, ok := a.nameFor(key)
+	e, ok := a.entryFor(key)
 	if !ok {
 		return nil, errors.New("no matching key")
 	}
 	reply := make(chan signResult, 1)
-	a.jobs <- signJob{name: name, data: data, reply: reply}
+	a.jobs <- signJob{label: e.Label, tag: e.Tag, data: data, reply: reply}
 	r := <-reply
 	return r.sig, r.err
 }
 
-// nameFor returns the registry name whose public key matches key.
-func (a *Agent) nameFor(key ssh.PublicKey) (string, bool) {
+// entryFor returns the registry entry whose public key matches key. The entry's
+// stored label and tag are authoritative for opening the enclave key.
+func (a *Agent) entryFor(key ssh.PublicKey) (registry.Entry, bool) {
 	want := key.Marshal()
 	for _, e := range a.reg.List() {
 		pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(e.PublicKey))
@@ -101,10 +102,10 @@ func (a *Agent) nameFor(key ssh.PublicKey) (string, bool) {
 			continue
 		}
 		if bytes.Equal(pub.Marshal(), want) {
-			return e.Name, true
+			return e, true
 		}
 	}
-	return "", false
+	return registry.Entry{}, false
 }
 
 // The remaining operations are unsupported: sinete is a read-only agent.

@@ -17,7 +17,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/nix-installer-action@v22
       - name: build
         run: nix build --accept-flake-config
       - name: stage artifact

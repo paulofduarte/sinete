@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/nix-installer-action@v22
       - name: flake check
         run: nix flake check --accept-flake-config
       - name: build

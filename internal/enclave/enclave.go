@@ -49,6 +49,13 @@ func Open(prefix, name string) *Key {
 	return &Key{name: name, label: l, inner: sks.FromLabelTag(l + ":" + Tag)}
 }
 
+// OpenLabelTag references an existing key by its exact sks label and tag rather
+// than recomputing them from a name, so callers (the agent) can use the values
+// recorded in the registry as authoritative.
+func OpenLabelTag(label, tag string) *Key {
+	return &Key{label: label, inner: sks.FromLabelTag(label + ":" + tag)}
+}
+
 // Name returns the human name of the key.
 func (k *Key) Name() string { return k.name }
 
