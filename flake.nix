@@ -4,14 +4,48 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     flake-utils.url = "github:numtide/flake-utils";
+    treefmt-nix = {
+      url = "github:numtide/treefmt-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    git-hooks = {
+      url = "github:cachix/git-hooks.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
-    { self, nixpkgs, flake-utils }:
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+      treefmt-nix,
+      git-hooks,
+    }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = import nixpkgs { inherit system; };
+
+        # One `nix fmt` for every tree; also a `nix flake check` formatting gate.
+        treefmtEval = treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
+
+        # Pre-commit hooks, installed into .git/hooks on entering the dev shell
+        # and run as a `nix flake check`. golangci-lint needs the Go/cgo toolchain.
+        pre-commit = git-hooks.lib.${system}.run {
+          src = ./.;
+          hooks = {
+            treefmt = {
+              enable = true;
+              package = treefmtEval.config.build.wrapper;
+            };
+            golangci-lint = {
+              enable = true;
+              extraPackages = [ pkgs.go ];
+            };
+            shellcheck.enable = true;
+          };
+        };
       in
       {
         packages.default = pkgs.buildGoModule {
@@ -37,12 +71,22 @@
           };
         };
 
+        formatter = treefmtEval.config.build.wrapper;
+
+        checks = {
+          formatting = treefmtEval.config.build.check self;
+          inherit pre-commit;
+        };
+
         devShells.default = pkgs.mkShell {
+          inherit (pre-commit) shellHook;
           packages = [
             pkgs.go
             pkgs.gopls
             pkgs.golangci-lint
-          ];
+            treefmtEval.config.build.wrapper
+          ]
+          ++ pre-commit.enabledPackages;
         };
       }
     );

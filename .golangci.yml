@@ -1,0 +1,18 @@
+# golangci-lint v2 configuration. Formatting is handled by treefmt (gofumpt);
+# this file is linting only.
+version: "2"
+
+linters:
+  # "standard" = errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  enable:
+    - bodyclose
+    - misspell
+    - unconvert
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling

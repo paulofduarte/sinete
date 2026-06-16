@@ -10,10 +10,16 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 src="${1:-$repo/sinete.app}"
-[ -d "$src" ] || { echo "no app bundle at $src -- run scripts/bundle-and-sign.sh first" >&2; exit 1; }
+[ -d "$src" ] || {
+  echo "no app bundle at $src -- run scripts/bundle-and-sign.sh first" >&2
+  exit 1
+}
 app="$(cd "$src" && pwd)" # resolve to an absolute path, wherever it lives
 bin="$app/Contents/MacOS/sinete"
-[ -x "$bin" ] || { echo "no runnable binary at $bin -- bundle looks incomplete; re-run scripts/bundle-and-sign.sh" >&2; exit 1; }
+[ -x "$bin" ] || {
+  echo "no runnable binary at $bin -- bundle looks incomplete; re-run scripts/bundle-and-sign.sh" >&2
+  exit 1
+}
 
 label="dev.sinete.agent"
 run_dir="$HOME/Library/Caches/sinete"
@@ -28,14 +34,14 @@ chmod 700 "$run_dir" # only the user may reach the agent socket
 # so special characters can't corrupt the XML, then escape sed replacement
 # metacharacters (&, \, and the # delimiter).
 esc() {
-	printf '%s' "$1" \
-		| sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' \
-		| sed 's/[&\\#]/\\&/g'
+  printf '%s' "$1" |
+    sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' |
+    sed 's/[&\\#]/\\&/g'
 }
 sed -e "s#__BIN__#$(esc "$bin")#" \
-	-e "s#__SOCKET__#$(esc "$sock")#" \
-	-e "s#__LOG__#$(esc "$log")#" \
-	"$repo/launchd/$label.plist" >"$plist"
+  -e "s#__SOCKET__#$(esc "$sock")#" \
+  -e "s#__LOG__#$(esc "$log")#" \
+  "$repo/launchd/$label.plist" >"$plist"
 
 uid="$(id -u)"
 launchctl bootout "gui/$uid/$label" 2>/dev/null || true

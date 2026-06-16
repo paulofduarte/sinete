@@ -16,7 +16,10 @@ bin="$repo/result/bin/sinete"
 out="$repo/sinete"
 ent="$repo/sinete.entitlements"
 
-[ -x "$bin" ] || { echo "no build output at $bin — run 'nix build' first" >&2; exit 1; }
+[ -x "$bin" ] || {
+  echo "no build output at $bin — run 'nix build' first" >&2
+  exit 1
+}
 
 cp -f "$bin" "$out"
 chmod u+w "$out"

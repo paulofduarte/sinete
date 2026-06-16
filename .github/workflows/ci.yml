@@ -7,7 +7,9 @@ on:
     branches: [develop, main]
 
 jobs:
-  build:
+  # Lint + format gate. build depends on this, so nothing proceeds when treefmt
+  # formatting, golangci-lint (which includes govet) or shellcheck fail.
+  lint:
     strategy:
       fail-fast: false
       matrix:
@@ -17,11 +19,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v22
-      - name: flake check
+      - name: lint + format
         run: nix flake check --accept-flake-config
+
+  build:
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-latest] # arm64-darwin, x86_64-linux
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v22
       - name: build
         run: nix build --accept-flake-config
       - name: test
         run: nix develop --accept-flake-config -c go test ./...
-      - name: vet
-        run: nix develop --accept-flake-config -c go vet ./...

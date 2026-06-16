@@ -12,15 +12,22 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-profile="${1:?usage: bundle-and-sign.sh <path-to.provisionprofile> [args...]}"; shift || true
+profile="${1:?usage: bundle-and-sign.sh <path-to.provisionprofile> [args...]}"
+shift || true
 identity="${SINETE_SIGN_IDENTITY:-Apple Development: Paulo Duarte (P6K8K4X996)}"
 bin="$repo/result/bin/sinete"
 ent="$repo/sinete.entitlements"
 app="$repo/sinete.app"
 bundle_id="me.paulofduarte.sinete"
 
-[ -x "$bin" ] || { echo "no build output at $bin — run 'nix build' first" >&2; exit 1; }
-[ -f "$profile" ] || { echo "provisioning profile not found: $profile" >&2; exit 1; }
+[ -x "$bin" ] || {
+  echo "no build output at $bin — run 'nix build' first" >&2
+  exit 1
+}
+[ -f "$profile" ] || {
+  echo "provisioning profile not found: $profile" >&2
+  exit 1
+}
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
@@ -28,7 +35,7 @@ cp -f "$bin" "$app/Contents/MacOS/sinete"
 chmod u+w "$app/Contents/MacOS/sinete"
 cp -f "$profile" "$app/Contents/embedded.provisionprofile"
 
-cat > "$app/Contents/Info.plist" <<PLIST
+cat >"$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">

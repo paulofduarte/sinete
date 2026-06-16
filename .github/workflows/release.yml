@@ -8,7 +8,23 @@ permissions:
   contents: write
 
 jobs:
+  # Same lint + format gate as ci. release depends on it, so a tagged release
+  # never builds or publishes an artifact when lint/format fails.
+  lint:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-latest] # arm64-darwin, x86_64-linux
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - name: lint + format
+        run: nix flake check --accept-flake-config
+
   release:
+    needs: lint
     strategy:
       fail-fast: false
       matrix:
