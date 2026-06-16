@@ -7,25 +7,48 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"errors"
+	"fmt"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/paulofduarte/sinete/internal/registry"
 	"golang.org/x/crypto/ssh"
+	xagent "golang.org/x/crypto/ssh/agent"
 )
 
-func testPub(t *testing.T) (ssh.PublicKey, string) {
-	t.Helper()
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
+// fakeSource resolves labels to in-memory signers, standing in for the enclave.
+type fakeSource struct{ signers map[string]ssh.Signer }
+
+func (f fakeSource) Signer(label, _ string) (ssh.Signer, error) {
+	s, ok := f.signers[label]
+	if !ok {
+		return nil, fmt.Errorf("no signer for %q", label)
 	}
-	pub, err := ssh.NewPublicKey(&priv.PublicKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return pub, string(ssh.MarshalAuthorizedKey(pub))
+	return s, nil
+}
+
+// counter is a presence func that counts calls and can be made to fail.
+type counter struct {
+	mu  sync.Mutex
+	n   int
+	err error
+}
+
+func (c *counter) present(string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.n++
+	return c.err
+}
+
+func (c *counter) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n
 }
 
 func newReg(t *testing.T, entries ...registry.Entry) *registry.Registry {
@@ -40,67 +63,127 @@ func newReg(t *testing.T, entries ...registry.Entry) *registry.Registry {
 	return r
 }
 
-func TestListReportsRegistryKeys(t *testing.T) {
-	pub, line := testPub(t)
-	a := New(newReg(t, registry.Entry{Name: "work", PublicKey: line}))
+func testEntry(t *testing.T, name string) (registry.Entry, ssh.PublicKey, ssh.Signer) {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.NewSignerFromSigner(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := signer.PublicKey()
+	line := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub))) + " " + name
+	e := registry.Entry{Name: name, Label: "sinete-" + name, Tag: "dev.sinete", PublicKey: line}
+	return e, pub, signer
+}
+
+func newAgent(t *testing.T, c *counter, ttl time.Duration, e registry.Entry, signer ssh.Signer) *Agent {
+	t.Helper()
+	return New(newReg(t, e), fakeSource{map[string]ssh.Signer{e.Label: signer}}, c.present, ttl)
+}
+
+func TestListAdvertisesRegistry(t *testing.T) {
+	e, pub, signer := testEntry(t, "work")
+	a := newAgent(t, &counter{}, time.Hour, e, signer)
 
 	keys, err := a.List()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(keys) != 1 {
-		t.Fatalf("List returned %d keys, want 1", len(keys))
-	}
-	if keys[0].Comment != "work" {
-		t.Errorf("comment = %q, want work", keys[0].Comment)
+	if len(keys) != 1 || keys[0].Comment != "work" {
+		t.Fatalf("List = %+v, want one comment=work", keys)
 	}
 	if keys[0].Format != pub.Type() {
 		t.Errorf("format = %q, want %q", keys[0].Format, pub.Type())
 	}
 }
 
-func TestEntryForMatches(t *testing.T) {
-	pub, line := testPub(t)
-	other, _ := testPub(t)
-	a := New(newReg(t, registry.Entry{Name: "work", PublicKey: line}))
+func TestSignPromptsThenCaches(t *testing.T) {
+	e, pub, signer := testEntry(t, "work")
+	c := &counter{}
+	a := newAgent(t, c, time.Hour, e, signer)
+	go a.Run()
 
-	if e, ok := a.entryFor(pub); !ok || e.Name != "work" {
-		t.Errorf("entryFor(known) = %q,%v; want work,true", e.Name, ok)
+	for i := 0; i < 2; i++ {
+		sig, err := a.Sign(pub, []byte("data"))
+		if err != nil {
+			t.Fatalf("sign %d: %v", i, err)
+		}
+		if err := pub.Verify([]byte("data"), sig); err != nil {
+			t.Fatalf("verify %d: %v", i, err)
+		}
 	}
-	if _, ok := a.entryFor(other); ok {
-		t.Error("entryFor(unknown) matched")
+	if got := c.count(); got != 1 {
+		t.Fatalf("present called %d times, want 1 (second signature cached)", got)
 	}
 }
 
-// TestSignNoMatchDoesNotBlock guards the fast path: an unknown key must return
-// an error immediately, before dispatching to Run (which isn't running here), so
-// a missing key can never deadlock a caller.
-func TestSignNoMatchDoesNotBlock(t *testing.T) {
-	a := New(newReg(t)) // empty registry: nothing matches
-	unknown, _ := testPub(t)
+func TestSignPromptsEverySignatureWhenTTLZero(t *testing.T) {
+	e, pub, signer := testEntry(t, "work")
+	c := &counter{}
+	a := newAgent(t, c, 0, e, signer)
+	go a.Run()
 
-	done := make(chan error, 1)
-	go func() {
-		_, err := a.Sign(unknown, []byte("data"))
-		done <- err
-	}()
-
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("Sign with no matching key should return an error")
+	for i := 0; i < 2; i++ {
+		if _, err := a.Sign(pub, []byte("data")); err != nil {
+			t.Fatalf("sign %d: %v", i, err)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Sign blocked on the Run loop for an unknown key; want an immediate error")
+	}
+	if got := c.count(); got != 2 {
+		t.Fatalf("present called %d times, want 2 (TTL=0 ⇒ every signature)", got)
+	}
+}
+
+func TestSignPresenceDenied(t *testing.T) {
+	e, pub, signer := testEntry(t, "work")
+	c := &counter{err: errors.New("denied")}
+	a := newAgent(t, c, time.Hour, e, signer)
+	go a.Run()
+
+	if _, err := a.Sign(pub, []byte("data")); err == nil {
+		t.Fatal("Sign should fail when presence is denied")
+	}
+}
+
+func TestRemoveAllForgetsWindow(t *testing.T) {
+	e, pub, signer := testEntry(t, "work")
+	c := &counter{}
+	a := newAgent(t, c, time.Hour, e, signer)
+	go a.Run()
+
+	if _, err := a.Sign(pub, []byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.RemoveAll(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Sign(pub, []byte("b")); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.count(); got != 2 {
+		t.Fatalf("present called %d times, want 2 (RemoveAll re-locks)", got)
+	}
+}
+
+func TestSignNoMatch(t *testing.T) {
+	e, _, signer := testEntry(t, "work")
+	_, other, _ := testEntry(t, "other")
+	a := newAgent(t, &counter{}, time.Hour, e, signer)
+
+	if _, err := a.Sign(other, []byte("x")); err == nil {
+		t.Fatal("Sign with an unknown key should error")
 	}
 }
 
 func TestMutationsUnsupported(t *testing.T) {
-	a := New(newReg(t))
-	if err := a.RemoveAll(); err == nil {
-		t.Error("RemoveAll should be unsupported")
-	}
+	e, _, signer := testEntry(t, "work")
+	a := newAgent(t, &counter{}, time.Hour, e, signer)
 	if err := a.Lock(nil); err == nil {
 		t.Error("Lock should be unsupported")
+	}
+	if err := a.Add(xagent.AddedKey{}); err == nil {
+		t.Error("Add should be unsupported")
 	}
 }

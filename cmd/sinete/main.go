@@ -3,7 +3,9 @@
 
 // Command sinete is a hardware-backed SSH key manager and agent. Private keys
 // are generated in, and never leave, the platform secure element; only public
-// keys are exported and every signature happens in-hardware, presence-gated.
+// keys are exported. The agent advertises every created key and signs with them
+// like a normal ssh-agent, gating user presence at sign time (Touch ID once,
+// then silent for a per-key TTL).
 package main
 
 import (
@@ -22,15 +24,21 @@ import (
 
 	"github.com/paulofduarte/sinete/internal/agent"
 	"github.com/paulofduarte/sinete/internal/enclave"
+	"github.com/paulofduarte/sinete/internal/presence"
 	"github.com/paulofduarte/sinete/internal/registry"
 	"golang.org/x/crypto/ssh"
 	xagent "golang.org/x/crypto/ssh/agent"
 )
 
+// defaultPresenceTTL is how long a Touch ID stays valid for a key before the
+// next signature prompts again. 10 min mirrors gpg-agent's default signing-key
+// cache (default-cache-ttl); made configurable per key via `sinete config`.
+const defaultPresenceTTL = 10 * time.Minute
+
 func main() {
-	// Pin the main goroutine to the main OS thread up front: the agent performs
-	// in-enclave signing here, and macOS only presents the Touch ID prompt from
-	// the main thread.
+	// Pin the main goroutine to the main OS thread up front: the agent presents
+	// the sign-time Touch ID prompt here, and macOS only draws it from the main
+	// thread.
 	runtime.LockOSThread()
 
 	if len(os.Args) < 2 {
@@ -42,9 +50,10 @@ func main() {
 		"generate": cmdGenerate,
 		"list":     cmdList,
 		"export":   cmdExport,
-		"remove":   cmdRemove,
+		"delete":   cmdDelete,
 		"agent":    cmdAgent,
 		"sign":     cmdSign,
+		"present":  cmdPresent,
 	}
 	cmd, ok := cmds[os.Args[1]]
 	if !ok {
@@ -60,12 +69,19 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: sinete <command> [args]
 
+sinete manages the secure-element key storage:
+
   generate <name>   create an enclave key and print its public key
-  list              list keys (name, type, fingerprint)
+  list              list created keys (name, type, fingerprint)
   export <name>     print a key's public key
-  remove <name>     delete a key from the enclave and the index
+  delete <name>     delete a key from the enclave and the index
   sign <name>       sign a test message with a key (diagnostic)
-  agent             run the ssh-agent (foreground)`)
+  agent             run the ssh-agent (foreground)
+
+The agent advertises every created key, so ssh/git use them automatically once
+SSH_AUTH_SOCK (or IdentityAgent) points at it. The first signature with a key
+prompts for Touch ID; further signatures are silent until its presence window
+(TTL) lapses. ssh-add -l lists them; ssh-add -d/-D forgets a key's window.`)
 }
 
 // openRegistry loads the local key index.
@@ -79,11 +95,10 @@ func openRegistry() (*registry.Registry, error) {
 
 func cmdGenerate(args []string) error {
 	fs := flag.NewFlagSet("generate", flag.ExitOnError)
-	noPresence := fs.Bool("no-presence", false, "do not require user presence (Touch ID) to sign")
 	_ = fs.Parse(args)
 	name := fs.Arg(0)
 	if name == "" {
-		return errors.New("usage: sinete generate <name> [--no-presence]")
+		return errors.New("usage: sinete generate <name>")
 	}
 
 	reg, err := openRegistry()
@@ -94,7 +109,7 @@ func cmdGenerate(args []string) error {
 		return fmt.Errorf("key %q already exists", name)
 	}
 
-	key, err := enclave.Create(enclave.DefaultLabelPrefix, name, !*noPresence)
+	key, err := enclave.Create(enclave.DefaultLabelPrefix, name)
 	if err != nil {
 		return err
 	}
@@ -160,9 +175,11 @@ func cmdExport(args []string) error {
 	return nil
 }
 
-func cmdRemove(args []string) error {
+// cmdDelete destroys a key: it removes it from the secure element and the index.
+// Unloading a key from the running agent is `ssh-add -e`/`-d`, not this.
+func cmdDelete(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: sinete remove <name>")
+		return errors.New("usage: sinete delete <name>")
 	}
 	name := args[0]
 	reg, err := openRegistry()
@@ -209,6 +226,20 @@ func cmdSign(args []string) error {
 	return nil
 }
 
+// cmdPresent runs the user-presence check directly (no signing). Diagnostic for
+// verifying the Touch ID / LocalAuthentication prompt on hardware.
+func cmdPresent(args []string) error {
+	reason := "sinete presence test"
+	if len(args) > 0 {
+		reason = args[0]
+	}
+	if err := presence.Authenticate(reason); err != nil {
+		return err
+	}
+	fmt.Println("presence verified")
+	return nil
+}
+
 func cmdAgent(args []string) error {
 	fs := flag.NewFlagSet("agent", flag.ExitOnError)
 	socket := fs.String("socket", "", "unix socket path (default: per-user runtime dir)")
@@ -218,10 +249,6 @@ func cmdAgent(args []string) error {
 	usingDefault := path == ""
 	if usingDefault {
 		path = defaultSocket()
-	}
-	reg, err := openRegistry()
-	if err != nil {
-		return err
 	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -270,11 +297,15 @@ func cmdAgent(args []string) error {
 		os.Exit(0)
 	}()
 
-	a := agent.New(reg)
+	reg, err := openRegistry()
+	if err != nil {
+		return err
+	}
+	a := agent.New(reg, agent.EnclaveSource{}, presence.Authenticate, defaultPresenceTTL)
 	fmt.Printf("export SSH_AUTH_SOCK=%s\n", path)
 
-	// Accept and serve connections off the main thread; signing is dispatched
-	// back to the main thread by a.Run below (so the Touch ID prompt can draw).
+	// Accept and serve connections off the main thread; signing (and its Touch ID
+	// prompt) is dispatched back to the main thread by a.Run below.
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -293,7 +324,7 @@ func cmdAgent(args []string) error {
 		}
 	}()
 
-	a.Run() // process sign requests on the main OS thread; blocks
+	a.Run() // process signing on the main OS thread; blocks
 	return nil
 }
 
