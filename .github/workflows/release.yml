@@ -14,10 +14,10 @@ jobs:
       matrix:
         os: [macos-14, ubuntu-latest] # arm64-darwin, x86_64-linux
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
       - name: build
         run: nix build --accept-flake-config
       - name: stage artifact
