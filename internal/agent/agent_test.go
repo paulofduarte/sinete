@@ -28,6 +28,27 @@ type fakeStore struct {
 func (s fakeStore) Keys() ([]registry.Entry, error)      { return s.entries, nil }
 func (s fakeStore) TTL(string) (idle, max time.Duration) { return s.idle, s.max }
 
+// mutableStore lets a test change the served entries after the agent is built.
+type mutableStore struct {
+	mu        sync.Mutex
+	entries   []registry.Entry
+	idle, max time.Duration
+}
+
+func (s *mutableStore) Keys() ([]registry.Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.entries, nil
+}
+
+func (s *mutableStore) TTL(string) (idle, max time.Duration) { return s.idle, s.max }
+
+func (s *mutableStore) set(entries ...registry.Entry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entries = entries
+}
+
 // fakeSource resolves labels to in-memory signers, standing in for the enclave.
 type fakeSource struct{ signers map[string]ssh.Signer }
 
@@ -179,6 +200,27 @@ func TestRemoveAllForgetsWindow(t *testing.T) {
 	}
 	if got := c.count(); got != 2 {
 		t.Fatalf("present called %d times, want 2 (RemoveAll re-locks)", got)
+	}
+}
+
+func TestRecreatedKeyReprompts(t *testing.T) {
+	e1, pub1, signer := testEntry(t, "work")
+	e2, pub2, _ := testEntry(t, "work") // same name, new key material
+	c := &counter{}
+	store := &mutableStore{entries: []registry.Entry{e1}, idle: time.Hour, max: time.Hour}
+	a := New(store, fakeSource{map[string]ssh.Signer{e1.Label: signer}}, c.present, nil)
+	go a.Run()
+
+	if _, err := a.Sign(pub1, []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	store.set(e2) // the key was deleted and recreated under the same name
+
+	if _, err := a.Sign(pub2, []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.count(); got != 2 {
+		t.Fatalf("present called %d times, want 2 (recreated key must re-authenticate)", got)
 	}
 }
 

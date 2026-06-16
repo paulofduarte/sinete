@@ -126,12 +126,13 @@ type Agent struct {
 	upstream xagent.ExtendedAgent
 
 	mu      sync.Mutex
-	windows map[string]window
+	windows map[string]window // keyed by the key's wire blob, not its name
 	jobs    chan signJob
 }
 
 type signJob struct {
 	entry registry.Entry
+	keyID string // the key's wire blob: presence windows are keyed by it, not the name
 	data  []byte
 	reply chan signResult
 }
@@ -162,17 +163,20 @@ func New(store Store, signers SignerSource, present func(reason string) error, u
 // can draw the Touch ID prompt. It blocks for the process lifetime.
 func (a *Agent) Run() {
 	for j := range a.jobs {
-		j.reply <- a.signNow(j.entry, j.data)
+		j.reply <- a.signNow(j.entry, j.keyID, j.data)
 	}
 }
 
-// signNow gates presence then signs an enclave key. Runs on the main thread.
-func (a *Agent) signNow(e registry.Entry, data []byte) signResult {
+// signNow gates presence then signs an enclave key. Runs on the main thread. The
+// presence window is keyed by keyID (the public key) rather than the name, so a
+// deleted-and-recreated key — different key material under the same name — does
+// not inherit the old key's window and must re-authenticate.
+func (a *Agent) signNow(e registry.Entry, keyID string, data []byte) signResult {
 	idle, max := a.store.TTL(e.Name)
 	now := time.Now()
 
 	a.mu.Lock()
-	w, ok := a.windows[e.Name]
+	w, ok := a.windows[keyID]
 	fresh := ok && now.Before(w.accessed.Add(idle)) && now.Before(w.created.Add(max))
 	a.mu.Unlock()
 
@@ -187,7 +191,7 @@ func (a *Agent) signNow(e registry.Entry, data []byte) signResult {
 	}
 
 	a.mu.Lock()
-	a.windows[e.Name] = w
+	a.windows[keyID] = w
 	a.mu.Unlock()
 
 	signer, err := a.signers.Signer(e.Label, e.Tag)
@@ -198,10 +202,11 @@ func (a *Agent) signNow(e registry.Entry, data []byte) signResult {
 	return signResult{sig: sig, err: err}
 }
 
-// signEnclave dispatches an enclave signature to the main-thread Run.
-func (a *Agent) signEnclave(e registry.Entry, data []byte) (*ssh.Signature, error) {
+// signEnclave dispatches an enclave signature to the main-thread Run. keyID is
+// the key's wire blob, used to key the presence window.
+func (a *Agent) signEnclave(e registry.Entry, keyID string, data []byte) (*ssh.Signature, error) {
 	reply := make(chan signResult, 1)
-	a.jobs <- signJob{entry: e, data: data, reply: reply}
+	a.jobs <- signJob{entry: e, keyID: keyID, data: data, reply: reply}
 	r := <-reply
 	return r.sig, r.err
 }
@@ -232,7 +237,7 @@ func (a *Agent) List() ([]*xagent.Key, error) {
 // to the upstream agent.
 func (a *Agent) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
 	if e, ok := a.entryFor(key); ok {
-		return a.signEnclave(e, data)
+		return a.signEnclave(e, string(key.Marshal()), data)
 	}
 	if a.upstream != nil {
 		return a.upstream.Sign(key, data)
@@ -244,7 +249,7 @@ func (a *Agent) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
 // (enclave keys are ECDSA, so the flags do not apply to them).
 func (a *Agent) SignWithFlags(key ssh.PublicKey, data []byte, flags xagent.SignatureFlags) (*ssh.Signature, error) {
 	if e, ok := a.entryFor(key); ok {
-		return a.signEnclave(e, data)
+		return a.signEnclave(e, string(key.Marshal()), data)
 	}
 	if a.upstream != nil {
 		return a.upstream.SignWithFlags(key, data, flags)
@@ -274,9 +279,9 @@ func (a *Agent) entryFor(key ssh.PublicKey) (registry.Entry, bool) {
 // Remove forgets an enclave key's presence window (ssh-add -d: the next use
 // prompts again; it does not delete the key) or forwards to the upstream agent.
 func (a *Agent) Remove(key ssh.PublicKey) error {
-	if e, ok := a.entryFor(key); ok {
+	if _, ok := a.entryFor(key); ok {
 		a.mu.Lock()
-		delete(a.windows, e.Name)
+		delete(a.windows, string(key.Marshal()))
 		a.mu.Unlock()
 		return nil
 	}
