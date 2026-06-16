@@ -13,6 +13,7 @@ src="${1:-$repo/sinete.app}"
 [ -d "$src" ] || { echo "no app bundle at $src -- run scripts/bundle-and-sign.sh first" >&2; exit 1; }
 app="$(cd "$src" && pwd)" # resolve to an absolute path, wherever it lives
 bin="$app/Contents/MacOS/sinete"
+[ -x "$bin" ] || { echo "no runnable binary at $bin -- bundle looks incomplete; re-run scripts/bundle-and-sign.sh" >&2; exit 1; }
 
 label="dev.sinete.agent"
 run_dir="$HOME/Library/Caches/sinete"

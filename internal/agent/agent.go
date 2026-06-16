@@ -52,7 +52,8 @@ func New(reg *registry.Registry) *Agent {
 
 // Run executes signing requests on the calling goroutine. It must run on the
 // main OS thread (see runtime.LockOSThread) so macOS can present the Touch ID
-// prompt; it blocks until the jobs channel is closed.
+// prompt. It blocks for the lifetime of the process: the jobs channel is never
+// closed (cmdAgent exits on SIGINT/SIGTERM), so Run does not return in practice.
 func (a *Agent) Run() {
 	for j := range a.jobs {
 		signer, err := enclave.OpenLabelTag(j.label, j.tag).Signer()
