@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Paulo Duarte
+// SPDX-License-Identifier: Apache-2.0
+
 // Package registry maintains sinete's local index of enclave keys.
 //
 // sks cannot enumerate an application's keys, so sinete records each key it

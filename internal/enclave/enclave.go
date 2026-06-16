@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Paulo Duarte
+// SPDX-License-Identifier: Apache-2.0
+
 // Package enclave wraps facebookincubator/sks to create, open, sign with and
 // remove sinete's secure-element keys.
 //

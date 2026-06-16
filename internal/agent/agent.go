@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Paulo Duarte
+// SPDX-License-Identifier: Apache-2.0
+
 // Package agent implements a read-only ssh-agent serving sinete's enclave keys.
 //
 // It satisfies golang.org/x/crypto/ssh/agent.Agent but only answers List and

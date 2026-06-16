@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Paulo Duarte
+# SPDX-License-Identifier: Apache-2.0
+#
 # Sign the nix-built sinete binary with Secure Enclave entitlements and run it.
 #
 # The Secure Enclave rejects key operations from an unsigned/unentitled binary
@@ -16,7 +19,10 @@ bin="$repo/result/bin/sinete"
 out="$repo/sinete"
 ent="$repo/sinete.entitlements"
 
-[ -x "$bin" ] || { echo "no build output at $bin — run 'nix build' first" >&2; exit 1; }
+[ -x "$bin" ] || {
+  echo "no build output at $bin — run 'nix build' first" >&2
+  exit 1
+}
 
 cp -f "$bin" "$out"
 chmod u+w "$out"
