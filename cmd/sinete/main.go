@@ -371,7 +371,21 @@ func cmdAgent(args []string) error {
 	if err != nil {
 		return err
 	}
-	a := agent.New(agent.RegistryStore{Path: regPath}, agent.EnclaveSource{}, presence.Authenticate)
+
+	// Superset agent: delegate everything we don't own to the upstream agent
+	// (e.g. the system ssh-agent), so taking over SSH_AUTH_SOCK loses nothing.
+	var upstream xagent.ExtendedAgent
+	if up := os.Getenv("SINETE_UPSTREAM_SOCK"); up != "" {
+		conn, derr := net.Dial("unix", up)
+		if derr != nil {
+			fmt.Fprintf(os.Stderr, "sinete agent: no upstream agent at %s: %v\n", up, derr)
+		} else {
+			upstream = xagent.NewClient(conn)
+			fmt.Printf("delegating non-enclave keys to %s\n", up)
+		}
+	}
+
+	a := agent.New(agent.RegistryStore{Path: regPath}, agent.EnclaveSource{}, presence.Authenticate, upstream)
 	fmt.Printf("export SSH_AUTH_SOCK=%s\n", path)
 
 	// Accept and serve connections off the main thread; signing (and its Touch ID

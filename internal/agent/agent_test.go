@@ -78,7 +78,7 @@ func testEntry(t *testing.T, name string) (registry.Entry, ssh.PublicKey, ssh.Si
 func newAgent(t *testing.T, c *counter, idle, max time.Duration, e registry.Entry, signer ssh.Signer) *Agent {
 	t.Helper()
 	store := fakeStore{entries: []registry.Entry{e}, idle: idle, max: max}
-	return New(store, fakeSource{map[string]ssh.Signer{e.Label: signer}}, c.present)
+	return New(store, fakeSource{map[string]ssh.Signer{e.Label: signer}}, c.present, nil)
 }
 
 func TestListAdvertisesStore(t *testing.T) {
@@ -189,6 +189,50 @@ func TestSignNoMatch(t *testing.T) {
 
 	if _, err := a.Sign(other, []byte("x")); err == nil {
 		t.Fatal("Sign with an unknown key should error")
+	}
+}
+
+func TestDelegatesToUpstream(t *testing.T) {
+	e, _, signer := testEntry(t, "work")
+
+	// Upstream agent (a plain in-memory keyring) holding its own key.
+	up := xagent.NewKeyring()
+	upPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := up.Add(xagent.AddedKey{PrivateKey: upPriv}); err != nil {
+		t.Fatal(err)
+	}
+	upPub, err := ssh.NewPublicKey(&upPriv.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := &counter{}
+	store := fakeStore{entries: []registry.Entry{e}, idle: time.Hour, max: time.Hour}
+	a := New(store, fakeSource{map[string]ssh.Signer{e.Label: signer}}, c.present, up.(xagent.ExtendedAgent))
+	go a.Run()
+
+	// List is the union: enclave key + upstream key.
+	keys, err := a.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("List = %d keys, want 2 (enclave + upstream)", len(keys))
+	}
+
+	// Signing an upstream key forwards (no presence prompt) and verifies.
+	sig, err := a.Sign(upPub, []byte("data"))
+	if err != nil {
+		t.Fatalf("sign upstream key: %v", err)
+	}
+	if err := upPub.Verify([]byte("data"), sig); err != nil {
+		t.Fatalf("upstream signature does not verify: %v", err)
+	}
+	if got := c.count(); got != 0 {
+		t.Errorf("present called %d times for an upstream key, want 0", got)
 	}
 }
 

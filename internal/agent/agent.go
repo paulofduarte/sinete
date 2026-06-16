@@ -1,17 +1,22 @@
 // SPDX-FileCopyrightText: 2026 Paulo Duarte
 // SPDX-License-Identifier: Apache-2.0
 
-// Package agent implements sinete's ssh-agent (Model B).
+// Package agent implements sinete's ssh-agent (Model B), a superset agent.
 //
 // It advertises every key in the registry — so ssh/git use them with no manual
 // step, like a normal agent — and enforces user presence at *sign* time. Each
 // key has a presence window with two bounds (after gpg-agent): an idle TTL that
 // resets on every signature, and an absolute cap from the first signature. The
 // first signature with a key prompts for Touch ID; subsequent signatures are
-// silent until the window lapses (idle elapsed, or the cap reached), after which
-// the next signature prompts again. The keys are presence-less in the secure
-// element; the agent holds only enclave-backed signer *handles*, never key
-// material, and every signature is computed in hardware.
+// silent until the window lapses, after which the next one prompts again. The
+// keys are presence-less in the secure element; the agent holds only enclave-
+// backed signer *handles*, never key material, and every signature is computed
+// in hardware.
+//
+// To stay transparent when it takes over SSH_AUTH_SOCK, the agent delegates
+// everything it doesn't own to an upstream agent (e.g. the system ssh-agent):
+// List is the union, and Sign/Add/Remove/Lock/Unlock/Extension for non-enclave
+// keys forward upstream. With no upstream it is enclave-only.
 package agent
 
 import (
@@ -112,11 +117,13 @@ type window struct {
 }
 
 // Agent serves a Store's keys over the ssh-agent protocol, gating presence at
-// sign time. It satisfies golang.org/x/crypto/ssh/agent.Agent.
+// sign time, and delegates everything else to upstream (may be nil). It
+// satisfies golang.org/x/crypto/ssh/agent.ExtendedAgent.
 type Agent struct {
-	store   Store
-	signers SignerSource
-	present func(reason string) error
+	store    Store
+	signers  SignerSource
+	present  func(reason string) error
+	upstream xagent.ExtendedAgent
 
 	mu      sync.Mutex
 	windows map[string]window
@@ -134,31 +141,32 @@ type signResult struct {
 	err error
 }
 
-var _ xagent.Agent = (*Agent)(nil)
+var _ xagent.ExtendedAgent = (*Agent)(nil)
 
 // New returns an agent serving store's keys. present performs the user-presence
-// check (Touch ID).
-func New(store Store, signers SignerSource, present func(reason string) error) *Agent {
+// check (Touch ID). upstream, if non-nil, receives every request for a key the
+// agent does not own.
+func New(store Store, signers SignerSource, present func(reason string) error, upstream xagent.ExtendedAgent) *Agent {
 	return &Agent{
-		store:   store,
-		signers: signers,
-		present: present,
-		windows: map[string]window{},
-		jobs:    make(chan signJob),
+		store:    store,
+		signers:  signers,
+		present:  present,
+		upstream: upstream,
+		windows:  map[string]window{},
+		jobs:     make(chan signJob),
 	}
 }
 
-// Run performs signing — and its presence prompt — on the calling goroutine,
-// which must be the main OS thread (runtime.LockOSThread) so macOS can draw the
-// Touch ID prompt. It blocks for the process lifetime; the jobs channel is never
-// closed.
+// Run performs enclave signing — and its presence prompt — on the calling
+// goroutine, which must be the main OS thread (runtime.LockOSThread) so macOS
+// can draw the Touch ID prompt. It blocks for the process lifetime.
 func (a *Agent) Run() {
 	for j := range a.jobs {
 		j.reply <- a.signNow(j.entry, j.data)
 	}
 }
 
-// signNow gates presence then signs. Runs on the main thread via Run.
+// signNow gates presence then signs an enclave key. Runs on the main thread.
 func (a *Agent) signNow(e registry.Entry, data []byte) signResult {
 	idle, max := a.store.TTL(e.Name)
 	now := time.Now()
@@ -190,7 +198,15 @@ func (a *Agent) signNow(e registry.Entry, data []byte) signResult {
 	return signResult{sig: sig, err: err}
 }
 
-// List advertises every key the store reports. It does not prompt.
+// signEnclave dispatches an enclave signature to the main-thread Run.
+func (a *Agent) signEnclave(e registry.Entry, data []byte) (*ssh.Signature, error) {
+	reply := make(chan signResult, 1)
+	a.jobs <- signJob{entry: e, data: data, reply: reply}
+	r := <-reply
+	return r.sig, r.err
+}
+
+// List advertises every enclave key plus, if delegating, the upstream agent's.
 func (a *Agent) List() ([]*xagent.Key, error) {
 	entries, err := a.store.Keys()
 	if err != nil {
@@ -204,20 +220,36 @@ func (a *Agent) List() ([]*xagent.Key, error) {
 		}
 		keys = append(keys, &xagent.Key{Format: pub.Type(), Blob: pub.Marshal(), Comment: e.Name})
 	}
+	if a.upstream != nil {
+		if up, err := a.upstream.List(); err == nil {
+			keys = append(keys, up...)
+		}
+	}
 	return keys, nil
 }
 
-// Sign signs data with the key matching key, prompting for presence if that
-// key's window has lapsed.
+// Sign signs with an enclave key (prompting for presence as needed) or forwards
+// to the upstream agent.
 func (a *Agent) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
-	e, ok := a.entryFor(key)
-	if !ok {
-		return nil, errNotFound
+	if e, ok := a.entryFor(key); ok {
+		return a.signEnclave(e, data)
 	}
-	reply := make(chan signResult, 1)
-	a.jobs <- signJob{entry: e, data: data, reply: reply}
-	r := <-reply
-	return r.sig, r.err
+	if a.upstream != nil {
+		return a.upstream.Sign(key, data)
+	}
+	return nil, errNotFound
+}
+
+// SignWithFlags is like Sign but honours the rsa-sha2 flags for upstream keys
+// (enclave keys are ECDSA, so the flags do not apply to them).
+func (a *Agent) SignWithFlags(key ssh.PublicKey, data []byte, flags xagent.SignatureFlags) (*ssh.Signature, error) {
+	if e, ok := a.entryFor(key); ok {
+		return a.signEnclave(e, data)
+	}
+	if a.upstream != nil {
+		return a.upstream.SignWithFlags(key, data, flags)
+	}
+	return nil, errNotFound
 }
 
 // entryFor returns the store entry whose public key matches key.
@@ -239,27 +271,66 @@ func (a *Agent) entryFor(key ssh.PublicKey) (registry.Entry, bool) {
 	return registry.Entry{}, false
 }
 
-// Remove forgets a key's presence window (ssh-add -d): the next use prompts
-// again. It does not unadvertise or delete the key.
+// Remove forgets an enclave key's presence window (ssh-add -d: the next use
+// prompts again; it does not delete the key) or forwards to the upstream agent.
 func (a *Agent) Remove(key ssh.PublicKey) error {
 	if e, ok := a.entryFor(key); ok {
 		a.mu.Lock()
 		delete(a.windows, e.Name)
 		a.mu.Unlock()
+		return nil
+	}
+	if a.upstream != nil {
+		return a.upstream.Remove(key)
 	}
 	return nil
 }
 
-// RemoveAll forgets every presence window (ssh-add -D): a "lock all".
+// RemoveAll forgets every enclave presence window and clears the upstream agent
+// (ssh-add -D).
 func (a *Agent) RemoveAll() error {
 	a.mu.Lock()
 	a.windows = map[string]window{}
 	a.mu.Unlock()
+	if a.upstream != nil {
+		return a.upstream.RemoveAll()
+	}
 	return nil
 }
 
-// The remaining operations are unsupported (delegation will forward them later).
-func (a *Agent) Add(xagent.AddedKey) error      { return errUnsupported }
-func (a *Agent) Lock([]byte) error              { return errUnsupported }
-func (a *Agent) Unlock([]byte) error            { return errUnsupported }
-func (a *Agent) Signers() ([]ssh.Signer, error) { return nil, errUnsupported }
+// Add, Lock, Unlock, Signers and Extension are not meaningful for enclave keys
+// (managed by the sinete CLI); they forward to the upstream agent when present.
+func (a *Agent) Add(key xagent.AddedKey) error {
+	if a.upstream != nil {
+		return a.upstream.Add(key)
+	}
+	return errUnsupported
+}
+
+func (a *Agent) Lock(passphrase []byte) error {
+	if a.upstream != nil {
+		return a.upstream.Lock(passphrase)
+	}
+	return errUnsupported
+}
+
+func (a *Agent) Unlock(passphrase []byte) error {
+	if a.upstream != nil {
+		return a.upstream.Unlock(passphrase)
+	}
+	return errUnsupported
+}
+
+func (a *Agent) Signers() ([]ssh.Signer, error) {
+	if a.upstream != nil {
+		return a.upstream.Signers()
+	}
+	return nil, errUnsupported
+}
+
+func (a *Agent) Extension(extensionType string, contents []byte) ([]byte, error) {
+	if a.upstream != nil {
+		return a.upstream.Extension(extensionType, contents)
+	}
+	return nil, xagent.ErrExtensionUnsupported
+}
