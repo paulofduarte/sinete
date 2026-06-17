@@ -378,6 +378,60 @@ func cmdEnclaveCheck(args []string) error {
 	}
 	fmt.Printf("  after increment: %d\n", next)
 
+	fmt.Println("== signed config round-trip (real master key, throwaway file) ==")
+	tmp, err := os.MkdirTemp("", "sinete-cfgcheck")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	cfgPath := filepath.Join(tmp, "registry.json")
+	crypto := enclave.ConfigCrypto{}
+
+	cfg, trusted, err := registry.OpenConfig(cfgPath, crypto)
+	if err != nil {
+		return fmt.Errorf("open config: %w", err)
+	}
+	if !trusted {
+		return fmt.Errorf("an absent config should be trusted")
+	}
+	cfg.SetKeyConfig("enclave-check", registry.PresenceTTL, "7m")
+	fmt.Println("  saving config (expect a Touch ID prompt)...")
+	if err := cfg.Save(); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+
+	reopened, trusted, err := registry.OpenConfig(cfgPath, crypto)
+	if err != nil {
+		return err
+	}
+	if !trusted {
+		return fmt.Errorf("a freshly signed config should be trusted")
+	}
+	if got := reopened.Effective("enclave-check", registry.PresenceTTL); got != "7m" {
+		return fmt.Errorf("config value = %q, want 7m", got)
+	}
+	fmt.Println("  signed config verified (no prompt)")
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return err
+	}
+	data[len(data)/2] ^= 0xff // corrupt a byte: breaks the signature (or the JSON)
+	if err := os.WriteFile(cfgPath, data, 0o600); err != nil {
+		return err
+	}
+	tampered, trusted, err := registry.OpenConfig(cfgPath, crypto)
+	if err != nil {
+		return err
+	}
+	if trusted {
+		return fmt.Errorf("a tampered config must not be trusted")
+	}
+	if got := tampered.Effective("enclave-check", registry.PresenceTTL); got != "" {
+		return fmt.Errorf("tampered config value = %q, want built-in default (empty)", got)
+	}
+	fmt.Println("  tamper correctly rejected -> built-in defaults")
+
 	fmt.Println("all enclave-check steps passed")
 	return nil
 }
