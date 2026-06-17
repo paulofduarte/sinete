@@ -58,15 +58,28 @@
         };
 
         # Local hooks (installed into .git/hooks on entering the dev shell) add
-        # golangci-lint — the dev machine has the Go module cache and a toolchain.
+        # golangci-lint and swiftlint — both need a toolchain the flake-check
+        # sandbox lacks (the Go module graph; SourceKit for swiftlint).
         pre-commit-local = git-hooks.lib.${system}.run {
           src = ./.;
-          hooks = sandboxHooks // {
-            golangci-lint = {
-              enable = true;
-              extraPackages = [ pkgs.go ];
+          hooks =
+            sandboxHooks
+            // {
+              golangci-lint = {
+                enable = true;
+                extraPackages = [ pkgs.go ];
+              };
+            }
+            // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
+              # swiftlint needs SourceKit; the .swift sources are macOS-only anyway.
+              swiftlint = {
+                enable = true;
+                name = "swiftlint";
+                entry = "${pkgs.swiftlint}/bin/swiftlint lint --strict";
+                files = "\\.swift$";
+                pass_filenames = false;
+              };
             };
-          };
         };
 
         # `nix run .#bundle -- <profile>`: assemble + sign sinete.app. Folds the
@@ -223,6 +236,7 @@
             pkgs.golangci-lint
             treefmtEval.config.build.wrapper
           ]
+          ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.swiftlint ]
           ++ pre-commit-local.enabledPackages;
         };
       }

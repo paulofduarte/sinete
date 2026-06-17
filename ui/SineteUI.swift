@@ -57,7 +57,9 @@ struct KeyInfo: Decodable, Identifiable {
     let name: String
     let type: String
     let fingerprint: String
-    var id: String { name }
+    var id: String {
+        name
+    }
 }
 
 struct Status: Decodable {
@@ -102,12 +104,14 @@ struct SineteUIApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationDidFinishLaunching(_ notification: Notification) {
+    func applicationDidFinishLaunching(_: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool {
+        true
+    }
 }
 
 // MARK: - Root
@@ -213,10 +217,10 @@ struct ReadyView: View {
         let confirm = NSAlert()
         confirm.messageText = "Uninstall sinete?"
         confirm.informativeText = """
-            This removes the login item, the PATH link, and the .pub files sinete \
-            created (a link or .pub you chose to keep is left alone). The app is \
-            then moved to the Trash.
-            """
+        This removes the login item, the PATH link, and the .pub files sinete \
+        created (a link or .pub you chose to keep is left alone). The app is \
+        then moved to the Trash.
+        """
         confirm.addButton(withTitle: "Uninstall")
         confirm.addButton(withTitle: "Cancel")
         guard confirm.runModal() == .alertFirstButtonReturn else { return }
@@ -226,15 +230,15 @@ struct ReadyView: View {
             let keyAlert = NSAlert()
             keyAlert.messageText = "Also delete your \(status.keyCount) key\(status.keyCount == 1 ? "" : "s")?"
             var info = """
-                This permanently destroys the hardware keys in the Secure Enclave; \
-                it cannot be undone. If you keep them, they stay safe and become \
-                available again when you reinstall sinete with the same signing identity.
-                """
+            This permanently destroys the hardware keys in the Secure Enclave; \
+            it cannot be undone. If you keep them, they stay safe and become \
+            available again when you reinstall sinete with the same signing identity.
+            """
             if status.method == "admin" {
                 info += "\n\n" + """
-                    Only your keys are affected. Other users with sinete keys must \
-                    run the app in their own account to delete theirs.
-                    """
+                Only your keys are affected. Other users with sinete keys must \
+                run the app in their own account to delete theirs.
+                """
             }
             keyAlert.informativeText = info
             keyAlert.addButton(withTitle: "Keep keys")
@@ -320,11 +324,11 @@ struct SetupView: View {
     private var stepInstall: some View {
         VStack(spacing: 12) {
             Text("""
-                Put `sinete` on your PATH and start the agent as a login item. \
-                You may be asked for your password to create a system link.
-                """)
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
+            Put `sinete` on your PATH and start the agent as a login item. \
+            You may be asked for your password to create a system link.
+            """)
+            .multilineTextAlignment(.center)
+            .foregroundStyle(.secondary)
             Button("Install") { install() }
                 .keyboardShortcut(.defaultAction)
         }
@@ -346,7 +350,7 @@ struct SetupView: View {
         }
     }
 
-    // The key to configure for SSH: the one just created, else the first existing.
+    /// The key to configure for SSH: the one just created, else the first existing.
     private var sshKeyName: String {
         let typed = keyName.trimmingCharacters(in: .whitespaces)
         if !typed.isEmpty { return typed }
@@ -385,10 +389,10 @@ struct SetupView: View {
                     let alert = NSAlert()
                     alert.messageText = "A different link already exists"
                     alert.informativeText = """
-                        \(plan.linkPath) already points elsewhere. Replace it so it \
-                        points at sinete, or keep the existing one? If you keep it, \
-                        sinete isn't added to PATH and won't remove it on uninstall.
-                        """
+                    \(plan.linkPath) already points elsewhere. Replace it so it \
+                    points at sinete, or keep the existing one? If you keep it, \
+                    sinete isn't added to PATH and won't remove it on uninstall.
+                    """
                     alert.addButton(withTitle: "Replace")
                     alert.addButton(withTitle: "Keep existing")
                     alert.addButton(withTitle: "Cancel")
@@ -438,9 +442,9 @@ struct SetupView: View {
             let alert = NSAlert()
             alert.messageText = "Public key file already exists"
             alert.informativeText = """
-                \(pub) already exists. Overwrite it? If you keep it, sinete leaves \
-                it as is and won't remove it on uninstall.
-                """
+            \(pub) already exists. Overwrite it? If you keep it, sinete leaves \
+            it as is and won't remove it on uninstall.
+            """
             alert.addButton(withTitle: "Overwrite")
             alert.addButton(withTitle: "Keep")
             if alert.runModal() != .alertFirstButtonReturn {
@@ -467,12 +471,12 @@ struct SetupView: View {
             Text("Use the key")
                 .font(.headline)
             Text("""
-                Run this to sign with the key, then add the public key on your Git \
-                host as both an authentication and a signing key.
-                """)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+            Run this to sign with the key, then add the public key on your Git \
+            host as both an authentication and a signing key.
+            """)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
             ScrollView {
                 Text(highlightedInstructions)
                     .font(.system(.caption, design: .monospaced))
@@ -492,8 +496,8 @@ struct SetupView: View {
         }
     }
 
-    // sshConfigBlock drops ssh-setup's leading "wrote <path>" line so the block is
-    // just the config to run.
+    /// sshConfigBlock drops ssh-setup's leading "wrote <path>" line so the block is
+    /// just the config to run.
     private func sshConfigBlock(from output: String) -> String {
         let lines = output.components(separatedBy: "\n").drop {
             $0.hasPrefix("wrote ") || $0.trimmingCharacters(in: .whitespaces).isEmpty
@@ -501,8 +505,8 @@ struct SetupView: View {
         return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    // SwiftUI has no built-in syntax highlighter; dim the comment lines (#...) for
-    // a light, dependency-free pass.
+    /// SwiftUI has no built-in syntax highlighter; dim the comment lines (#...) for
+    /// a light, dependency-free pass.
     private var highlightedInstructions: AttributedString {
         var result = AttributedString()
         let lines = instructions.components(separatedBy: "\n")

@@ -160,16 +160,6 @@ func RecordPub(path string) error {
 	return st.Save()
 }
 
-// binPath is the bundle's sinete executable (the link target).
-func binPath(bundlePath string) string {
-	return filepath.Join(bundlePath, "Contents", "MacOS", "sinete")
-}
-
-// userLinkDir is ~/.local/bin, the per-user link directory.
-func userLinkDir(home string) string {
-	return filepath.Join(home, ".local", "bin")
-}
-
 // Plan is the link an install would create, for the UI to confirm before any
 // privileged action. LinkConflicts is true when LinkPath already points
 // somewhere other than the intended target.

@@ -38,6 +38,16 @@ func IsAdminUser() bool {
 	return false
 }
 
+// binPath is the bundle's sinete executable (the link target).
+func binPath(bundlePath string) string {
+	return filepath.Join(bundlePath, "Contents", "MacOS", "sinete")
+}
+
+// userLinkDir is ~/.local/bin, the per-user link directory.
+func userLinkDir(home string) string {
+	return filepath.Join(home, ".local", "bin")
+}
+
 // PlanInstall computes the link plan for the running bundle without doing
 // anything, so the UI can confirm (e.g. an admin prompt or a link conflict).
 func PlanInstall() (*Plan, error) {
