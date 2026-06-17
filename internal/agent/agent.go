@@ -13,10 +13,12 @@
 // backed signer *handles*, never key material, and every signature is computed
 // in hardware.
 //
-// To stay transparent when it takes over SSH_AUTH_SOCK, the agent delegates
-// everything it doesn't own to an upstream agent (e.g. the system ssh-agent):
-// List is the union, and Sign/Add/Remove/Lock/Unlock/Extension for non-enclave
-// keys forward upstream. With no upstream it is enclave-only.
+// Clients reach sinete by configuration — ssh_config IdentityAgent, or
+// SSH_AUTH_SOCK for git signing — not by taking over the session's agent. To
+// stay transparent, the agent delegates everything it doesn't own to the
+// upstream agent it inherited via SSH_AUTH_SOCK (normally the system
+// ssh-agent): List is the union, and Sign/Add/Remove/Lock/Unlock/Extension for
+// non-enclave keys forward upstream. With no upstream it is enclave-only.
 package agent
 
 import (
