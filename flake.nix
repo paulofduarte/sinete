@@ -190,7 +190,8 @@
           version = "0.0.0-dev";
           src = ./.;
 
-          # Vendor hash of the Go module set (incl. the paulofduarte/sks fork).
+          # Vendor hash of the Go module set (sks is upstream facebookincubator/sks;
+          # the paulofduarte/sks fork was dropped in v2, so there's no replace).
           # Regenerate with `nix build` if go.mod/go.sum change; it prints the new hash.
           vendorHash = "sha256-giOz1di8xBXD3NUM22Uog9ldN3Ux3ZSwkz6S+IfKPOc=";
 
