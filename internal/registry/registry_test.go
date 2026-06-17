@@ -24,7 +24,7 @@ func TestRoundTrip(t *testing.T) {
 	r.Add(Entry{
 		Name:      "work",
 		Label:     "sinete-work",
-		Tag:       "dev.sinete",
+		Tag:       "me.paulofduarte.sinete",
 		PublicKey: "ecdsa-sha2-nistp256 AAAA work",
 		Created:   time.Unix(0, 0).UTC(),
 	})
@@ -61,6 +61,53 @@ func TestOpenEmptyFile(t *testing.T) {
 	}
 	if got := len(r.List()); got != 0 {
 		t.Fatalf("got %d entries, want 0", got)
+	}
+}
+
+func TestConfigDefaultsAndOverrides(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "keys.json")
+	r, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Add(Entry{Name: "work", Label: "sinete-work", Tag: "me.paulofduarte.sinete"})
+	r.SetDefault(PresenceTTL, "10m")
+	if err := r.SetKeyConfig("work", PresenceTTL, "8h"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SetKeyConfig("missing", PresenceTTL, "1h"); err == nil {
+		t.Error("SetKeyConfig on an unknown key should error")
+	}
+	if err := r.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	r2, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r2.Effective("work", PresenceTTL); got != "8h" {
+		t.Errorf("work %s = %q, want 8h (per-key override)", PresenceTTL, got)
+	}
+	if got := r2.Effective("other", PresenceTTL); got != "10m" {
+		t.Errorf("other %s = %q, want 10m (default)", PresenceTTL, got)
+	}
+	if got := r2.Effective("work", PresenceMaxTTL); got != "" {
+		t.Errorf("unset setting = %q, want empty", got)
+	}
+}
+
+func TestOpenLegacyArrayFormat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "keys.json")
+	if err := os.WriteFile(path, []byte(`[{"name":"old","label":"sinete-old","tag":"me.paulofduarte.sinete"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Open(path)
+	if err != nil {
+		t.Fatalf("legacy array should parse: %v", err)
+	}
+	if _, ok := r.Get("old"); !ok {
+		t.Fatal("entry from legacy array missing")
 	}
 }
 

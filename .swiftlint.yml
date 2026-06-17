@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 Paulo Duarte
+# SPDX-License-Identifier: Apache-2.0
+#
+# swiftlint config. SwiftUI views run long, so the file/function length limits
+# are relaxed; everything else is the default rule set.
+included:
+  - ui
+file_length:
+  warning: 700
+  error: 1200
+function_body_length:
+  warning: 80
+  error: 120

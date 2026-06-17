@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 Paulo Duarte
+# SPDX-License-Identifier: Apache-2.0
+#
+# swiftformat config for ui/*.swift, run via treefmt (`nix fmt`).
+--swiftversion 6.3
+# Keep the trailing-closure `{` on the same line as a multiline call (matches
+# swiftlint's opening_brace rule, and reads better for SwiftUI modifiers).
+--disable wrapMultilineStatementBraces

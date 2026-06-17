@@ -26,6 +26,9 @@ jobs:
         run: nix flake check --accept-flake-config
       - name: golangci-lint
         run: nix develop --accept-flake-config -c golangci-lint run ./...
+      - name: swiftlint
+        if: runner.os == 'macOS'
+        run: nix develop --accept-flake-config -c swiftlint lint --strict
 
   build:
     needs: lint
