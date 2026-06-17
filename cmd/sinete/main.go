@@ -140,6 +140,11 @@ func openConfig() (*registry.Config, error) {
 // saveConfig signs and writes the config (a Touch ID prompt), then drops the
 // legacy keys.json — migration is complete once the signed registry exists.
 func saveConfig(cfg *registry.Config) error {
+	// Ensure the master key exists before signing: on a fresh install the first
+	// config write is what creates it (creating it needs no presence; signing does).
+	if err := enclave.EnsureMaster(); err != nil {
+		return fmt.Errorf("ensure master key: %w", err)
+	}
 	if err := cfg.Save(); err != nil {
 		return err
 	}
@@ -388,6 +393,16 @@ func cmdEnclaveCheck(args []string) error {
 		return fmt.Errorf("master signature does not verify: %w", err)
 	}
 	fmt.Println("  signature verified")
+
+	// The epoch + config-round-trip tests below advance the global epoch item.
+	// Snapshot it and restore it on return, so running this diagnostic never
+	// invalidates a real signed registry.json (a higher epoch would make it stale
+	// -> fail-safe defaults until the user re-runs `sinete config`).
+	origEpoch, _, err := enclave.Epoch()
+	if err != nil {
+		return fmt.Errorf("epoch snapshot: %w", err)
+	}
+	defer func() { _ = enclave.SetEpoch(origEpoch) }()
 
 	fmt.Println("== epoch item (no prompt expected) ==")
 	cur, ok, err := enclave.Epoch()

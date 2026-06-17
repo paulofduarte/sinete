@@ -38,11 +38,12 @@ import (
 )
 
 const (
-	nilSecKey       C.SecKeyRef       = 0
-	nilCFData       C.CFDataRef       = 0
-	nilCFString     C.CFStringRef     = 0
-	nilCFDictionary C.CFDictionaryRef = 0
-	nilCFError      C.CFErrorRef      = 0
+	nilSecKey           C.SecKeyRef           = 0
+	nilSecAccessControl C.SecAccessControlRef = 0
+	nilCFData           C.CFDataRef           = 0
+	nilCFString         C.CFStringRef         = 0
+	nilCFDictionary     C.CFDictionaryRef     = 0
+	nilCFError          C.CFErrorRef          = 0
 )
 
 // cfEpochToUnix converts a CFAbsoluteTime (seconds since 2001-01-01 UTC) to a
@@ -234,6 +235,9 @@ func createPresenceKey(label, tag string) error {
 	if eref != nilCFError {
 		C.CFRelease(C.CFTypeRef(eref))
 		return fmt.Errorf("enclave: SecAccessControlCreateWithFlags failed")
+	}
+	if access == nilSecAccessControl {
+		return fmt.Errorf("enclave: SecAccessControlCreateWithFlags returned nil")
 	}
 	defer C.CFRelease(C.CFTypeRef(access))
 

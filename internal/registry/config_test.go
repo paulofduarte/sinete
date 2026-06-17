@@ -104,6 +104,41 @@ func TestConfigTamperFallsBackToDefaults(t *testing.T) {
 	}
 }
 
+func TestConfigUnknownVersionUntrusted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.json")
+	fc := &fakeCrypto{}
+
+	c, _, _ := OpenConfig(path, fc)
+	c.SetKeyConfig("work", PresenceTTL, "5m")
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Bump the envelope version (outside the signed payload, so the signature is
+	// still valid). An unrecognised version must not be trusted.
+	data, _ := os.ReadFile(path)
+	var env cfgEnvelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		t.Fatal(err)
+	}
+	env.V = 99
+	out, _ := json.MarshalIndent(env, "", "  ")
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c2, trusted, err := OpenConfig(path, fc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trusted {
+		t.Fatal("config with an unknown envelope version must not be trusted")
+	}
+	if got := c2.Effective("work", PresenceTTL); got != "" {
+		t.Fatalf("unknown-version config Effective = %q, want built-in default (\"\")", got)
+	}
+}
+
 func TestConfigReplayRejected(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "registry.json")
 	fc := &fakeCrypto{}

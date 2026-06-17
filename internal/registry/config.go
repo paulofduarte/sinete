@@ -53,7 +53,10 @@ type cfgPayload struct {
 	Keys     map[string]map[string]string `json:"keys,omitempty"`
 }
 
-const cfgAlg = "ecdsa-sha2-nistp256"
+const (
+	cfgVersion = 1
+	cfgAlg     = "ecdsa-sha2-nistp256"
+)
 
 // Config is the signed config store: global defaults + per-key overrides. It is
 // keyed by key name and holds no key material — which keys exist is determined by
@@ -91,6 +94,12 @@ func OpenConfig(path string, crypto Crypto) (*Config, bool, error) {
 	// Any problem from here on is fail-safe: untrusted ⇒ built-in defaults.
 	var env cfgEnvelope
 	if err := json.Unmarshal(data, &env); err != nil {
+		c.trusted = false
+		return c, false, nil
+	}
+	if env.V != cfgVersion || env.Alg != cfgAlg {
+		// An unrecognised envelope version/alg is a future or corrupt format we
+		// can't vouch for — fall back to built-in defaults rather than trust it.
 		c.trusted = false
 		return c, false, nil
 	}
@@ -233,7 +242,7 @@ func (c *Config) Save() error {
 	if err != nil {
 		return fmt.Errorf("sign config: %w", err)
 	}
-	data, err := json.MarshalIndent(cfgEnvelope{V: 1, Alg: cfgAlg, Payload: payload, Sig: sig}, "", "  ")
+	data, err := json.MarshalIndent(cfgEnvelope{V: cfgVersion, Alg: cfgAlg, Payload: payload, Sig: sig}, "", "  ")
 	if err != nil {
 		return err
 	}
