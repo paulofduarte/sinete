@@ -14,7 +14,10 @@ var errUnsupported = errors.New("the app installer is only supported on macOS")
 func PlanInstall() (*Plan, error) { return nil, errUnsupported }
 
 // Install is unsupported off macOS.
-func Install(bool) (*State, error) { return nil, errUnsupported }
+func Install(replaceLink, skipLink bool) (*State, error) { return nil, errUnsupported }
 
 // Uninstall is unsupported off macOS.
 func Uninstall() error { return errUnsupported }
+
+// IsAdminUser is false off macOS.
+func IsAdminUser() bool { return false }

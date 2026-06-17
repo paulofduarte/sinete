@@ -227,6 +227,9 @@ func cmdSshSetup(args []string) error {
 	if err := os.WriteFile(pubPath, []byte(pub+"\n"), 0o644); err != nil { //nolint:gosec // a public key is not secret
 		return err
 	}
+	// Record it so uninstall removes only the .pub files sinete wrote (no-op when
+	// there is no install state, e.g. ssh-setup run standalone).
+	_ = install.RecordPub(pubPath)
 
 	fmt.Printf("wrote %s\n\n", pubPath)
 	fmt.Printf(`# commit signing
@@ -447,19 +450,21 @@ func cmdStatus(args []string) error {
 	bundle, _ := install.BundlePath()
 
 	out := struct {
-		Configured bool      `json:"configured"`
-		Method     string    `json:"method,omitempty"`
-		LinkPath   string    `json:"linkPath,omitempty"`
-		LoginItem  string    `json:"loginItem"`
-		BundlePath string    `json:"bundlePath,omitempty"`
-		KeyCount   int       `json:"keyCount"`
-		Keys       []keyInfo `json:"keys"`
+		Configured  bool      `json:"configured"`
+		Method      string    `json:"method,omitempty"`
+		LinkPath    string    `json:"linkPath,omitempty"`
+		LoginItem   string    `json:"loginItem"`
+		BundlePath  string    `json:"bundlePath,omitempty"`
+		UserIsAdmin bool      `json:"userIsAdmin"`
+		KeyCount    int       `json:"keyCount"`
+		Keys        []keyInfo `json:"keys"`
 	}{
-		Configured: st != nil,
-		LoginItem:  loginStatus,
-		BundlePath: bundle,
-		KeyCount:   len(keys),
-		Keys:       keys,
+		Configured:  st != nil,
+		LoginItem:   loginStatus,
+		BundlePath:  bundle,
+		UserIsAdmin: install.IsAdminUser(),
+		KeyCount:    len(keys),
+		Keys:        keys,
 	}
 	if st != nil {
 		out.Method = string(st.Method)
@@ -492,6 +497,7 @@ func cmdInstall(args []string) error {
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
 	plan := fs.Bool("plan", false, "print the install plan as JSON without acting")
 	replace := fs.Bool("replace-link", false, "replace an existing different link at the target")
+	skipLink := fs.Bool("skip-link", false, "register the login item but leave any existing link untouched")
 	_ = fs.Parse(args)
 
 	if *plan {
@@ -503,22 +509,50 @@ func cmdInstall(args []string) error {
 		enc.SetIndent("", "  ")
 		return enc.Encode(p)
 	}
-	st, err := install.Install(*replace)
+	st, err := install.Install(*replace, *skipLink)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("installed: %s link at %s; login item registered\n", st.Method, st.LinkPath)
+	if st.LinkPath != "" {
+		fmt.Printf("installed: %s link at %s; login item registered\n", st.Method, st.LinkPath)
+	} else {
+		fmt.Println("installed: login item registered (existing link left untouched)")
+	}
 	return nil
 }
 
-// cmdUninstall reverses the install (login item, link, PATH entry, state). It
-// does not remove enclave keys; key removal is a separate, confirmed action.
+// cmdUninstall reverses the install: login item, the link sinete created, the
+// PATH entry, the .pub files sinete wrote, and the state file. A kept (declined)
+// link or .pub is left alone. With --remove-keys it also deletes this user's
+// enclave keys (irreversible); other users' keys are untouched (their keychain).
 func cmdUninstall(args []string) error {
-	_ = args
+	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
+	removeKeys := fs.Bool("remove-keys", false, "also delete this user's enclave keys (irreversible)")
+	_ = fs.Parse(args)
+
 	if err := install.Uninstall(); err != nil {
 		return err
 	}
-	fmt.Println("uninstalled: login item, link, and PATH entry removed (keys kept)")
+	if !*removeKeys {
+		fmt.Println("uninstalled: login item, link, PATH, and generated .pub files removed (keys kept)")
+		return nil
+	}
+	reg, err := openRegistry()
+	if err != nil {
+		return err
+	}
+	removed := 0
+	for _, e := range reg.List() {
+		if err := enclave.OpenLabelTag(e.Label, e.Tag).Remove(); err != nil {
+			return fmt.Errorf("remove key %q: %w", e.Name, err)
+		}
+		reg.Remove(e.Name)
+		removed++
+	}
+	if err := reg.Save(); err != nil {
+		return err
+	}
+	fmt.Printf("uninstalled and removed %d key(s)\n", removed)
 	return nil
 }
 

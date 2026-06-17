@@ -10,12 +10,33 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/paulofduarte/sinete/internal/loginitem"
 )
+
+// IsAdminUser reports whether the current user belongs to the macOS admin group
+// (gid 80). The UI hides Uninstall for a non-admin facing an all-users install,
+// since removing the system link needs admin rights.
+func IsAdminUser() bool {
+	u, err := user.Current()
+	if err != nil {
+		return false
+	}
+	gids, err := u.GroupIds()
+	if err != nil {
+		return false
+	}
+	for _, gid := range gids {
+		if gid == "80" {
+			return true
+		}
+	}
+	return false
+}
 
 // PlanInstall computes the link plan for the running bundle without doing
 // anything, so the UI can confirm (e.g. an admin prompt or a link conflict).
@@ -41,31 +62,39 @@ func PlanInstall() (*Plan, error) {
 	return p, nil
 }
 
-// Install performs the PATH link, the PATH nudge (user method), the login-item
-// registration, and writes the install state. If the link path is occupied by a
-// different target and replace is false it returns ErrLinkConflict, untouched.
-func Install(replace bool) (*State, error) {
+// Install registers the login item and (unless skipLink) links `sinete` onto
+// PATH and nudges the PATH, then writes the install state. The link is recorded
+// in state only when sinete actually created it, so a skipped/declined link is
+// never removed on uninstall. With a conflicting link and replaceLink false (and
+// skipLink false) it returns ErrLinkConflict, untouched.
+func Install(replaceLink, skipLink bool) (*State, error) {
 	p, err := PlanInstall()
 	if err != nil {
 		return nil, err
 	}
-	if p.LinkConflicts && !replace {
-		return nil, ErrLinkConflict
+	st := &State{
+		Method:       p.Method,
+		BundlePath:   filepath.Dir(filepath.Dir(filepath.Dir(p.Target))),
+		ConfiguredAt: time.Now().UTC(),
 	}
-	if err := createLink(p); err != nil {
-		return nil, err
-	}
-
-	st := &State{Method: p.Method, LinkPath: p.LinkPath, BundlePath: filepath.Dir(filepath.Dir(filepath.Dir(p.Target))), ConfiguredAt: time.Now().UTC()}
-	if p.Method == User {
-		home, _ := os.UserHomeDir()
-		dir := userLinkDir(home)
-		added, err := ensurePathEntry(dir)
-		if err != nil {
+	if !skipLink {
+		if p.LinkConflicts && !replaceLink {
+			return nil, ErrLinkConflict
+		}
+		if err := createLink(p); err != nil {
 			return nil, err
 		}
-		if added {
-			st.PathEntry = dir
+		st.LinkPath = p.LinkPath
+		if p.Method == User {
+			home, _ := os.UserHomeDir()
+			dir := userLinkDir(home)
+			added, err := ensurePathEntry(dir)
+			if err != nil {
+				return nil, err
+			}
+			if added {
+				st.PathEntry = dir
+			}
 		}
 	}
 	if err := loginitem.Register(); err != nil {
@@ -93,6 +122,13 @@ func Uninstall() error {
 	}
 	keep(loginitem.Unregister())
 	if st != nil {
+		// Only files sinete actually created: a kept (declined) link has an empty
+		// LinkPath, and a kept .pub was never recorded in Pubs.
+		for _, pub := range st.Pubs {
+			if e := os.Remove(pub); e != nil && !errors.Is(e, os.ErrNotExist) {
+				keep(e)
+			}
+		}
 		if st.LinkPath != "" {
 			keep(removeLink(st.Method, st.LinkPath))
 		}

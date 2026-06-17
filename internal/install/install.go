@@ -37,8 +37,9 @@ const AdminLinkPath = "/usr/local/bin/sinete"
 // remove this file while preserving the keys.
 type State struct {
 	Method       Method    `json:"method"`
-	LinkPath     string    `json:"linkPath,omitempty"`
+	LinkPath     string    `json:"linkPath,omitempty"`  // empty if we kept a pre-existing link
 	PathEntry    string    `json:"pathEntry,omitempty"` // dir added to PATH (user installs)
+	Pubs         []string  `json:"pubs,omitempty"`      // .pub files we wrote (uninstall removes these)
 	BundlePath   string    `json:"bundlePath"`
 	ConfiguredAt time.Time `json:"configuredAt"`
 }
@@ -140,6 +141,23 @@ func DetectMethod(bundlePath, home string) Method {
 		return User
 	}
 	return Admin
+}
+
+// RecordPub adds a .pub path that sinete wrote to the install state, so uninstall
+// removes only the files sinete created. It is a no-op when there is no install
+// state (e.g. ssh-setup run standalone, before any install).
+func RecordPub(path string) error {
+	st, err := LoadState()
+	if err != nil || st == nil {
+		return err
+	}
+	for _, p := range st.Pubs {
+		if p == path {
+			return nil
+		}
+	}
+	st.Pubs = append(st.Pubs, path)
+	return st.Save()
 }
 
 // binPath is the bundle's sinete executable (the link target).
