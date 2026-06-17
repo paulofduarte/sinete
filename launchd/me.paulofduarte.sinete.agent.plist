@@ -1,29 +1,30 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Template installed by scripts/install-agent.sh (placeholders are filled in). -->
+<!-- Bundled at sinete.app/Contents/Library/LaunchAgents/ and registered with
+     SMAppService (`sinete service register`). BundleProgram is resolved relative
+     to the app bundle, so no install-time path substitution is needed. The agent
+     captures the upstream agent and republishes SSH_AUTH_SOCK itself (folded in
+     from the former sinete-agent.sh wrapper); --launchd opts that in, and a
+     no-argument launchd spawn is recognised via XPC_SERVICE_NAME. -->
 <plist version="1.0">
 <dict>
     <key>Label</key>
     <string>me.paulofduarte.sinete.agent</string>
-    <!-- Runs the wrapper, which captures the existing agent as upstream and
-         republishes SSH_AUTH_SOCK before exec'ing `__BIN__ agent --socket`. -->
+    <key>BundleProgram</key>
+    <string>Contents/MacOS/sinete</string>
     <key>ProgramArguments</key>
     <array>
-        <string>__WRAPPER__</string>
-        <string>__BIN__</string>
-        <string>__SOCKET__</string>
+        <string>sinete</string>
+        <string>agent</string>
+        <string>--launchd</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
-    <!-- Interactive so it runs in the Aqua session and is not throttled; the
+    <!-- Interactive so it runs in the Aqua session and isn't throttled; the
          Secure Enclave Touch ID prompt can only be presented from there. -->
     <key>ProcessType</key>
     <string>Interactive</string>
-    <key>StandardOutPath</key>
-    <string>__LOG__</string>
-    <key>StandardErrorPath</key>
-    <string>__LOG__</string>
 </dict>
 </plist>

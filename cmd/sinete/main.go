@@ -24,6 +24,7 @@ import (
 
 	"github.com/paulofduarte/sinete/internal/agent"
 	"github.com/paulofduarte/sinete/internal/enclave"
+	"github.com/paulofduarte/sinete/internal/loginitem"
 	"github.com/paulofduarte/sinete/internal/presence"
 	"github.com/paulofduarte/sinete/internal/registry"
 	"golang.org/x/crypto/ssh"
@@ -35,6 +36,13 @@ func main() {
 	// the sign-time Touch ID prompt here, and macOS only draws it from the main
 	// thread.
 	runtime.LockOSThread()
+
+	// launchd may spawn the bundled agent with no arguments (its plist uses
+	// BundleProgram, and ProgramArguments is not always honoured); XPC_SERVICE_NAME
+	// identifies our job, so normalise that launch to `agent`.
+	if len(os.Args) < 2 && os.Getenv("XPC_SERVICE_NAME") == loginitem.AgentLabel {
+		os.Args = append(os.Args, "agent")
+	}
 
 	if len(os.Args) < 2 {
 		usage()
@@ -48,6 +56,7 @@ func main() {
 		"ssh-setup": cmdSshSetup,
 		"delete":    cmdDelete,
 		"agent":     cmdAgent,
+		"service":   cmdService,
 		"sign":      cmdSign,
 		"present":   cmdPresent,
 		"config":    cmdConfig,
@@ -374,9 +383,35 @@ func cmdPresent(args []string) error {
 	return nil
 }
 
+// cmdService manages the launchd login item via SMAppService (macOS). The
+// installer uses it to register/unregister the agent bundled in sinete.app so
+// macOS attributes the login item to the app. Unlisted: it is an install hook,
+// not a daily command.
+func cmdService(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: sinete service <register|unregister|status>")
+	}
+	switch args[0] {
+	case "register":
+		return loginitem.Register()
+	case "unregister":
+		return loginitem.Unregister()
+	case "status":
+		s, err := loginitem.Status()
+		if err != nil {
+			return err
+		}
+		fmt.Println(s)
+		return nil
+	default:
+		return fmt.Errorf("unknown service action %q (want register, unregister, or status)", args[0])
+	}
+}
+
 func cmdAgent(args []string) error {
 	fs := flag.NewFlagSet("agent", flag.ExitOnError)
 	socket := fs.String("socket", "", "unix socket path (default: per-user runtime dir)")
+	launchd := fs.Bool("launchd", false, "managed by launchd: capture the upstream agent and republish SSH_AUTH_SOCK")
 	_ = fs.Parse(args)
 
 	path := *socket
@@ -396,6 +431,12 @@ func cmdAgent(args []string) error {
 		if err := os.Chmod(dir, 0o700); err != nil {
 			return err
 		}
+	}
+	// When launchd manages us, fold in the old wrapper's job: capture the
+	// session's upstream agent and republish SSH_AUTH_SOCK to this socket. The
+	// XPC_SERVICE_NAME check also covers a no-argument launchd spawn.
+	if *launchd || os.Getenv("XPC_SERVICE_NAME") == loginitem.AgentLabel {
+		prepareLaunchSession(path)
 	}
 	// Clear a stale socket from a previous run, but only if it really is a socket:
 	// never delete a regular file the user may have pointed --socket at.
@@ -476,8 +517,15 @@ func cmdAgent(args []string) error {
 	return nil
 }
 
-// defaultSocket returns the per-user agent socket path.
+// defaultSocket returns the per-user agent socket path. On macOS the launchd
+// agent and the CLI share a stable path under the user's Caches (also what gets
+// republished to SSH_AUTH_SOCK); elsewhere it follows XDG_RUNTIME_DIR.
 func defaultSocket() string {
+	if runtime.GOOS == "darwin" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, "Library", "Caches", "sinete", "agent.sock")
+		}
+	}
 	dir := os.Getenv("XDG_RUNTIME_DIR")
 	if dir == "" {
 		dir = os.TempDir()

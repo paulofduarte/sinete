@@ -54,6 +54,13 @@ if [ -d "$iconfile" ] && actool="$(xcrun --find actool 2>/dev/null)"; then
   fi
 fi
 
+# Bundle the launchd agent plist for SMAppService. It is registered (and the
+# login item attributed to this app) by `sinete service register`; codesign
+# seals it via Contents/_CodeSignature so SMAppService accepts it.
+mkdir -p "$app/Contents/Library/LaunchAgents"
+cp -f "$repo/launchd/me.paulofduarte.sinete.agent.plist" \
+  "$app/Contents/Library/LaunchAgents/me.paulofduarte.sinete.agent.plist"
+
 cat >"$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -64,7 +71,9 @@ cat >"$app/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key><string>sinete</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.0.0-dev</string>
-    <key>LSBackgroundOnly</key><true/>
+    <!-- Accessory app: no Dock icon, but it can present UI (the setup/status
+         panel on double-click). The launchd agent runs headless regardless. -->
+    <key>LSUIElement</key><true/>
 ${icon_keys}
 </dict>
 </plist>

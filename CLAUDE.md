@@ -18,8 +18,9 @@ internal/enclave/   # thin sks wrapper: create/open/sign/remove, pubkey export, 
 internal/agent/     # the ssh-agent (served via x/crypto ServeAgent)
 internal/registry/  # local key index + presence config at $XDG_CONFIG_HOME/sinete/keys.json
 internal/presence/  # user-presence check (macOS LocalAuthentication, cgo); stub elsewhere
-scripts/            # bundle-and-sign.sh, install-agent.sh, sinete-agent.sh (launchd wrapper)
-launchd/            # me.paulofduarte.sinete.agent.plist template
+internal/loginitem/ # register the launchd agent as a login item (macOS SMAppService, cgo); stub elsewhere
+scripts/            # bundle-and-sign.sh, install-agent.sh
+launchd/            # me.paulofduarte.sinete.agent.plist (bundled into the .app for SMAppService)
 ```
 
 ## The agent model (v2 — "Model B")
@@ -31,7 +32,7 @@ This is the core design; get it right:
 - **Presence is gated at sign time, in software, with a TTL cache** (after gpg-agent): the first signature with a key runs `presence.Authenticate` (Touch ID); within the per-key idle TTL — and an absolute cap — further signatures are silent. `presence-ttl` / `presence-max-ttl` are set with `sinete config`, stored in the registry, and re-read by the agent live.
 - **Presence windows are keyed by the public key, not the name** — a deleted-and-recreated key must re-authenticate.
 - **Superset / delegation.** The agent forwards everything it doesn't own (List ∪ upstream; Sign/Add/Remove/…) to an upstream agent (`SINETE_UPSTREAM_SOCK`), so taking over `SSH_AUTH_SOCK` loses nothing.
-- **launchd takeover.** `scripts/sinete-agent.sh` (the plist's program) captures the existing `SSH_AUTH_SOCK` as the upstream, republishes `SSH_AUTH_SOCK` to sinete, then execs the agent — transparent, zero `~/.ssh/config`.
+- **launchd takeover.** The agent is registered as a macOS login item with `SMAppService` (`sinete service register`, in `internal/loginitem`) from the *signed* bundle, so its plist lives at `Contents/Library/LaunchAgents/` and macOS attributes the item to sinete.app (name + icon, not a stray script). On launch the binary captures the existing `SSH_AUTH_SOCK` as the upstream and republishes `SSH_AUTH_SOCK` to sinete itself (`prepareLaunchSession`, folded in from the former `sinete-agent.sh` wrapper) — transparent, zero `~/.ssh/config`.
 
 ## Architecture notes that aren't obvious from the code
 
@@ -40,7 +41,7 @@ This is the core design; get it right:
 - **`sks.Key` is a `crypto.Signer`** wrapped with `ssh.NewSignerFromSigner`. It's a handle — `Sign` computes in the SE; for presence-less keys it does *not* prompt (the agent gates presence separately).
 - **`sks.NewKey(label, tag, useBiometrics, accessibleWhenUnlockedOnly, hash)`**: `hash == nil` generates, non-nil looks up. Algorithm is always ECDSA **P-256** (SE constraint). Upstream sks ignores `useBiometrics` on macOS — exactly what we want (presence-less keys), which is why the fork was dropped.
 - **The entitlement wall.** SE keys are bound to sinete's keychain access group, so only the signed sinete bundle can use them. `ssh`/`ssh-add`/any in-process library cannot reach the key — the agent is the only channel (this is why a PKCS#11 / SecurityKeyProvider can't give agentless access).
-- **Diagnostics.** `sinete sign` (direct sign) and `sinete present[-n]` (presence prompt) are unlisted diagnostic commands.
+- **Diagnostics & hooks.** `sinete sign` (direct sign) and `sinete present[-n]` (presence prompt) are unlisted diagnostics; `sinete service <register|unregister|status>` is the unlisted `SMAppService` install hook that `install-agent.sh` calls.
 
 ## Build & test
 
