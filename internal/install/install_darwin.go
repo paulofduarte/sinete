@@ -163,8 +163,14 @@ func createLink(p *Plan) error {
 	if err := os.MkdirAll(filepath.Dir(p.LinkPath), 0o755); err != nil {
 		return err
 	}
-	_ = os.Remove(p.LinkPath) // ln -sfn semantics: atomically replace
-	return os.Symlink(p.Target, p.LinkPath)
+	// Atomic replace (true ln -sfn semantics): symlink to a temp name in the same
+	// directory, then rename it over the target so the link is never missing.
+	tmp := p.LinkPath + ".tmp"
+	_ = os.Remove(tmp)
+	if err := os.Symlink(p.Target, tmp); err != nil {
+		return err
+	}
+	return os.Rename(tmp, p.LinkPath)
 }
 
 func removeLink(method Method, linkPath string) error {

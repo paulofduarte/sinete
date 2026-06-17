@@ -186,9 +186,10 @@ struct ReadyView: View {
             Spacer()
 
             HStack {
-                // An all-users install can only be removed by an admin (the
-                // system link needs admin rights), so hide Uninstall otherwise.
-                if !(status.method == "admin" && !status.userIsAdmin) {
+                // Removing a system /usr/local/bin link needs admin rights, so
+                // hide Uninstall for a non-admin only when such a link exists.
+                // Without one (e.g. --skip-link) uninstall needs no admin.
+                if !(status.method == "admin" && status.linkPath != nil && !status.userIsAdmin) {
                     Button("Uninstall", role: .destructive, action: uninstall)
                 }
                 Button("Reconfigure", action: onReconfigure)

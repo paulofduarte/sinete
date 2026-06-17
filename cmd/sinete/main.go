@@ -446,8 +446,14 @@ func cmdStatus(args []string) error {
 		}
 		keys = append(keys, keyInfo{e.Name, pub.Type(), ssh.FingerprintSHA256(pub)})
 	}
-	st, _ := install.LoadState()
-	loginStatus, _ := loginitem.Status()
+	st, err := install.LoadState()
+	if err != nil {
+		return fmt.Errorf("read install state: %w", err)
+	}
+	loginStatus, lerr := loginitem.Status()
+	if lerr != nil {
+		loginStatus = "unknown"
+	}
 	bundle, _ := install.BundlePath()
 
 	out := struct {
@@ -684,14 +690,10 @@ func defaultSocket() string {
 	return filepath.Join(dir, "sinete", "agent.sock")
 }
 
-// agentSocketHint guesses the agent socket for printed config: the session
-// SSH_AUTH_SOCK if set, else the launchd install's default path.
+// agentSocketHint returns sinete's own agent socket path for the ssh/git config
+// printed by ssh-setup. IdentityAgent / SSH_AUTH_SOCK must point at sinete, not
+// the inherited SSH_AUTH_SOCK (which on macOS is the system agent), so we use the
+// per-user default socket the launchd agent listens on.
 func agentSocketHint() string {
-	if s := os.Getenv("SSH_AUTH_SOCK"); s != "" {
-		return s
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, "Library", "Caches", "sinete", "agent.sock")
-	}
 	return defaultSocket()
 }

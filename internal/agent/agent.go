@@ -127,6 +127,7 @@ type Agent struct {
 
 	mu      sync.Mutex
 	windows map[string]window // keyed by the key's wire blob, not its name
+	gen     uint64            // bumped by Remove/RemoveAll; see signNow's write-back
 	jobs    chan signJob
 }
 
@@ -177,6 +178,7 @@ func (a *Agent) signNow(e registry.Entry, keyID string, data []byte) signResult 
 
 	a.mu.Lock()
 	w, ok := a.windows[keyID]
+	gen := a.gen
 	fresh := ok && now.Before(w.accessed.Add(idle)) && now.Before(w.created.Add(max))
 	a.mu.Unlock()
 
@@ -190,8 +192,12 @@ func (a *Agent) signNow(e registry.Entry, keyID string, data []byte) signResult 
 		w = window{created: now, accessed: now}
 	}
 
+	// Record the window only if no Remove/RemoveAll ran while we were prompting
+	// (ssh-add -d/-D): otherwise we'd resurrect a window the user just cleared.
 	a.mu.Lock()
-	a.windows[keyID] = w
+	if a.gen == gen {
+		a.windows[keyID] = w
+	}
 	a.mu.Unlock()
 
 	signer, err := a.signers.Signer(e.Label, e.Tag)
@@ -282,13 +288,16 @@ func (a *Agent) Remove(key ssh.PublicKey) error {
 	if _, ok := a.entryFor(key); ok {
 		a.mu.Lock()
 		delete(a.windows, string(key.Marshal()))
+		a.gen++
 		a.mu.Unlock()
 		return nil
 	}
 	if a.upstream != nil {
 		return a.upstream.Remove(key)
 	}
-	return nil
+	// Unknown key with no upstream: report failure (ssh-add -d of a key we don't
+	// have should not look like success).
+	return errNotFound
 }
 
 // RemoveAll forgets every enclave presence window and clears the upstream agent
@@ -296,6 +305,7 @@ func (a *Agent) Remove(key ssh.PublicKey) error {
 func (a *Agent) RemoveAll() error {
 	a.mu.Lock()
 	a.windows = map[string]window{}
+	a.gen++
 	a.mu.Unlock()
 	if a.upstream != nil {
 		return a.upstream.RemoveAll()
