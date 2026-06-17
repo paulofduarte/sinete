@@ -94,6 +94,9 @@ func TestHasConfig(t *testing.T) {
 		{"no config", `{"keys":[{"name":"a","label":"sinete-a","tag":"t"}]}`, false},
 		{"global default", `{"defaults":{"presence-ttl":"10m"}}`, true},
 		{"per-key override", `{"keys":[{"name":"a","label":"sinete-a","tag":"t","config":{"presence-ttl":"5m"}}]}`, true},
+		{"empty default value", `{"defaults":{"presence-ttl":""}}`, false},
+		{"unknown default setting", `{"defaults":{"bogus":"x"}}`, false},
+		{"config under invalid name", `{"keys":[{"name":"bad name!","label":"sinete-bad","tag":"t","config":{"presence-ttl":"5m"}}]}`, false},
 	}
 	for _, c := range cases {
 		r, err := Open(writeKeysJSON(t, c.content))

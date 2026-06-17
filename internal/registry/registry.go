@@ -168,15 +168,24 @@ func (r *Registry) List() []Entry {
 	return out
 }
 
-// HasConfig reports whether this legacy registry carries any config — global
-// defaults or per-key overrides — i.e. whether a migration is worth doing.
+// HasConfig reports whether this legacy registry carries config that would
+// actually migrate — i.e. it mirrors MergeLegacy's filter (a recognised setting
+// with a non-empty value, under a valid key name for per-key overrides). This
+// keeps the "migration pending" note from firing when nothing real would move.
 func (r *Registry) HasConfig() bool {
-	if len(r.defaults) > 0 {
-		return true
+	for k, v := range r.defaults {
+		if v != "" && ValidSetting(k) {
+			return true
+		}
 	}
 	for _, e := range r.entries {
-		if len(e.Config) > 0 {
-			return true
+		if ValidName(e.Name) != nil {
+			continue
+		}
+		for setting, val := range e.Config {
+			if val != "" && ValidSetting(setting) {
+				return true
+			}
 		}
 	}
 	return false
