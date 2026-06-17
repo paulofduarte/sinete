@@ -69,6 +69,8 @@ func main() {
 		"sign":      cmdSign,
 		"present":   cmdPresent,
 		"config":    cmdConfig,
+		// unlisted diagnostic for the signed-registry enclave layer
+		"_enclave-check": cmdEnclaveCheck,
 	}
 	cmd, ok := cmds[os.Args[1]]
 	if !ok {
@@ -314,6 +316,69 @@ func cmdSign(args []string) error {
 		return err
 	}
 	fmt.Printf("signed with %s (%d-byte signature)\n", sig.Format, len(sig.Blob))
+	return nil
+}
+
+// cmdEnclaveCheck is an unlisted diagnostic for the signed-registry enclave layer
+// (phase 1): it enumerates user keys, ensures+exercises the presence-enforced
+// master key, and round-trips the epoch item. Run it from the signed bundle. The
+// master-key signature is meant to prompt for Touch ID — that prompt confirms the
+// ACL is enforced; pubkey and epoch reads must NOT prompt.
+func cmdEnclaveCheck(args []string) error {
+	fmt.Println("== enumerate user keys ==")
+	keys, err := enclave.List()
+	if err != nil {
+		return fmt.Errorf("enumerate: %w", err)
+	}
+	for _, k := range keys {
+		created := "?"
+		if !k.Created.IsZero() {
+			created = k.Created.Format(time.RFC3339)
+		}
+		fmt.Printf("  %-20s %s  created=%s\n", k.Name, ssh.FingerprintSHA256(k.PublicKey), created)
+	}
+	fmt.Printf("  (%d key(s))\n", len(keys))
+
+	fmt.Println("== master key ==")
+	if err := enclave.EnsureMaster(); err != nil {
+		return fmt.Errorf("ensure master: %w", err)
+	}
+	mpub, err := enclave.MasterPublicKey()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("  master pub (no prompt expected): %s\n", ssh.FingerprintSHA256(mpub))
+
+	fmt.Println("== master sign (expect a Touch ID prompt) ==")
+	msg := []byte("sinete enclave-check")
+	sig, err := enclave.MasterSign(msg)
+	if err != nil {
+		return fmt.Errorf("master sign: %w", err)
+	}
+	if err := mpub.Verify(msg, sig); err != nil {
+		return fmt.Errorf("master signature does not verify: %w", err)
+	}
+	fmt.Println("  signature verified")
+
+	fmt.Println("== epoch item (no prompt expected) ==")
+	cur, ok, err := enclave.Epoch()
+	if err != nil {
+		return fmt.Errorf("epoch get: %w", err)
+	}
+	fmt.Printf("  current: %d (exists=%v)\n", cur, ok)
+	if err := enclave.SetEpoch(cur + 1); err != nil {
+		return fmt.Errorf("epoch set: %w", err)
+	}
+	next, _, err := enclave.Epoch()
+	if err != nil {
+		return fmt.Errorf("epoch get after set: %w", err)
+	}
+	if next != cur+1 {
+		return fmt.Errorf("epoch did not persist: got %d, want %d", next, cur+1)
+	}
+	fmt.Printf("  after increment: %d\n", next)
+
+	fmt.Println("all enclave-check steps passed")
 	return nil
 }
 
