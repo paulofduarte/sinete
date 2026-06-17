@@ -133,6 +133,46 @@ func SetEpoch(v uint64) error {
 	return keychainItemSet(EpochService, EpochAccount, b[:])
 }
 
+// ConfigCrypto adapts the master key and the epoch item to the registry's
+// signing needs: it signs and verifies the config envelope and tracks the replay
+// epoch. Sign triggers Touch ID (the master key's ACL) and must run on the main
+// OS thread; Verify, Epoch and SetEpoch do not prompt. Its method set satisfies
+// registry.Crypto structurally (no import cycle).
+type ConfigCrypto struct{}
+
+// Sign signs the config payload with the master key (prompts for presence),
+// returning the ssh.Signature in wire form.
+func (ConfigCrypto) Sign(payload []byte) ([]byte, error) {
+	sig, err := MasterSign(payload)
+	if err != nil {
+		return nil, err
+	}
+	return ssh.Marshal(*sig), nil
+}
+
+// Verify reports whether sig is a valid master-key signature over payload. It
+// reads the master public key (no prompt) and returns false on any failure.
+func (ConfigCrypto) Verify(payload, sig []byte) bool {
+	pub, err := MasterPublicKey()
+	if err != nil {
+		return false
+	}
+	var s ssh.Signature
+	if err := ssh.Unmarshal(sig, &s); err != nil {
+		return false
+	}
+	return pub.Verify(payload, &s) == nil
+}
+
+// Epoch returns the current registry epoch (0 if the item does not exist yet).
+func (ConfigCrypto) Epoch() (uint64, error) {
+	v, _, err := Epoch()
+	return v, err
+}
+
+// SetEpoch stores the registry epoch.
+func (ConfigCrypto) SetEpoch(v uint64) error { return SetEpoch(v) }
+
 // sshPubFromRaw parses an ANSI X9.63 uncompressed P-256 point (0x04‖X‖Y, 65
 // bytes) into an ssh.PublicKey.
 func sshPubFromRaw(raw []byte) (ssh.PublicKey, error) {
