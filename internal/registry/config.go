@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -231,6 +232,10 @@ func (c *Config) Save() error {
 	cur, err := c.crypto.Epoch()
 	if err != nil {
 		return fmt.Errorf("read epoch: %w", err)
+	}
+	if cur == math.MaxUint64 {
+		// Refuse rather than wrap to 0, which would break replay protection.
+		return fmt.Errorf("config epoch exhausted")
 	}
 	next := cur + 1
 

@@ -176,11 +176,13 @@ func enumerateKeys(tag string) ([]rawKey, error) {
 			created = int64(C.CFDateGetAbsoluteTime(d)) + cfEpochToUnix
 		}
 
-		var pub []byte
-		if ref := C.sinete_dict_keyref(dict); ref != nilSecKey {
-			if p, perr := publicKeyBytes(ref); perr == nil {
-				pub = p
-			}
+		ref := C.sinete_dict_keyref(dict)
+		if ref == nilSecKey {
+			return nil, fmt.Errorf("enclave: key %q has no key reference", label)
+		}
+		pub, perr := publicKeyBytes(ref)
+		if perr != nil {
+			return nil, fmt.Errorf("enclave: key %q: %w", label, perr)
 		}
 
 		keys = append(keys, rawKey{label: label, pub: pub, created: created})

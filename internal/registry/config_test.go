@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -136,6 +137,17 @@ func TestConfigUnknownVersionUntrusted(t *testing.T) {
 	}
 	if got := c2.Effective("work", PresenceTTL); got != "" {
 		t.Fatalf("unknown-version config Effective = %q, want built-in default (\"\")", got)
+	}
+}
+
+func TestConfigEpochOverflowRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.json")
+	fc := &fakeCrypto{epoch: math.MaxUint64}
+
+	c, _, _ := OpenConfig(path, fc)
+	c.SetDefault(PresenceTTL, "5m")
+	if err := c.Save(); err == nil {
+		t.Fatal("Save should refuse when the epoch would overflow to 0")
 	}
 }
 
