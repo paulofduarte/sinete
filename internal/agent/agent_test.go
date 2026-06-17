@@ -183,6 +183,26 @@ func TestSignPresenceDenied(t *testing.T) {
 	}
 }
 
+// A failed signature must not open the presence window: the user authenticated
+// but no signature was produced, so the next attempt has to prompt again.
+func TestFailedSignDoesNotCachePresence(t *testing.T) {
+	e, pub, _ := testEntry(t, "work")
+	c := &counter{}
+	store := fakeStore{entries: []registry.Entry{e}, idle: time.Hour, max: time.Hour}
+	// No signer for this label, so Signer() fails after the presence prompt.
+	a := New(store, fakeSource{map[string]ssh.Signer{}}, c.present, nil)
+	go a.Run()
+
+	for i := 0; i < 2; i++ {
+		if _, err := a.Sign(pub, []byte("data")); err == nil {
+			t.Fatalf("sign %d: expected failure when the signer is unavailable", i)
+		}
+	}
+	if got := c.count(); got != 2 {
+		t.Fatalf("present called %d times, want 2 (a failed signature must not open the window)", got)
+	}
+}
+
 func TestRemoveAllForgetsWindow(t *testing.T) {
 	e, pub, signer := testEntry(t, "work")
 	c := &counter{}

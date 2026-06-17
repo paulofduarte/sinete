@@ -287,7 +287,20 @@ struct ReadyView: View {
         let contents = (macos as NSString).deletingLastPathComponent
         let bundle = (contents as NSString).deletingLastPathComponent
         if bundle.hasSuffix(".app") {
-            try? FileManager.default.trashItem(at: URL(fileURLWithPath: bundle), resultingItemURL: nil)
+            do {
+                try FileManager.default.trashItem(at: URL(fileURLWithPath: bundle), resultingItemURL: nil)
+            } catch {
+                // Trashing can fail (e.g. a bundle in /Applications without rights).
+                // Uninstall already succeeded, so tell the user to remove it by hand
+                // rather than quitting silently while the app is still in place.
+                let alert = NSAlert()
+                alert.messageText = "Couldn't move sinete to the Trash"
+                alert.informativeText = """
+                Uninstall finished, but \(bundle) couldn't be moved to the Trash \
+                (\(error.localizedDescription)). Delete the app manually.
+                """
+                alert.runModal()
+            }
         }
         NSApp.terminate(nil)
     }
@@ -398,11 +411,12 @@ struct SetupView: View {
                plan.linkConflicts {
                 let choice = DispatchQueue.main.sync { () -> Int in
                     let alert = NSAlert()
-                    alert.messageText = "A different link already exists"
+                    alert.messageText = "Something already exists at the link path"
                     alert.informativeText = """
-                    \(plan.linkPath) already points elsewhere. Replace it so it \
-                    points at sinete, or keep the existing one? If you keep it, \
-                    sinete isn't added to PATH and won't remove it on uninstall.
+                    \(plan.linkPath) already exists and isn't sinete's link. \
+                    Replace it so it points at sinete, or keep the existing one? \
+                    If you keep it, sinete isn't added to PATH and won't remove \
+                    it on uninstall.
                     """
                     alert.addButton(withTitle: "Replace")
                     alert.addButton(withTitle: "Keep existing")

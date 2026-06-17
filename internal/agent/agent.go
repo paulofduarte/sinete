@@ -192,7 +192,18 @@ func (a *Agent) signNow(e registry.Entry, keyID string, data []byte) signResult 
 		w = window{created: now, accessed: now}
 	}
 
-	// Record the window only if no Remove/RemoveAll ran while we were prompting
+	signer, err := a.signers.Signer(e.Label, e.Tag)
+	if err != nil {
+		return signResult{err: err}
+	}
+	sig, err := signer.Sign(rand.Reader, data)
+	if err != nil {
+		return signResult{err: err}
+	}
+
+	// Open/refresh the presence window only after a signature actually succeeds,
+	// so a failed signer lookup or sign doesn't let the next attempt skip the
+	// prompt. And only if no Remove/RemoveAll ran while we prompted/signed
 	// (ssh-add -d/-D): otherwise we'd resurrect a window the user just cleared.
 	a.mu.Lock()
 	if a.gen == gen {
@@ -200,12 +211,7 @@ func (a *Agent) signNow(e registry.Entry, keyID string, data []byte) signResult 
 	}
 	a.mu.Unlock()
 
-	signer, err := a.signers.Signer(e.Label, e.Tag)
-	if err != nil {
-		return signResult{err: err}
-	}
-	sig, err := signer.Sign(rand.Reader, data)
-	return signResult{sig: sig, err: err}
+	return signResult{sig: sig}
 }
 
 // signEnclave dispatches an enclave signature to the main-thread Run. keyID is
