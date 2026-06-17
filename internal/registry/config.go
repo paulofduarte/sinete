@@ -203,14 +203,24 @@ func (c *Config) Names() []string {
 // and per-key overrides) into this store, without overwriting values already set.
 // Used once to migrate config off the old format; the next Save persists it.
 func (c *Config) MergeLegacy(r *Registry) {
+	// keys.json is unsigned, so filter what we carry forward: only recognised
+	// settings, and only valid key names. This stops unexpected setting keys or
+	// invalid/hostile names from being signed into registry.json and surfacing in
+	// printConfig or future consumers.
 	for k, v := range r.Defaults() {
+		if v == "" || !ValidSetting(k) {
+			continue
+		}
 		if _, ok := c.defaults[k]; !ok {
 			c.defaults[k] = v
 		}
 	}
 	for _, e := range r.List() {
+		if ValidName(e.Name) != nil {
+			continue
+		}
 		for setting, val := range e.Config {
-			if val == "" {
+			if val == "" || !ValidSetting(setting) {
 				continue
 			}
 			if c.keys[e.Name] == nil {

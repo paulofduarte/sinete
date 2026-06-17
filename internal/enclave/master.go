@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/paulofduarte/sinete/internal/registry"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -59,12 +60,20 @@ func List() ([]Listed, error) {
 	if err != nil {
 		return nil, err
 	}
+	prefix := DefaultLabelPrefix + "-"
 	out := make([]Listed, 0, len(raws))
 	for _, r := range raws {
-		if reserved(r.label) {
+		// Skip internal keys and any with our tag but an unexpected label: only a
+		// "sinete-<name>" label maps to a user key, and the derived name must be a
+		// valid sinete name (so callers building paths / authorized_keys lines from
+		// it are safe).
+		if reserved(r.label) || !strings.HasPrefix(r.label, prefix) {
 			continue
 		}
-		name := strings.TrimPrefix(r.label, DefaultLabelPrefix+"-")
+		name := strings.TrimPrefix(r.label, prefix)
+		if registry.ValidName(name) != nil {
+			continue
+		}
 		pub, err := sshPubFromRaw(r.pub)
 		if err != nil {
 			return nil, fmt.Errorf("enclave: key %q: %w", r.label, err)
