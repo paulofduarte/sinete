@@ -10,12 +10,12 @@ import (
 	"testing"
 )
 
-// Keys now come from secure-element enumeration (which needs the entitled
-// bundle), so the success path is exercised on-device via `sinete _enclave-check`
-// and manual `ssh-setup`. Here we cover the error paths that don't touch the
-// Enclave: an invalid name is rejected before any keychain access, and a valid
-// but nonexistent key (enumeration returns nothing for an unentitled process)
-// errors rather than writing a file.
+// Keys come from secure-element enumeration (which needs the entitled bundle), so
+// the success path is exercised on-device via `sinete _enclave-check` and manual
+// `ssh-setup`. Here we cover the error paths: an invalid name is rejected before
+// any keychain access, and a valid name with no usable key — enumeration errors
+// or finds no match for an unentitled test process — yields an error rather than
+// writing a file.
 func TestSshSetupErrors(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "k.pub")
 

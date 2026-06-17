@@ -229,6 +229,19 @@ func (c *Config) MergeLegacy(r *Registry) {
 // (built-in defaults) — fail-safe; re-applying the change fixes it. Save requires
 // user presence (the master-key signature prompts).
 func (c *Config) Save() error {
+	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
+		return err
+	}
+	// Serialise concurrent writers so the epoch read → sign → write → advance is
+	// atomic. Without it two processes could both read epoch N and sign distinct
+	// payloads at N+1, letting one be replayed later (it would still match the
+	// keychain epoch). The lock is held across the signing prompt.
+	unlock, err := lockConfig(c.path)
+	if err != nil {
+		return fmt.Errorf("lock config: %w", err)
+	}
+	defer unlock()
+
 	cur, err := c.crypto.Epoch()
 	if err != nil {
 		return fmt.Errorf("read epoch: %w", err)
@@ -252,9 +265,6 @@ func (c *Config) Save() error {
 		return err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
-		return err
-	}
 	tmp := c.path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
