@@ -142,6 +142,13 @@
 
             echo "--- signature / profile ---"
             /usr/bin/codesign -dvvv "$app" 2>&1 | grep -iE "TeamIdentifier|provision" || true
+
+            # Re-register with LaunchServices so Finder shows the rebuilt bundle's
+            # icon instead of a cached one (a shell-side rm+recreate at the same
+            # path doesn't notify LaunchServices, unlike a delete in Finder).
+            lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+            if [ -x "$lsregister" ]; then "$lsregister" -f "$app" >/dev/null 2>&1 || true; fi
+
             echo "built + signed: $app"
           '';
         };
