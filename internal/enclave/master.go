@@ -105,7 +105,15 @@ func EnsureMaster() error {
 	if _, err := masterKey().PublicKey(); err == nil {
 		return nil // already present
 	}
-	return createPresenceKey(MasterLabel, Tag)
+	if err := createPresenceKey(MasterLabel, Tag); err != nil {
+		// Tolerate a concurrent creator: if the key now exists, another process
+		// won the race and that is success, not a duplicate-item failure.
+		if _, perr := masterKey().PublicKey(); perr == nil {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // masterKey opens the master key via sks (by label+tag). Signing through it

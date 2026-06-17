@@ -74,9 +74,9 @@ func (EnclaveSource) Signer(label, tag string) (ssh.Signer, error) {
 // EnclaveStore is the production Store. Keys are enumerated from the secure
 // element — the source of truth for which keys exist — and TTLs come from the
 // signed config registry, both re-read per call so `sinete generate`/`config`
-// take effect without an agent restart. A config that fails verification
-// (tampered, stale, or corrupt) yields built-in TTLs: Effective returns "" when
-// the store is untrusted, so this is the fail-safe path.
+// take effect without an agent restart. A config that fails verification (for
+// any reason) yields built-in TTLs: Effective returns "" when the store is
+// untrusted, so this is the fail-safe path.
 type EnclaveStore struct{}
 
 // Keys enumerates the secure element and presents each key as a registry.Entry

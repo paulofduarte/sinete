@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Paulo Duarte
 // SPDX-License-Identifier: Apache-2.0
 
-// Package registry maintains sinete's local index of enclave keys.
+// Package registry holds sinete's per-key presence config.
 //
-// sks cannot enumerate an application's keys, so sinete records each key it
-// creates here, mapping a human name to its enclave (label, tag) and cached
-// public key. The index holds no secret material; it lets list, export and
-// fingerprint run without touching the secure hardware.
+// Which keys exist is determined by enumerating the secure element, not by this
+// package. Config lives in a single signed file (see Config / config.go):
+// registry.json, whose payload is signed by the enclave master key and bound to
+// a replay epoch, so tampering or replay is detected and falls back to built-in
+// defaults. The legacy Entry-based Registry (this file) is now a read-only loader
+// for an old keys.json, used once to migrate its config into the signed Config.
 package registry
 
 import (
