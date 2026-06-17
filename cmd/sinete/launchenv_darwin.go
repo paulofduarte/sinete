@@ -10,7 +10,42 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
+
+	"github.com/paulofduarte/sinete/internal/loginitem"
 )
+
+// launchUIIfDoubleClicked hands off to the bundled SwiftUI panel (sinete-ui, a
+// sibling in Contents/MacOS) when this binary was double-clicked in Finder: no
+// arguments, not the launchd agent, and no controlling terminal. It execs the UI
+// in place and does not return on success; it returns (doing nothing) when this
+// is a normal CLI run or there is no UI binary, so `sinete` in a terminal still
+// prints usage.
+func launchUIIfDoubleClicked() {
+	if len(os.Args) >= 2 || os.Getenv("XPC_SERVICE_NAME") == loginitem.AgentLabel {
+		return
+	}
+	// A terminal run has a controlling terminal; a Finder double-click (or `open`)
+	// does not. We can't key off stdout being a char device -- a Finder launch
+	// wires stdio to /dev/null, which IS a char device -- so we probe /dev/tty,
+	// which opens only when the process has a controlling terminal.
+	if f, err := os.OpenFile("/dev/tty", os.O_RDONLY, 0); err == nil {
+		_ = f.Close()
+		return // controlling terminal present: a CLI run, show usage
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	if resolved, e := filepath.EvalSymlinks(exe); e == nil {
+		exe = resolved
+	}
+	ui := filepath.Join(filepath.Dir(exe), "sinete-ui")
+	if _, err := os.Stat(ui); err != nil {
+		return
+	}
+	_ = syscall.Exec(ui, []string{ui}, os.Environ())
+}
 
 // prepareLaunchSession folds the old scripts/sinete-agent.sh wrapper into the
 // binary. When launchd starts the agent it captures the session's existing

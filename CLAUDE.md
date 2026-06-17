@@ -19,7 +19,9 @@ internal/agent/     # the ssh-agent (served via x/crypto ServeAgent)
 internal/registry/  # local key index + presence config at $XDG_CONFIG_HOME/sinete/keys.json
 internal/presence/  # user-presence check (macOS LocalAuthentication, cgo); stub elsewhere
 internal/loginitem/ # register the launchd agent as a login item (macOS SMAppService, cgo); stub elsewhere
-scripts/            # bundle-and-sign.sh, install-agent.sh
+internal/install/   # app-driven setup/teardown: link + login item + install.json state; stub elsewhere
+ui/                 # SwiftUI control panel (sinete-ui), compiled by `nix run .#bundle`
+scripts/            # install-agent.sh
 launchd/            # me.paulofduarte.sinete.agent.plist (bundled into the .app for SMAppService)
 ```
 
@@ -59,10 +61,11 @@ nix flake check               # formatting + golangci-lint(*) + reuse + shellche
 **Secure-Enclave ops require a signed `.app` bundle.** An unsigned/unentitled binary is rejected by the SE (`-34018`) or SIGKILLed by AMFI, so the agent (and `generate`/`sign`/`delete`) must run from the bundle:
 
 ```sh
-nix build
-bash scripts/bundle-and-sign.sh /path/to/<dev>.provisionprofile
-bash scripts/install-agent.sh ./sinete.app   # launchd agent + /usr/local/bin/sinete symlink
+nix run .#bundle -- /path/to/<dev>.provisionprofile   # builds + signs sinete.app
+bash scripts/install-agent.sh ./sinete.app            # SMAppService login item + symlink
 ```
+
+`nix run .#bundle` (macOS only) folds in the former `bundle-and-sign.sh`: it takes the nix-built `sinete`, compiles `ui/SineteUI.swift` to `sinete-ui` with `xcrun swiftc` (nixpkgs swift is too old for the macOS-26 SwiftUI module), runs `actool`, assembles the `.app`, and signs — the unentitled `sinete-ui` first, then the bundle (which signs `sinete` with the SE entitlements). Or double-click `sinete.app`: the SwiftUI panel runs the setup wizard / shows the ready screen.
 
 Prereqs: an Apple Development identity, the WWDR **G3** intermediate, and a dev provisioning profile for this device + App ID `me.paulofduarte.*`. Note the presence prompt (LocalAuthentication) works even from a bare binary; only SE ops need the bundle.
 

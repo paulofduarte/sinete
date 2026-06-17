@@ -9,3 +9,6 @@ package main
 // republish into, so the upstream (if any) comes from SINETE_UPSTREAM_SOCK as set
 // by the caller.
 func prepareLaunchSession(string) {}
+
+// launchUIIfDoubleClicked is a no-op off macOS (there is no bundled SwiftUI app).
+func launchUIIfDoubleClicked() {}

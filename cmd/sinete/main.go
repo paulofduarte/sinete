@@ -10,6 +10,7 @@ package main
 
 import (
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/paulofduarte/sinete/internal/agent"
 	"github.com/paulofduarte/sinete/internal/enclave"
+	"github.com/paulofduarte/sinete/internal/install"
 	"github.com/paulofduarte/sinete/internal/loginitem"
 	"github.com/paulofduarte/sinete/internal/presence"
 	"github.com/paulofduarte/sinete/internal/registry"
@@ -44,6 +46,10 @@ func main() {
 		os.Args = append(os.Args, "agent")
 	}
 
+	// A Finder double-click launches this (the bundle's main, entitled executable)
+	// with no arguments and no controlling terminal; hand off to the SwiftUI panel.
+	launchUIIfDoubleClicked()
+
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
@@ -57,6 +63,9 @@ func main() {
 		"delete":    cmdDelete,
 		"agent":     cmdAgent,
 		"service":   cmdService,
+		"install":   cmdInstall,
+		"uninstall": cmdUninstall,
+		"status":    cmdStatus,
 		"sign":      cmdSign,
 		"present":   cmdPresent,
 		"config":    cmdConfig,
@@ -83,6 +92,7 @@ sinete manages the secure-element key storage:
   ssh-setup <name>  write the .pub + print ssh/git config to use the key
   delete <name>     delete a key from the enclave and the index
   config            view/set presence TTLs (--list, --key <name>)
+  status            show install + key state (--json for the app UI)
   agent             run the ssh-agent (foreground)
 
 The agent advertises every created key, so ssh/git use them automatically once
@@ -406,6 +416,110 @@ func cmdService(args []string) error {
 	default:
 		return fmt.Errorf("unknown service action %q (want register, unregister, or status)", args[0])
 	}
+}
+
+// cmdStatus reports install + key state. With --json it emits the machine form
+// the app UI reads to choose between the setup wizard and the ready screen.
+func cmdStatus(args []string) error {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	asJSON := fs.Bool("json", false, "emit JSON for the app UI")
+	_ = fs.Parse(args)
+
+	reg, err := openRegistry()
+	if err != nil {
+		return err
+	}
+	type keyInfo struct {
+		Name        string `json:"name"`
+		Type        string `json:"type"`
+		Fingerprint string `json:"fingerprint"`
+	}
+	keys := make([]keyInfo, 0)
+	for _, e := range reg.List() {
+		pub, _, _, _, perr := ssh.ParseAuthorizedKey([]byte(e.PublicKey))
+		if perr != nil {
+			return fmt.Errorf("registry key %q: %w", e.Name, perr)
+		}
+		keys = append(keys, keyInfo{e.Name, pub.Type(), ssh.FingerprintSHA256(pub)})
+	}
+	st, _ := install.LoadState()
+	loginStatus, _ := loginitem.Status()
+	bundle, _ := install.BundlePath()
+
+	out := struct {
+		Configured bool      `json:"configured"`
+		Method     string    `json:"method,omitempty"`
+		LinkPath   string    `json:"linkPath,omitempty"`
+		LoginItem  string    `json:"loginItem"`
+		BundlePath string    `json:"bundlePath,omitempty"`
+		KeyCount   int       `json:"keyCount"`
+		Keys       []keyInfo `json:"keys"`
+	}{
+		Configured: st != nil,
+		LoginItem:  loginStatus,
+		BundlePath: bundle,
+		KeyCount:   len(keys),
+		Keys:       keys,
+	}
+	if st != nil {
+		out.Method = string(st.Method)
+		out.LinkPath = st.LinkPath
+	}
+
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
+	if out.Configured {
+		fmt.Printf("configured: yes (%s, %s)\n", out.Method, out.LinkPath)
+	} else {
+		fmt.Println("configured: no")
+	}
+	fmt.Printf("login item: %s\n", out.LoginItem)
+	fmt.Printf("keys:       %d\n", out.KeyCount)
+	for _, k := range keys {
+		fmt.Printf("  %-20s %s %s\n", k.Name, k.Type, k.Fingerprint)
+	}
+	return nil
+}
+
+// cmdInstall runs the app-driven setup: link `sinete` onto PATH (admin
+// /usr/local/bin or per-user ~/.local/bin) and register the login item. --plan
+// prints the JSON plan (so the UI can confirm an admin prompt or a link
+// conflict) without acting; --replace-link overwrites a conflicting link.
+func cmdInstall(args []string) error {
+	fs := flag.NewFlagSet("install", flag.ExitOnError)
+	plan := fs.Bool("plan", false, "print the install plan as JSON without acting")
+	replace := fs.Bool("replace-link", false, "replace an existing different link at the target")
+	_ = fs.Parse(args)
+
+	if *plan {
+		p, err := install.PlanInstall()
+		if err != nil {
+			return err
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(p)
+	}
+	st, err := install.Install(*replace)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("installed: %s link at %s; login item registered\n", st.Method, st.LinkPath)
+	return nil
+}
+
+// cmdUninstall reverses the install (login item, link, PATH entry, state). It
+// does not remove enclave keys; key removal is a separate, confirmed action.
+func cmdUninstall(args []string) error {
+	_ = args
+	if err := install.Uninstall(); err != nil {
+		return err
+	}
+	fmt.Println("uninstalled: login item, link, and PATH entry removed (keys kept)")
+	return nil
 }
 
 func cmdAgent(args []string) error {
