@@ -167,16 +167,14 @@ func cmdGenerate(args []string) error {
 }
 
 func cmdList(args []string) error {
-	reg, err := openRegistry()
+	// Keys are enumerated from the secure element, the source of truth for which
+	// keys exist (the registry no longer stores them).
+	keys, err := enclave.List()
 	if err != nil {
 		return err
 	}
-	for _, e := range reg.List() {
-		pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(e.PublicKey))
-		if err != nil {
-			return fmt.Errorf("registry key %q: %w", e.Name, err)
-		}
-		fmt.Printf("%-20s %-22s %s\n", e.Name, pub.Type(), ssh.FingerprintSHA256(pub))
+	for _, k := range keys {
+		fmt.Printf("%-20s %-22s %s\n", k.Name, k.PublicKey.Type(), ssh.FingerprintSHA256(k.PublicKey))
 	}
 	return nil
 }
@@ -185,16 +183,18 @@ func cmdExport(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: sinete export <name>")
 	}
-	reg, err := openRegistry()
+	name := args[0]
+	keys, err := enclave.List()
 	if err != nil {
 		return err
 	}
-	e, ok := reg.Get(args[0])
-	if !ok {
-		return fmt.Errorf("no key named %q", args[0])
+	for _, k := range keys {
+		if k.Name == name {
+			fmt.Println(strings.TrimSpace(string(ssh.MarshalAuthorizedKey(k.PublicKey))) + " " + name)
+			return nil
+		}
 	}
-	fmt.Println(e.PublicKey)
-	return nil
+	return fmt.Errorf("no key named %q", name)
 }
 
 // cmdSshSetup writes a key's public key to a file and prints the ssh/git config
