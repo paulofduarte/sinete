@@ -166,6 +166,20 @@ func (r *Registry) List() []Entry {
 	return out
 }
 
+// HasConfig reports whether this legacy registry carries any config — global
+// defaults or per-key overrides — i.e. whether a migration is worth doing.
+func (r *Registry) HasConfig() bool {
+	if len(r.defaults) > 0 {
+		return true
+	}
+	for _, e := range r.entries {
+		if len(e.Config) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // Defaults returns a copy of the global config defaults.
 func (r *Registry) Defaults() map[string]string {
 	out := make(map[string]string, len(r.defaults))

@@ -84,3 +84,24 @@ func TestOpenUnrecognisedObject(t *testing.T) {
 		t.Error("an object without keys/defaults should error")
 	}
 }
+
+func TestHasConfig(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{"no config", `{"keys":[{"name":"a","label":"sinete-a","tag":"t"}]}`, false},
+		{"global default", `{"defaults":{"presence-ttl":"10m"}}`, true},
+		{"per-key override", `{"keys":[{"name":"a","label":"sinete-a","tag":"t","config":{"presence-ttl":"5m"}}]}`, true},
+	}
+	for _, c := range cases {
+		r, err := Open(writeKeysJSON(t, c.content))
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got := r.HasConfig(); got != c.want {
+			t.Errorf("%s: HasConfig = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

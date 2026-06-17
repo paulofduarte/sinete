@@ -129,9 +129,13 @@ func openConfig() (*registry.Config, error) {
 	if !trusted {
 		fmt.Fprintln(os.Stderr, "warning: the signed config could not be verified (tampered, stale, or corrupt); using built-in defaults until you re-run `sinete config`.")
 	}
+	// Legacy keys.json config is NOT enforced (the agent and these reads use the
+	// signed config / built-in defaults) until the next `sinete config` write
+	// migrates and signs it. Don't seed it into reads — that would make CLI output
+	// diverge from what the agent enforces; instead warn that migration is pending.
 	if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
-		if legacy, lerr := openRegistry(); lerr == nil {
-			cfg.MergeLegacy(legacy)
+		if legacy, lerr := openRegistry(); lerr == nil && legacy.HasConfig() {
+			fmt.Fprintln(os.Stderr, "note: legacy keys.json config is not in effect; run `sinete config <setting> <value>` once to migrate and sign it.")
 		}
 	}
 	return cfg, nil
@@ -144,6 +148,16 @@ func saveConfig(cfg *registry.Config) error {
 	// config write is what creates it (creating it needs no presence; signing does).
 	if err := enclave.EnsureMaster(); err != nil {
 		return fmt.Errorf("ensure master key: %w", err)
+	}
+	// The first signed write also migrates any legacy keys.json config (without
+	// overwriting values just set), so upgrading loses nothing; afterwards
+	// registry.json is authoritative and keys.json is removed below.
+	if path, err := registry.ConfigPath(); err == nil {
+		if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
+			if legacy, lerr := openRegistry(); lerr == nil {
+				cfg.MergeLegacy(legacy)
+			}
+		}
 	}
 	if err := cfg.Save(); err != nil {
 		return err
