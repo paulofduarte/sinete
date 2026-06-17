@@ -95,7 +95,7 @@ struct SineteUIApp: App {
 
     var body: some Scene {
         Window("sinete", id: "main") {
-            RootView().frame(width: 460, height: 380)
+            RootView().frame(width: 460, height: 440)
         }
         .windowResizability(.contentSize)
     }
@@ -121,7 +121,7 @@ struct RootView: View {
     var body: some View {
         VStack {
             if loading {
-                ProgressView("Checking sinete…")
+                ProgressView("Checking sinete...")
             } else if let status, status.configured, !forceSetup {
                 ReadyView(status: status, onReconfigure: { forceSetup = true }, onChanged: reload)
             } else {
@@ -171,7 +171,7 @@ struct ReadyView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Label("\(status.keyCount) enclave key\(status.keyCount == 1 ? "" : "s")", systemImage: "key.fill")
                 if let method = status.method, let link = status.linkPath {
-                    Label("\(method) install · \(link)", systemImage: "terminal")
+                    Label("\(method) install at \(link)", systemImage: "terminal")
                 }
                 Label("login item: \(status.loginItem)", systemImage: "person.badge.clock")
             }
@@ -212,7 +212,11 @@ struct ReadyView: View {
     private func uninstall() {
         let confirm = NSAlert()
         confirm.messageText = "Uninstall sinete?"
-        confirm.informativeText = "This removes the login item, the PATH link, and the .pub files sinete created (a link or .pub you chose to keep is left alone). The app is then moved to the Trash."
+        confirm.informativeText = """
+            This removes the login item, the PATH link, and the .pub files sinete \
+            created (a link or .pub you chose to keep is left alone). The app is \
+            then moved to the Trash.
+            """
         confirm.addButton(withTitle: "Uninstall")
         confirm.addButton(withTitle: "Cancel")
         guard confirm.runModal() == .alertFirstButtonReturn else { return }
@@ -221,9 +225,16 @@ struct ReadyView: View {
         if status.keyCount > 0 {
             let keyAlert = NSAlert()
             keyAlert.messageText = "Also delete your \(status.keyCount) key\(status.keyCount == 1 ? "" : "s")?"
-            var info = "This permanently destroys the hardware keys in the Secure Enclave — it cannot be undone. If you keep them, they stay safe and become available again when you reinstall sinete with the same signing identity."
+            var info = """
+                This permanently destroys the hardware keys in the Secure Enclave; \
+                it cannot be undone. If you keep them, they stay safe and become \
+                available again when you reinstall sinete with the same signing identity.
+                """
             if status.method == "admin" {
-                info += "\n\nOnly your keys are affected. Other users with sinete keys must run the app in their own account to delete theirs."
+                info += "\n\n" + """
+                    Only your keys are affected. Other users with sinete keys must \
+                    run the app in their own account to delete theirs.
+                    """
             }
             keyAlert.informativeText = info
             keyAlert.addButton(withTitle: "Keep keys")
@@ -276,6 +287,7 @@ struct SetupView: View {
 
     @State private var step = 0
     @State private var keyName = ""
+    @State private var instructions = ""
     @State private var busy = false
 
     var body: some View {
@@ -292,8 +304,10 @@ struct SetupView: View {
                     stepInstall
                 case 1:
                     stepFirstKey
-                default:
+                case 2:
                     stepSSH
+                default:
+                    stepInstructions
                 }
             }
             .frame(maxWidth: .infinity)
@@ -305,7 +319,10 @@ struct SetupView: View {
 
     private var stepInstall: some View {
         VStack(spacing: 12) {
-            Text("Put `sinete` on your PATH and start the agent as a login item. You may be asked for your password to create a system link.")
+            Text("""
+                Put `sinete` on your PATH and start the agent as a login item. \
+                You may be asked for your password to create a system link.
+                """)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
             Button("Install") { install() }
@@ -339,12 +356,12 @@ struct SetupView: View {
     private var stepSSH: some View {
         VStack(spacing: 12) {
             if keyName.trimmingCharacters(in: .whitespaces).isEmpty, let existing = status?.keys.first {
-                Text("You already have the key “\(existing.name)”.")
+                Text("You already have the key '\(existing.name)'.")
                     .foregroundStyle(.secondary)
             }
             Text(sshKeyName.isEmpty
-                ? "No key to set up yet — skip, or go back to create one."
-                : "Set up “\(sshKeyName)” for SSH and Git signing?")
+                ? "No key to set up yet. Skip, or go back to create one."
+                : "Set up '\(sshKeyName)' for SSH and Git signing?")
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             HStack {
@@ -367,7 +384,11 @@ struct SetupView: View {
                 let choice = DispatchQueue.main.sync { () -> Int in
                     let alert = NSAlert()
                     alert.messageText = "A different link already exists"
-                    alert.informativeText = "\(plan.linkPath) already points elsewhere. Replace it so it points at sinete, or keep the existing one? If you keep it, sinete isn't added to PATH and won't remove it on uninstall."
+                    alert.informativeText = """
+                        \(plan.linkPath) already points elsewhere. Replace it so it \
+                        points at sinete, or keep the existing one? If you keep it, \
+                        sinete isn't added to PATH and won't remove it on uninstall.
+                        """
                     alert.addButton(withTitle: "Replace")
                     alert.addButton(withTitle: "Keep existing")
                     alert.addButton(withTitle: "Cancel")
@@ -416,7 +437,10 @@ struct SetupView: View {
         if FileManager.default.fileExists(atPath: pub) {
             let alert = NSAlert()
             alert.messageText = "Public key file already exists"
-            alert.informativeText = "\(pub) already exists. Overwrite it? If you keep it, sinete leaves it as is and won't remove it on uninstall."
+            alert.informativeText = """
+                \(pub) already exists. Overwrite it? If you keep it, sinete leaves \
+                it as is and won't remove it on uninstall.
+                """
             alert.addButton(withTitle: "Overwrite")
             alert.addButton(withTitle: "Keep")
             if alert.runModal() != .alertFirstButtonReturn {
@@ -427,12 +451,76 @@ struct SetupView: View {
         busy = true
         DispatchQueue.global().async {
             var failure: String?
-            do { try Backend.run(["ssh-setup", name]) } catch { failure = error.localizedDescription }
+            var out = ""
+            do { out = try Backend.run(["ssh-setup", name]) } catch { failure = error.localizedDescription }
             DispatchQueue.main.async {
                 busy = false
                 if let failure { reportError(failure); return }
-                onDone()
+                instructions = sshConfigBlock(from: out)
+                step = 3
             }
         }
+    }
+
+    private var stepInstructions: some View {
+        VStack(spacing: 12) {
+            Text("Use the key")
+                .font(.headline)
+            Text("""
+                Run this to sign with the key, then add the public key on your Git \
+                host as both an authentication and a signing key.
+                """)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            ScrollView {
+                Text(highlightedInstructions)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+            }
+            .frame(maxHeight: 170)
+            .background(Color(nsColor: .textBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(.secondary.opacity(0.3)))
+            HStack {
+                Button("Copy", action: copyInstructions)
+                Button("Done") { onDone() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+    }
+
+    // sshConfigBlock drops ssh-setup's leading "wrote <path>" line so the block is
+    // just the config to run.
+    private func sshConfigBlock(from output: String) -> String {
+        let lines = output.components(separatedBy: "\n").drop {
+            $0.hasPrefix("wrote ") || $0.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // SwiftUI has no built-in syntax highlighter; dim the comment lines (#...) for
+    // a light, dependency-free pass.
+    private var highlightedInstructions: AttributedString {
+        var result = AttributedString()
+        let lines = instructions.components(separatedBy: "\n")
+        for (index, line) in lines.enumerated() {
+            var attributed = AttributedString(line)
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix("#") {
+                attributed.foregroundColor = .secondary
+            }
+            result += attributed
+            if index < lines.count - 1 {
+                result += AttributedString("\n")
+            }
+        }
+        return result
+    }
+
+    private func copyInstructions() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(instructions, forType: .string)
     }
 }
