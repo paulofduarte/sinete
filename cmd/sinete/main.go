@@ -113,10 +113,11 @@ func openRegistry() (*registry.Registry, error) {
 	return registry.Open(path)
 }
 
-// openConfig loads the signed config (registry.json). When that file does not
-// exist yet it seeds, in memory, any config from the legacy keys.json so reads
-// honour it and the next write persists it. A present-but-unverifiable file warns
-// and yields built-in defaults.
+// openConfig loads the signed config (registry.json). Reads reflect exactly what
+// the agent enforces: the verified config, or built-in defaults when it is absent
+// or cannot be verified. Legacy keys.json config is migrated on the first signed
+// write (saveConfig), not seeded into reads; until then a note is printed if such
+// config exists. A present-but-unverifiable file warns and yields built-in defaults.
 func openConfig() (*registry.Config, error) {
 	path, err := registry.ConfigPath()
 	if err != nil {
@@ -127,7 +128,7 @@ func openConfig() (*registry.Config, error) {
 		return nil, err
 	}
 	if !trusted {
-		fmt.Fprintln(os.Stderr, "warning: the signed config could not be verified (tampered, stale, or corrupt); using built-in defaults until you re-run `sinete config`.")
+		fmt.Fprintln(os.Stderr, "warning: the signed config could not be verified; using built-in defaults. Re-run `sinete config` to rewrite it.")
 	}
 	// Legacy keys.json config is NOT enforced (the agent and these reads use the
 	// signed config / built-in defaults) until the next `sinete config` write
