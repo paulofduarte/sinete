@@ -413,11 +413,19 @@ func cmdEnclaveCheck(args []string) error {
 	// Snapshot it and restore it on return, so running this diagnostic never
 	// invalidates a real signed registry.json (a higher epoch would make it stale
 	// -> fail-safe defaults until the user re-runs `sinete config`).
-	origEpoch, _, err := enclave.Epoch()
+	origEpoch, epochExisted, err := enclave.Epoch()
 	if err != nil {
 		return fmt.Errorf("epoch snapshot: %w", err)
 	}
-	defer func() { _ = enclave.SetEpoch(origEpoch) }()
+	defer func() {
+		// Restore the original state exactly: the prior value if the item existed,
+		// or its absence (delete) if it did not — so the diagnostic leaves no trace.
+		if epochExisted {
+			_ = enclave.SetEpoch(origEpoch)
+		} else {
+			_ = enclave.DeleteEpoch()
+		}
+	}()
 
 	fmt.Println("== epoch item (no prompt expected) ==")
 	cur, ok, err := enclave.Epoch()

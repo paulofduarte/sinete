@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/big"
+	"sort"
 	"strings"
 	"time"
 
@@ -74,6 +75,9 @@ func List() ([]Listed, error) {
 		}
 		out = append(out, l)
 	}
+	// Keychain enumeration order is not guaranteed; sort by name so list/export
+	// and callers get deterministic output.
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
 
@@ -161,6 +165,12 @@ func SetEpoch(v uint64) error {
 	var b [8]byte
 	binary.BigEndian.PutUint64(b[:], v)
 	return keychainItemSet(EpochService, EpochAccount, b[:])
+}
+
+// DeleteEpoch removes the epoch item. It tolerates absence and is used to restore
+// the original state after a diagnostic that touched the epoch.
+func DeleteEpoch() error {
+	return keychainItemDelete(EpochService, EpochAccount)
 }
 
 // ConfigCrypto adapts the master key and the epoch item to the registry's
