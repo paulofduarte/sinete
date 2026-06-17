@@ -503,7 +503,13 @@ func cmdStatus(args []string) error {
 		return enc.Encode(out)
 	}
 	if out.Configured {
-		fmt.Printf("configured: yes (%s, %s)\n", out.Method, out.LinkPath)
+		// Mirror cmdInstall: an empty LinkPath means a --skip-link install left an
+		// existing link in place, not that the path is missing.
+		if out.LinkPath != "" {
+			fmt.Printf("configured: yes (%s, %s)\n", out.Method, out.LinkPath)
+		} else {
+			fmt.Printf("configured: yes (%s, existing link left untouched)\n", out.Method)
+		}
 	} else {
 		fmt.Println("configured: no")
 	}
@@ -662,7 +668,7 @@ func cmdAgent(args []string) error {
 			fmt.Fprintf(os.Stderr, "sinete agent: no upstream agent at %s: %v\n", s, derr)
 		} else {
 			upstream = xagent.NewClient(conn)
-			fmt.Printf("delegating non-enclave keys to %s\n", s)
+			fmt.Fprintf(os.Stderr, "delegating non-enclave keys to %s\n", s)
 		}
 	}
 
