@@ -254,6 +254,25 @@ func TestSignNoMatch(t *testing.T) {
 	}
 }
 
+// erroringUpstream is an upstream whose List always fails, to check that the
+// agent surfaces the error instead of silently dropping upstream keys.
+type erroringUpstream struct{ xagent.ExtendedAgent }
+
+func (erroringUpstream) List() ([]*xagent.Key, error) {
+	return nil, errors.New("upstream unavailable")
+}
+
+func TestListPropagatesUpstreamError(t *testing.T) {
+	e, _, signer := testEntry(t, "work")
+	store := fakeStore{entries: []registry.Entry{e}, idle: time.Hour, max: time.Hour}
+	up := erroringUpstream{xagent.NewKeyring().(xagent.ExtendedAgent)}
+	a := New(store, fakeSource{map[string]ssh.Signer{e.Label: signer}}, (&counter{}).present, up)
+
+	if _, err := a.List(); err == nil {
+		t.Fatal("List should propagate the upstream agent's error, not drop its keys")
+	}
+}
+
 func TestDelegatesToUpstream(t *testing.T) {
 	e, _, signer := testEntry(t, "work")
 

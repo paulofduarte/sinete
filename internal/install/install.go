@@ -180,12 +180,37 @@ func inspectLink(p *Plan) {
 	p.LinkExists = true
 	if fi.Mode()&os.ModeSymlink != 0 {
 		if dest, err := os.Readlink(p.LinkPath); err == nil {
-			p.LinkConflicts = dest != p.Target
+			// Resolve a relative target against the link's directory before
+			// comparing, so a relatively-spelled symlink that points at the same
+			// file isn't a false conflict (which would trigger a needless,
+			// potentially destructive "Replace" prompt).
+			if !filepath.IsAbs(dest) {
+				dest = filepath.Join(filepath.Dir(p.LinkPath), dest)
+			}
+			p.LinkConflicts = !sameTarget(dest, p.Target)
 			return
 		}
 	}
 	// A non-symlink file occupying the path is a conflict.
 	p.LinkConflicts = true
+}
+
+// sameTarget reports whether two paths refer to the same link target: by cleaned
+// path, else by underlying file identity (os.Stat follows symlinks), so a
+// differently-spelled path that resolves to the same file isn't a conflict.
+func sameTarget(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	ai, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	bi, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(ai, bi)
 }
 
 // ErrLinkConflict is returned by Install when the link path is occupied by a

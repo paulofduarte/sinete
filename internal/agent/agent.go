@@ -238,9 +238,14 @@ func (a *Agent) List() ([]*xagent.Key, error) {
 		keys = append(keys, &xagent.Key{Format: pub.Type(), Blob: pub.Marshal(), Comment: e.Name})
 	}
 	if a.upstream != nil {
-		if up, err := a.upstream.List(); err == nil {
-			keys = append(keys, up...)
+		// List is the union; surface an upstream failure rather than silently
+		// returning a partial list (which would hide non-enclave keys from
+		// ssh-add -l with no error), consistent with how Sign forwards upstream.
+		up, err := a.upstream.List()
+		if err != nil {
+			return nil, fmt.Errorf("upstream agent list: %w", err)
 		}
+		keys = append(keys, up...)
 	}
 	return keys, nil
 }

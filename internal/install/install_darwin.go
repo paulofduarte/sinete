@@ -177,6 +177,13 @@ func createLink(p *Plan) error {
 	if strings.ContainsAny(p.Target+p.LinkPath, "'\n") {
 		return errors.New("refusing to link: a path contains a quote or newline")
 	}
+	// A real directory at the link path would make `ln -sfn` create the symlink
+	// *inside* it (admin path) or the rename fail with an opaque error (user
+	// path), so reject it explicitly. Lstat (not Stat) so a symlink-to-directory
+	// is still treated as a replaceable link, not a directory.
+	if fi, err := os.Lstat(p.LinkPath); err == nil && fi.IsDir() {
+		return fmt.Errorf("refusing to link: %s is a directory", p.LinkPath)
+	}
 	if p.Method == Admin {
 		dir := filepath.Dir(p.LinkPath)
 		return adminShell(fmt.Sprintf("mkdir -p '%s' && ln -sfn '%s' '%s'", dir, p.Target, p.LinkPath))
