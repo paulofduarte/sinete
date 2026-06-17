@@ -243,9 +243,13 @@ func (c *Config) Save() error {
 		return err
 	}
 	// Serialise concurrent writers so the epoch read → sign → write → advance is
-	// atomic. Without it two processes could both read epoch N and sign distinct
+	// atomic: otherwise two processes could both read epoch N and sign distinct
 	// payloads at N+1, letting one be replayed later (it would still match the
-	// keychain epoch). The lock is held across the signing prompt.
+	// keychain epoch). The lock is held across the signing prompt. lockConfig is a
+	// real flock on unix (macOS/Linux — sinete's only platforms with a secure
+	// element); the no-op stub elsewhere just keeps the package compiling, where
+	// Save can't succeed anyway without an enclave backend, so nothing relies on
+	// the lock on those platforms.
 	unlock, err := lockConfig(c.path)
 	if err != nil {
 		return fmt.Errorf("lock config: %w", err)
