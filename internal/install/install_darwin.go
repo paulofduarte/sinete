@@ -217,7 +217,13 @@ func removeLink(method Method, linkPath string) error {
 // adminShell runs a shell command with administrator privileges via osascript,
 // which presents the native auth dialog. A cancelled prompt returns an error.
 func adminShell(shellCmd string) error {
-	script := `do shell script "` + strings.ReplaceAll(shellCmd, `"`, `\"`) + `" with administrator privileges`
+	// Escape for the AppleScript string literal: backslashes first (so the ones we
+	// add for quotes aren't doubled again), then double quotes. Without the
+	// backslash pass, a path containing '\' (valid on APFS) would be mangled by
+	// AppleScript's own escape handling.
+	escaped := strings.ReplaceAll(shellCmd, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+	script := `do shell script "` + escaped + `" with administrator privileges`
 	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
