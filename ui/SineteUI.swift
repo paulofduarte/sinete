@@ -437,10 +437,20 @@ struct SetupView: View {
             }
             var failure: String?
             do { try Backend.run(args) } catch { failure = error.localizedDescription }
+            // Recompute the key count after install: the pre-install status may be
+            // nil or stale (e.g. an earlier status decode failed), which would
+            // misroute the wizard to "create first key" even when keys exist.
+            var keyCount = status?.keyCount ?? 0
+            if failure == nil,
+               let out = try? Backend.run(["status", "--json"]),
+               let data = out.data(using: .utf8),
+               let fresh = try? JSONDecoder().decode(Status.self, from: data) {
+                keyCount = fresh.keyCount
+            }
             DispatchQueue.main.async {
                 busy = false
                 if let failure { reportError(failure); return }
-                step = (status?.keyCount ?? 0) == 0 ? 1 : 2
+                step = keyCount == 0 ? 1 : 2
             }
         }
     }

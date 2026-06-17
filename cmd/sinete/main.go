@@ -532,6 +532,10 @@ func cmdInstall(args []string) error {
 	skipLink := fs.Bool("skip-link", false, "register the login item but leave any existing link untouched")
 	_ = fs.Parse(args)
 
+	if *replace && *skipLink {
+		return errors.New("install: --replace-link and --skip-link are mutually exclusive")
+	}
+
 	if *plan {
 		p, err := install.PlanInstall()
 		if err != nil {

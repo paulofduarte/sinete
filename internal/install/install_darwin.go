@@ -145,7 +145,13 @@ func Uninstall() error {
 			firstErr = e
 		}
 	}
-	keep(loginitem.Unregister())
+	// SMAppService can error when unregistering an item that was never registered
+	// (uninstall on an unconfigured machine, or after manual cleanup), so only
+	// unregister when it's actually registered. If the status can't be read, fall
+	// back to attempting the unregister.
+	if status, serr := loginitem.Status(); serr != nil || (status != "not registered" && status != "not found") {
+		keep(loginitem.Unregister())
+	}
 	if st != nil {
 		// Only files sinete actually created: a kept (declined) link has an empty
 		// LinkPath, and a kept .pub was never recorded in Pubs.
