@@ -108,12 +108,27 @@ func Install(replaceLink, skipLink bool) (*State, error) {
 		}
 	}
 	if err := loginitem.Register(); err != nil {
+		rollbackLink(st)
 		return nil, fmt.Errorf("register login item: %w", err)
 	}
 	if err := st.Save(); err != nil {
+		_ = loginitem.Unregister()
+		rollbackLink(st)
 		return nil, err
 	}
 	return st, nil
+}
+
+// rollbackLink undoes the filesystem side effects an aborted Install may have
+// made (the PATH entry and the link), so a failed install doesn't leave a
+// partial state behind — especially one without install.json to guide uninstall.
+func rollbackLink(st *State) {
+	if st.PathEntry != "" {
+		_ = removePathEntry(st.PathEntry)
+	}
+	if st.LinkPath != "" {
+		_ = removeLink(st.Method, st.LinkPath)
+	}
 }
 
 // Uninstall reverses an install: unregister the login item, remove the link,

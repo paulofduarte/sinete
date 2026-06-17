@@ -117,6 +117,9 @@ func cmdGenerate(args []string) error {
 	if name == "" {
 		return errors.New("usage: sinete generate <name>")
 	}
+	if err := registry.ValidName(name); err != nil {
+		return err
+	}
 
 	reg, err := openRegistry()
 	if err != nil {
@@ -202,6 +205,12 @@ func cmdSshSetup(args []string) error {
 	if name == "" {
 		return errors.New("usage: sinete ssh-setup <name> [--out <path>]")
 	}
+	// The name flows into the default .pub path and the allowed_signers principal,
+	// so a valid (separator/quote/newline-free) name is required; --out only moves
+	// where the public key is written, it can't make the snippet safe.
+	if err := registry.ValidName(name); err != nil {
+		return err
+	}
 
 	reg, err := openRegistry()
 	if err != nil {
@@ -228,8 +237,12 @@ func cmdSshSetup(args []string) error {
 		return err
 	}
 	// Record it so uninstall removes only the .pub files sinete wrote (no-op when
-	// there is no install state, e.g. ssh-setup run standalone).
-	_ = install.RecordPub(pubPath)
+	// there is no install state, e.g. ssh-setup run standalone). A record failure
+	// doesn't undo the written key, but it does mean uninstall can't reverse it —
+	// warn rather than fail silently.
+	if err := install.RecordPub(pubPath); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not record %s in install state; uninstall may not remove it: %v\n", pubPath, err)
+	}
 
 	fmt.Printf("wrote %s\n\n", pubPath)
 	fmt.Printf(`# point ssh/git at sinete -- IdentityAgent overrides SSH_AUTH_SOCK, so it
@@ -333,6 +346,12 @@ func cmdConfig(args []string) error {
 
 	if len(rest) == 1 { // get
 		if *keyName != "" {
+			// Effective falls back to the global default, which would silently
+			// answer for a key that doesn't exist (hiding a typo); reject it,
+			// matching SetKeyConfig's behaviour.
+			if _, ok := reg.Get(*keyName); !ok {
+				return fmt.Errorf("no key named %q", *keyName)
+			}
 			fmt.Println(reg.Effective(*keyName, setting))
 		} else {
 			fmt.Println(reg.Defaults()[setting])

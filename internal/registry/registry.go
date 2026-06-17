@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"time"
 )
@@ -38,6 +39,26 @@ func ValidSetting(name string) bool {
 		}
 	}
 	return false
+}
+
+// nameRE constrains key names to a safe set. A name is reused verbatim as a map
+// key, an OpenSSH comment, the sinete-<name>.pub filename component, and an
+// allowed_signers principal, so path separators, whitespace, quotes and control
+// characters must not appear: it must start with a letter or digit, the rest may
+// add '.', '_', '-', '@' and '+'. This makes every name-derived path and shell
+// snippet safe by construction (no traversal, no injection).
+var nameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@+-]*$`)
+
+// ValidName reports whether name is a safe key name (see nameRE), bounding the
+// length so derived filenames stay sane.
+func ValidName(name string) error {
+	if len(name) > 128 {
+		return fmt.Errorf("invalid key name: must be at most 128 characters")
+	}
+	if !nameRE.MatchString(name) {
+		return fmt.Errorf("invalid key name %q: use letters, digits and . _ - @ + (must start with a letter or digit)", name)
+	}
+	return nil
 }
 
 // Entry records one enclave key and its per-key config overrides.

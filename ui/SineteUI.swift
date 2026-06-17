@@ -467,7 +467,11 @@ struct SetupView: View {
         DispatchQueue.global().async {
             var failure: String?
             var out = ""
-            do { out = try Backend.run(["ssh-setup", name]) } catch { failure = error.localizedDescription }
+            // Pass the same path we checked for existence, so the CLI writes
+            // exactly where this prompt looked (no divergent default derivation).
+            do {
+                out = try Backend.run(["ssh-setup", name, "--out", pub])
+            } catch { failure = error.localizedDescription }
             DispatchQueue.main.async {
                 busy = false
                 if let failure { reportError(failure); return }
