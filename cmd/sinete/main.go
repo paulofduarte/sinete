@@ -656,7 +656,7 @@ func cmdAgent(args []string) error {
 	// -- so a client that reaches sinete still sees its other keys. Skip it when
 	// that socket is us (e.g. a shell already pointing SSH_AUTH_SOCK at sinete).
 	var upstream xagent.ExtendedAgent
-	if s := os.Getenv("SSH_AUTH_SOCK"); s != "" && s != path {
+	if s := os.Getenv("SSH_AUTH_SOCK"); s != "" && !sameSocket(s, path) {
 		conn, derr := net.Dial("unix", s)
 		if derr != nil {
 			fmt.Fprintf(os.Stderr, "sinete agent: no upstream agent at %s: %v\n", s, derr)
@@ -691,6 +691,26 @@ func cmdAgent(args []string) error {
 
 	a.Run() // process signing on the main OS thread; blocks
 	return nil
+}
+
+// sameSocket reports whether two socket paths name the same file, so the agent
+// never delegates to itself (delegating to our own socket would loop List/Sign
+// back over the protocol and hang). A string compare misses an SSH_AUTH_SOCK
+// spelled as a symlink to our socket, or relatively vs absolutely; os.Stat
+// follows symlinks and os.SameFile compares the underlying file identity.
+func sameSocket(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ai, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	bi, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(ai, bi)
 }
 
 // defaultSocket returns the per-user agent socket path. On macOS the launchd
