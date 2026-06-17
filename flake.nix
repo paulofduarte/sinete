@@ -152,6 +152,24 @@
             echo "built + signed: $app"
           '';
         };
+
+        # `nix run` (the default app): sign the nix-built bare binary with the same
+        # identity + entitlements as the bundle, then exec it with any args. For
+        # quick non-SE checks (list/config/present); SE ops still need the signed
+        # .app (a bare binary can't carry the provisioning profile).
+        signRunApp = pkgs.writeShellApplication {
+          name = "sinete-sign-run";
+          runtimeInputs = [ pkgs.coreutils ];
+          text = ''
+            identity="''${SINETE_SIGN_IDENTITY:-Apple Development: Paulo Duarte (P6K8K4X996)}"
+            out="$(mktemp -d)/sinete"
+            cp "${self.packages.${system}.default}/bin/sinete" "$out"
+            chmod u+w "$out"
+            /usr/bin/codesign --force --sign "$identity" \
+              --entitlements "${self}/sinete.entitlements" "$out"
+            exec "$out" "$@"
+          '';
+        };
       in
       {
         packages.default = pkgs.buildGoModule {
@@ -179,8 +197,13 @@
 
         formatter = treefmtEval.config.build.wrapper;
 
-        # `nix run .#bundle -- <profile>` (macOS only; needs the Apple toolchain).
+        # macOS only (signing needs the Apple toolchain). `nix run` signs + runs
+        # the bare binary; `nix run .#bundle -- <profile>` builds the signed .app.
         apps = pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
+          default = {
+            type = "app";
+            program = "${signRunApp}/bin/sinete-sign-run";
+          };
           bundle = {
             type = "app";
             program = "${bundleApp}/bin/sinete-bundle";

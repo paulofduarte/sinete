@@ -3,7 +3,7 @@
 <!-- Bundled at sinete.app/Contents/Library/LaunchAgents/ and registered with
      SMAppService (`sinete service register`). BundleProgram is resolved relative
      to the app bundle, so no install-time path substitution is needed. The agent
-     captures the upstream agent and republishes SSH_AUTH_SOCK itself (folded in
+     captures the session's existing agent as the delegation upstream (folded in
      from the former sinete-agent.sh wrapper); --launchd opts that in, and a
      no-argument launchd spawn is recognised via XPC_SERVICE_NAME. -->
 <plist version="1.0">

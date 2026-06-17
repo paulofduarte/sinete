@@ -232,7 +232,14 @@ func cmdSshSetup(args []string) error {
 	_ = install.RecordPub(pubPath)
 
 	fmt.Printf("wrote %s\n\n", pubPath)
-	fmt.Printf(`# commit signing
+	fmt.Printf(`# point ssh/git at sinete -- IdentityAgent overrides SSH_AUTH_SOCK, so it
+# beats macOS's system agent. Add to ~/.ssh/config (Host * = all hosts):
+Host *
+    IdentityAgent %[4]s
+
+# commit signing: ssh-keygen -Y sign reads SSH_AUTH_SOCK (not the ssh config),
+# so export it in your shell, then point git at the key:
+export SSH_AUTH_SOCK=%[4]s
 git config gpg.format ssh
 git config user.signingkey %[1]s
 git config commit.gpgsign true
@@ -240,12 +247,6 @@ git config commit.gpgsign true
 # verify your own signatures locally
 mkdir -p ~/.config/git
 echo '%[2]s %[3]s' >> ~/.config/git/allowed_signers
-
-# optional: pin this key for a host (~/.ssh/config)
-Host github.com
-    IdentityAgent %[4]s
-    IdentityFile %[1]s
-    IdentitiesOnly yes
 
 # then add the key (cat %[1]s) on your git host as BOTH an authentication and a signing key.
 `, pubPath, name, pub, agentSocketHint())
@@ -559,7 +560,7 @@ func cmdUninstall(args []string) error {
 func cmdAgent(args []string) error {
 	fs := flag.NewFlagSet("agent", flag.ExitOnError)
 	socket := fs.String("socket", "", "unix socket path (default: per-user runtime dir)")
-	launchd := fs.Bool("launchd", false, "managed by launchd: capture the upstream agent and republish SSH_AUTH_SOCK")
+	launchd := fs.Bool("launchd", false, "managed by launchd: capture the session's agent as the delegation upstream")
 	_ = fs.Parse(args)
 
 	path := *socket
@@ -580,9 +581,9 @@ func cmdAgent(args []string) error {
 			return err
 		}
 	}
-	// When launchd manages us, fold in the old wrapper's job: capture the
-	// session's upstream agent and republish SSH_AUTH_SOCK to this socket. The
-	// XPC_SERVICE_NAME check also covers a no-argument launchd spawn.
+	// When launchd manages us, set up the agent's log file (the bundled plist has
+	// no Standard*Path). The XPC_SERVICE_NAME check also covers a no-argument
+	// launchd spawn (BundleProgram without an honoured ProgramArguments).
 	if *launchd || os.Getenv("XPC_SERVICE_NAME") == loginitem.AgentLabel {
 		prepareLaunchSession(path)
 	}
@@ -625,16 +626,18 @@ func cmdAgent(args []string) error {
 		return err
 	}
 
-	// Superset agent: delegate everything we don't own to the upstream agent
-	// (e.g. the system ssh-agent), so taking over SSH_AUTH_SOCK loses nothing.
+	// Superset agent: delegate everything we don't own to the session's existing
+	// agent -- the SSH_AUTH_SOCK we inherit (normally macOS's com.openssh.ssh-agent)
+	// -- so a client that reaches sinete still sees its other keys. Skip it when
+	// that socket is us (e.g. a shell already pointing SSH_AUTH_SOCK at sinete).
 	var upstream xagent.ExtendedAgent
-	if up := os.Getenv("SINETE_UPSTREAM_SOCK"); up != "" {
-		conn, derr := net.Dial("unix", up)
+	if s := os.Getenv("SSH_AUTH_SOCK"); s != "" && s != path {
+		conn, derr := net.Dial("unix", s)
 		if derr != nil {
-			fmt.Fprintf(os.Stderr, "sinete agent: no upstream agent at %s: %v\n", up, derr)
+			fmt.Fprintf(os.Stderr, "sinete agent: no upstream agent at %s: %v\n", s, derr)
 		} else {
 			upstream = xagent.NewClient(conn)
-			fmt.Printf("delegating non-enclave keys to %s\n", up)
+			fmt.Printf("delegating non-enclave keys to %s\n", s)
 		}
 	}
 
@@ -666,8 +669,8 @@ func cmdAgent(args []string) error {
 }
 
 // defaultSocket returns the per-user agent socket path. On macOS the launchd
-// agent and the CLI share a stable path under the user's Caches (also what gets
-// republished to SSH_AUTH_SOCK); elsewhere it follows XDG_RUNTIME_DIR.
+// agent and the CLI share a stable path under the user's Caches (the one clients
+// point IdentityAgent at); elsewhere it follows XDG_RUNTIME_DIR.
 func defaultSocket() string {
 	if runtime.GOOS == "darwin" {
 		if home, err := os.UserHomeDir(); err == nil {

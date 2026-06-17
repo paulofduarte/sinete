@@ -5,9 +5,9 @@
 
 package main
 
-// prepareLaunchSession is a no-op off macOS: there is no launchd GUI domain to
-// republish into, so the upstream (if any) comes from SINETE_UPSTREAM_SOCK as set
-// by the caller.
+// prepareLaunchSession is a no-op off macOS: there is no bundled-agent log path
+// to set up, and the delegation upstream comes from the inherited SSH_AUTH_SOCK
+// (resolved in cmdAgent).
 func prepareLaunchSession(string) {}
 
 // launchUIIfDoubleClicked is a no-op off macOS (there is no bundled SwiftUI app).

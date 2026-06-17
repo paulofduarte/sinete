@@ -30,11 +30,12 @@ Working key manager and ssh-agent. Pre-release.
     sinete config <key> <val>   set presence-ttl / presence-max-ttl
     sinete agent                run the agent (usually started at login)
 
-The agent advertises every key, so `ssh`/`git` use them automatically once
-`SSH_AUTH_SOCK` points at it. The first signature with a key checks user
-presence; further signatures within the configured window are silent. It also
-forwards keys it does not own to your existing agent, so it can take over
-`SSH_AUTH_SOCK` without losing anything.
+The agent advertises every key and also forwards keys it does not own to your
+existing agent, so a client pointed at it sees everything. Point clients at it
+with `IdentityAgent ~/Library/Caches/sinete/agent.sock` in `~/.ssh/config`
+(`Host *`); for git commit signing, `export SSH_AUTH_SOCK` to the same socket.
+The first signature with a key checks user presence; further signatures within
+the configured window are silent.
 
 ## License
 

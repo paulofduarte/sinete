@@ -21,7 +21,6 @@ internal/presence/  # user-presence check (macOS LocalAuthentication, cgo); stub
 internal/loginitem/ # register the launchd agent as a login item (macOS SMAppService, cgo); stub elsewhere
 internal/install/   # app-driven setup/teardown: link + login item + install.json state; stub elsewhere
 ui/                 # SwiftUI control panel (sinete-ui), compiled by `nix run .#bundle`
-scripts/            # install-agent.sh
 launchd/            # me.paulofduarte.sinete.agent.plist (bundled into the .app for SMAppService)
 ```
 
@@ -30,11 +29,12 @@ launchd/            # me.paulofduarte.sinete.agent.plist (bundled into the .app 
 This is the core design; get it right:
 
 - **Keys are presence-less in the SE.** `enclave.Create` calls `sks.NewKey(... useBiometrics=false ...)`, so the Secure Enclave does *not* prompt per signature. (Legacy keys created before this carry the SE's `UserPresence` ACL and will double-prompt; regenerate them.)
-- **The agent advertises every registry key** (`List` from the registry) so ssh/git use them automatically — no manual `ssh-add`. It holds only enclave-backed signer *handles*, never key material.
+- **The agent advertises every registry key** (`List` from the registry), so a client talking to it uses them with no manual `ssh-add`. It holds only enclave-backed signer *handles*, never key material.
 - **Presence is gated at sign time, in software, with a TTL cache** (after gpg-agent): the first signature with a key runs `presence.Authenticate` (Touch ID); within the per-key idle TTL — and an absolute cap — further signatures are silent. `presence-ttl` / `presence-max-ttl` are set with `sinete config`, stored in the registry, and re-read by the agent live.
 - **Presence windows are keyed by the public key, not the name** — a deleted-and-recreated key must re-authenticate.
-- **Superset / delegation.** The agent forwards everything it doesn't own (List ∪ upstream; Sign/Add/Remove/…) to an upstream agent (`SINETE_UPSTREAM_SOCK`), so taking over `SSH_AUTH_SOCK` loses nothing.
-- **launchd takeover.** The agent is registered as a macOS login item with `SMAppService` (`sinete service register`, in `internal/loginitem`) from the *signed* bundle, so its plist lives at `Contents/Library/LaunchAgents/` and macOS attributes the item to sinete.app (name + icon, not a stray script). On launch the binary captures the existing `SSH_AUTH_SOCK` as the upstream and republishes `SSH_AUTH_SOCK` to sinete itself (`prepareLaunchSession`, folded in from the former `sinete-agent.sh` wrapper) — transparent, zero `~/.ssh/config`.
+- **Superset / delegation.** The agent forwards everything it doesn't own (List ∪ upstream; Sign/Add/Remove/…) to the session's existing agent — the `SSH_AUTH_SOCK` it inherits (normally macOS's `com.openssh.ssh-agent`), skipped if that socket is itself — so a client pointed at sinete still sees its other keys.
+- **launchd login item.** The agent is registered with `SMAppService` (`sinete service register`, in `internal/loginitem`) from the *signed* bundle, so its plist lives at `Contents/Library/LaunchAgents/` and macOS attributes the item to sinete.app (name + icon, not a stray script). On launch `prepareLaunchSession` only redirects the log (the bundled plist has no `Standard*Path`); it does **not** republish `SSH_AUTH_SOCK`.
+- **Reaching the agent — no env takeover.** `launchctl setenv SSH_AUTH_SOCK` does *not* work on modern macOS: the system `com.openssh.ssh-agent` declares `Sockets → SecureSocketWithKey SSH_AUTH_SOCK`, so launchd bakes its socket into every GUI process's environment before the desktop loads, and that wins. Clients reach sinete by **config**, not env: `~/.ssh/config` `IdentityAgent <sock>` (which *overrides* `SSH_AUTH_SOCK`; use `Host *`). Git commit **signing** is the exception — `ssh-keygen -Y sign` reads `SSH_AUTH_SOCK`, not `ssh_config` — so for signing, export `SSH_AUTH_SOCK=<sock>` in the shell. The socket is `~/Library/Caches/sinete/agent.sock`.
 
 ## Architecture notes that aren't obvious from the code
 
@@ -43,7 +43,7 @@ This is the core design; get it right:
 - **`sks.Key` is a `crypto.Signer`** wrapped with `ssh.NewSignerFromSigner`. It's a handle — `Sign` computes in the SE; for presence-less keys it does *not* prompt (the agent gates presence separately).
 - **`sks.NewKey(label, tag, useBiometrics, accessibleWhenUnlockedOnly, hash)`**: `hash == nil` generates, non-nil looks up. Algorithm is always ECDSA **P-256** (SE constraint). Upstream sks ignores `useBiometrics` on macOS — exactly what we want (presence-less keys), which is why the fork was dropped.
 - **The entitlement wall.** SE keys are bound to sinete's keychain access group, so only the signed sinete bundle can use them. `ssh`/`ssh-add`/any in-process library cannot reach the key — the agent is the only channel (this is why a PKCS#11 / SecurityKeyProvider can't give agentless access).
-- **Diagnostics & hooks.** `sinete sign` (direct sign) and `sinete present[-n]` (presence prompt) are unlisted diagnostics; `sinete service <register|unregister|status>` is the unlisted `SMAppService` install hook that `install-agent.sh` calls.
+- **Diagnostics & hooks.** `sinete sign` (direct sign) and `sinete present[-n]` (presence prompt) are unlisted diagnostics; `sinete service <register|unregister|status>` exposes the `SMAppService` registration directly (the `install`/`uninstall` flow registers via `internal/loginitem`).
 
 ## Build & test
 
@@ -62,10 +62,14 @@ nix flake check               # formatting + golangci-lint(*) + reuse + shellche
 
 ```sh
 nix run .#bundle -- /path/to/<dev>.provisionprofile   # builds + signs sinete.app
-bash scripts/install-agent.sh ./sinete.app            # SMAppService login item + symlink
+./sinete.app/Contents/MacOS/sinete install            # link + SMAppService login item + state
 ```
 
+(Or just double-click `sinete.app` and use the setup wizard — both call the same `sinete install`.)
+
 `nix run .#bundle` (macOS only) folds in the former `bundle-and-sign.sh`: it takes the nix-built `sinete`, compiles `ui/SineteUI.swift` to `sinete-ui` with `xcrun swiftc` (nixpkgs swift is too old for the macOS-26 SwiftUI module), runs `actool`, assembles the `.app`, and signs — the unentitled `sinete-ui` first, then the bundle (which signs `sinete` with the SE entitlements). Or double-click `sinete.app`: the SwiftUI panel runs the setup wizard / shows the ready screen.
+
+For quick **non-SE** checks (`list`, `config`, `present`), `nix run -- <args>` is the default app: it signs the bare nix-built binary (same dev identity + `sinete.entitlements` as the bundle) and execs it. SE ops still need the `.app` — a bare binary can't carry the provisioning profile.
 
 Prereqs: an Apple Development identity, the WWDR **G3** intermediate, and a dev provisioning profile for this device + App ID `me.paulofduarte.*`. Note the presence prompt (LocalAuthentication) works even from a bare binary; only SE ops need the bundle.
 
