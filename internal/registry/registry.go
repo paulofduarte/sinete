@@ -78,9 +78,11 @@ type fileFormat struct {
 	Defaults map[string]string `json:"defaults,omitempty"`
 }
 
-// Registry is the on-disk key index plus global config defaults.
+// Registry is the legacy keys.json index: enclave keys plus global config
+// defaults. It is now read-only — keys come from secure-element enumeration and
+// config from the signed Config (see config.go); Registry survives only to read
+// an old keys.json when migrating its config (see Config.MergeLegacy).
 type Registry struct {
-	path     string
 	entries  map[string]Entry
 	defaults map[string]string
 }
@@ -102,7 +104,7 @@ func DefaultPath() (string, error) {
 // Open loads the registry at path, returning an empty registry if the file
 // does not exist yet.
 func Open(path string) (*Registry, error) {
-	r := &Registry{path: path, entries: map[string]Entry{}, defaults: map[string]string{}}
+	r := &Registry{entries: map[string]Entry{}, defaults: map[string]string{}}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return r, nil
@@ -154,12 +156,6 @@ func Open(path string) (*Registry, error) {
 	return r, nil
 }
 
-// Get returns the entry for name.
-func (r *Registry) Get(name string) (Entry, bool) {
-	e, ok := r.entries[name]
-	return e, ok
-}
-
 // List returns the entries sorted by name.
 func (r *Registry) List() []Entry {
 	out := make([]Entry, 0, len(r.entries))
@@ -170,49 +166,6 @@ func (r *Registry) List() []Entry {
 	return out
 }
 
-// Add inserts or replaces an entry.
-func (r *Registry) Add(e Entry) {
-	r.entries[e.Name] = e
-}
-
-// Remove deletes the entry for name. It is not an error if the name is absent.
-func (r *Registry) Remove(name string) {
-	delete(r.entries, name)
-}
-
-// Effective returns the value of a config setting for a key: the per-key
-// override if set, else the global default, else "".
-func (r *Registry) Effective(name, setting string) string {
-	if e, ok := r.entries[name]; ok {
-		if v, ok := e.Config[setting]; ok && v != "" {
-			return v
-		}
-	}
-	return r.defaults[setting]
-}
-
-// SetDefault sets a global config default.
-func (r *Registry) SetDefault(setting, value string) {
-	if r.defaults == nil {
-		r.defaults = map[string]string{}
-	}
-	r.defaults[setting] = value
-}
-
-// SetKeyConfig sets a per-key config override. It errors if name is unknown.
-func (r *Registry) SetKeyConfig(name, setting, value string) error {
-	e, ok := r.entries[name]
-	if !ok {
-		return fmt.Errorf("no key named %q", name)
-	}
-	if e.Config == nil {
-		e.Config = map[string]string{}
-	}
-	e.Config[setting] = value
-	r.entries[name] = e
-	return nil
-}
-
 // Defaults returns a copy of the global config defaults.
 func (r *Registry) Defaults() map[string]string {
 	out := make(map[string]string, len(r.defaults))
@@ -220,20 +173,4 @@ func (r *Registry) Defaults() map[string]string {
 		out[k] = v
 	}
 	return out
-}
-
-// Save writes the registry to disk, replacing it atomically.
-func (r *Registry) Save() error {
-	if err := os.MkdirAll(filepath.Dir(r.path), 0o700); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(fileFormat{Keys: r.List(), Defaults: r.defaults}, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp := r.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, r.path)
 }
