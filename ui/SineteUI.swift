@@ -38,8 +38,18 @@ enum Backend {
         proc.standardOutput = out
         proc.standardError = err
         try proc.run()
-        let outData = out.fileHandleForReading.readDataToEndOfFile()
-        let errData = err.fileHandleForReading.readDataToEndOfFile()
+        // Drain stdout and stderr concurrently: reading one to EOF before the
+        // other can deadlock if the child fills the second pipe's buffer.
+        var outData = Data()
+        var errData = Data()
+        let group = DispatchGroup()
+        DispatchQueue.global().async(group: group) {
+            outData = out.fileHandleForReading.readDataToEndOfFile()
+        }
+        DispatchQueue.global().async(group: group) {
+            errData = err.fileHandleForReading.readDataToEndOfFile()
+        }
+        group.wait()
         proc.waitUntilExit()
         let stdout = String(data: outData, encoding: .utf8) ?? ""
         let stderr = String(data: errData, encoding: .utf8) ?? ""

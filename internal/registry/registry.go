@@ -94,18 +94,35 @@ func Open(path string) (*Registry, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return r, nil
 	}
-	// Current format: an object with keys + defaults. Falls back to the legacy
-	// bare []Entry array.
-	var f fileFormat
-	if err := json.Unmarshal(data, &f); err == nil {
-		for _, e := range f.Keys {
-			r.entries[e.Name] = e
+	// A JSON object is the current {keys, defaults} format, but only when it
+	// actually carries one of those fields -- otherwise a corrupt object like
+	// {"foo":1} would be read as an empty registry, hiding the corruption. An
+	// empty object {} is a valid empty registry; anything else is an error.
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err == nil {
+		_, hasKeys := probe["keys"]
+		_, hasDefaults := probe["defaults"]
+		switch {
+		case hasKeys || hasDefaults:
+			var f fileFormat
+			if err := json.Unmarshal(data, &f); err != nil {
+				return nil, fmt.Errorf("parse %s: %w", path, err)
+			}
+			for _, e := range f.Keys {
+				r.entries[e.Name] = e
+			}
+			if f.Defaults != nil {
+				r.defaults = f.Defaults
+			}
+			return r, nil
+		case len(probe) == 0:
+			return r, nil
+		default:
+			return nil, fmt.Errorf("parse %s: unrecognised registry object (no keys/defaults)", path)
 		}
-		if f.Defaults != nil {
-			r.defaults = f.Defaults
-		}
-		return r, nil
 	}
+
+	// Not an object: the legacy bare []Entry array.
 	var list []Entry
 	if err := json.Unmarshal(data, &list); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)

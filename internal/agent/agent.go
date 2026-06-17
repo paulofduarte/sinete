@@ -242,7 +242,11 @@ func (a *Agent) List() ([]*xagent.Key, error) {
 // Sign signs with an enclave key (prompting for presence as needed) or forwards
 // to the upstream agent.
 func (a *Agent) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
-	if e, ok := a.entryFor(key); ok {
+	e, ok, err := a.entryFor(key)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
 		return a.signEnclave(e, string(key.Marshal()), data)
 	}
 	if a.upstream != nil {
@@ -254,7 +258,11 @@ func (a *Agent) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
 // SignWithFlags is like Sign but honours the rsa-sha2 flags for upstream keys
 // (enclave keys are ECDSA, so the flags do not apply to them).
 func (a *Agent) SignWithFlags(key ssh.PublicKey, data []byte, flags xagent.SignatureFlags) (*ssh.Signature, error) {
-	if e, ok := a.entryFor(key); ok {
+	e, ok, err := a.entryFor(key)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
 		return a.signEnclave(e, string(key.Marshal()), data)
 	}
 	if a.upstream != nil {
@@ -263,11 +271,14 @@ func (a *Agent) SignWithFlags(key ssh.PublicKey, data []byte, flags xagent.Signa
 	return nil, errNotFound
 }
 
-// entryFor returns the store entry whose public key matches key.
-func (a *Agent) entryFor(key ssh.PublicKey) (registry.Entry, bool) {
+// entryFor returns the store entry whose public key matches key. A non-nil error
+// means the key index could not be read -- callers surface it rather than treat
+// the key as absent, so a registry failure doesn't masquerade as "no such key"
+// (or get silently forwarded upstream).
+func (a *Agent) entryFor(key ssh.PublicKey) (registry.Entry, bool, error) {
 	entries, err := a.store.Keys()
 	if err != nil {
-		return registry.Entry{}, false
+		return registry.Entry{}, false, err
 	}
 	want := key.Marshal()
 	for _, e := range entries {
@@ -276,16 +287,20 @@ func (a *Agent) entryFor(key ssh.PublicKey) (registry.Entry, bool) {
 			continue
 		}
 		if bytes.Equal(pub.Marshal(), want) {
-			return e, true
+			return e, true, nil
 		}
 	}
-	return registry.Entry{}, false
+	return registry.Entry{}, false, nil
 }
 
 // Remove forgets an enclave key's presence window (ssh-add -d: the next use
 // prompts again; it does not delete the key) or forwards to the upstream agent.
 func (a *Agent) Remove(key ssh.PublicKey) error {
-	if _, ok := a.entryFor(key); ok {
+	_, ok, err := a.entryFor(key)
+	if err != nil {
+		return err
+	}
+	if ok {
 		a.mu.Lock()
 		delete(a.windows, string(key.Marshal()))
 		a.gen++
