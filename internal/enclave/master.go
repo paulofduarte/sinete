@@ -77,6 +77,28 @@ func List() ([]Listed, error) {
 	return out, nil
 }
 
+// Find returns the enumerated user key with the given name.
+func Find(name string) (Listed, bool, error) {
+	keys, err := List()
+	if err != nil {
+		return Listed{}, false, err
+	}
+	for _, k := range keys {
+		if k.Name == name {
+			return k, true, nil
+		}
+	}
+	return Listed{}, false, nil
+}
+
+// RemoveMaster deletes the internal master key and the epoch item. Used only by
+// uninstall --remove-keys. Removing the master key is best-effort (it may already
+// be gone); the epoch item delete tolerates absence.
+func RemoveMaster() error {
+	_ = masterKey().Remove()
+	return keychainItemDelete(EpochService, EpochAccount)
+}
+
 // EnsureMaster creates the presence-enforced master key if it does not yet
 // exist; it is idempotent. Creating it needs no presence; *signing* with it does.
 func EnsureMaster() error {

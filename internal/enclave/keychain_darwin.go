@@ -379,3 +379,23 @@ func keychainItemSet(service, account string, data []byte) error {
 
 	return osError(C.SecItemAdd(add, nil), "SecItemAdd(epoch)")
 }
+
+// keychainItemDelete removes a generic-password item. Not-found is not an error.
+func keychainItemDelete(service, account string) error {
+	m, release, err := epochQuery(service, account)
+	if err != nil {
+		return err
+	}
+	defer release()
+	query, err := cfDictionary(m)
+	if err != nil {
+		return err
+	}
+	defer C.CFRelease(C.CFTypeRef(query))
+
+	status := C.SecItemDelete(query)
+	if status == C.errSecItemNotFound {
+		return nil
+	}
+	return osError(status, "SecItemDelete(epoch)")
+}

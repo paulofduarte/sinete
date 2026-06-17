@@ -16,3 +16,4 @@ func enumerateKeys(string) ([]rawKey, error)      { return nil, errUnsupported }
 func createPresenceKey(_, _ string) error         { return errUnsupported }
 func keychainItemGet(_, _ string) ([]byte, error) { return nil, errUnsupported }
 func keychainItemSet(_, _ string, _ []byte) error { return errUnsupported }
+func keychainItemDelete(_, _ string) error        { return errUnsupported }

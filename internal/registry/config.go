@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 )
 
 // Crypto signs and verifies the config envelope and tracks the replay epoch. The
@@ -177,6 +178,40 @@ func (c *Config) RemoveKey(name string) { delete(c.keys, name) }
 
 // HasKey reports whether a name has any stored config.
 func (c *Config) HasKey(name string) bool { _, ok := c.keys[name]; return ok }
+
+// Names returns, sorted, the key names that have stored config.
+func (c *Config) Names() []string {
+	out := make([]string, 0, len(c.keys))
+	for n := range c.keys {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// MergeLegacy copies config from the legacy keys.json registry (global defaults
+// and per-key overrides) into this store, without overwriting values already set.
+// Used once to migrate config off the old format; the next Save persists it.
+func (c *Config) MergeLegacy(r *Registry) {
+	for k, v := range r.Defaults() {
+		if _, ok := c.defaults[k]; !ok {
+			c.defaults[k] = v
+		}
+	}
+	for _, e := range r.List() {
+		for setting, val := range e.Config {
+			if val == "" {
+				continue
+			}
+			if c.keys[e.Name] == nil {
+				c.keys[e.Name] = map[string]string{}
+			}
+			if _, ok := c.keys[e.Name][setting]; !ok {
+				c.keys[e.Name][setting] = val
+			}
+		}
+	}
+}
 
 // Save signs and writes the config, advancing the epoch. Write order is: sign
 // with epoch+1 → write the file atomically → store epoch+1. A crash before the

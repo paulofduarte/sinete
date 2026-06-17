@@ -26,6 +26,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,31 +71,45 @@ func (EnclaveSource) Signer(label, tag string) (ssh.Signer, error) {
 	return enclave.OpenLabelTag(label, tag).Signer()
 }
 
-// RegistryStore is the production Store: it re-opens the registry file on each
-// call so key and config changes are picked up live. Built-in TTLs apply when a
-// setting is unset or unparseable.
-type RegistryStore struct{ Path string }
+// EnclaveStore is the production Store. Keys are enumerated from the secure
+// element — the source of truth for which keys exist — and TTLs come from the
+// signed config registry, both re-read per call so `sinete generate`/`config`
+// take effect without an agent restart. A config that fails verification
+// (tampered, stale, or corrupt) yields built-in TTLs: Effective returns "" when
+// the store is untrusted, so this is the fail-safe path.
+type EnclaveStore struct{}
 
-// Keys returns the registry's current entries.
-func (s RegistryStore) Keys() ([]registry.Entry, error) {
-	r, err := registry.Open(s.Path)
+// Keys enumerates the secure element and presents each key as a registry.Entry
+// (the on-the-fly index the agent's matching/signing logic expects).
+func (EnclaveStore) Keys() ([]registry.Entry, error) {
+	listed, err := enclave.List()
 	if err != nil {
 		return nil, err
 	}
-	return r.List(), nil
+	out := make([]registry.Entry, 0, len(listed))
+	for _, k := range listed {
+		line := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(k.PublicKey))) + " " + k.Name
+		out = append(out, registry.Entry{Name: k.Name, Label: k.Label, Tag: enclave.Tag, PublicKey: line})
+	}
+	return out, nil
 }
 
-// TTL resolves the effective idle and absolute-cap durations for a key.
-func (s RegistryStore) TTL(name string) (idle, max time.Duration) {
+// TTL resolves the effective idle and absolute-cap durations for a key from the
+// signed config (built-in defaults when unset, unparseable, or untrusted).
+func (EnclaveStore) TTL(name string) (idle, max time.Duration) {
 	idle, max = DefaultIdleTTL, DefaultMaxTTL
-	r, err := registry.Open(s.Path)
+	path, err := registry.ConfigPath()
 	if err != nil {
 		return idle, max
 	}
-	if d, ok := parseDur(r.Effective(name, registry.PresenceTTL)); ok {
+	cfg, _, err := registry.OpenConfig(path, enclave.ConfigCrypto{})
+	if err != nil {
+		return idle, max
+	}
+	if d, ok := parseDur(cfg.Effective(name, registry.PresenceTTL)); ok {
 		idle = d
 	}
-	if d, ok := parseDur(r.Effective(name, registry.PresenceMaxTTL)); ok {
+	if d, ok := parseDur(cfg.Effective(name, registry.PresenceMaxTTL)); ok {
 		max = d
 	}
 	return idle, max
