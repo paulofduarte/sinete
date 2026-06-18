@@ -199,6 +199,25 @@ func TestMergeLegacyFilters(t *testing.T) {
 	}
 }
 
+func TestConfigUnreadableUntrusted(t *testing.T) {
+	// A directory at the config path makes os.ReadFile fail with a non-NotExist
+	// error; OpenConfig should treat that fail-safe (untrusted), not hard-error.
+	path := filepath.Join(t.TempDir(), "registry.json")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	c, trusted, err := OpenConfig(path, &fakeCrypto{})
+	if err != nil {
+		t.Fatalf("OpenConfig should not hard-error on an unreadable file: %v", err)
+	}
+	if trusted {
+		t.Error("an unreadable config must be untrusted")
+	}
+	if got := c.Effective("x", PresenceTTL); got != "" {
+		t.Errorf("untrusted Effective = %q, want built-in default (\"\")", got)
+	}
+}
+
 func TestConfigEpochOverflowRefused(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "registry.json")
 	fc := &fakeCrypto{epoch: math.MaxUint64}

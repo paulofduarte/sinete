@@ -89,7 +89,11 @@ func OpenConfig(path string, crypto Crypto) (*Config, bool, error) {
 		return c, true, nil
 	}
 	if err != nil {
-		return nil, false, err
+		// Unreadable for some other reason (permissions, I/O, a directory at the
+		// path): fail-safe like any other verification failure — untrusted, built-in
+		// defaults — so callers can warn and still rewrite it rather than erroring.
+		c.trusted = false
+		return c, false, nil
 	}
 
 	// Any problem from here on is fail-safe: untrusted ⇒ built-in defaults.
