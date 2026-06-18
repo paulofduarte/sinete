@@ -14,6 +14,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"os/signal"
@@ -451,6 +452,9 @@ func cmdEnclaveCheck(args []string) error {
 		return fmt.Errorf("epoch get: %w", err)
 	}
 	fmt.Printf("  current: %d (exists=%v)\n", cur, ok)
+	if cur == math.MaxUint64 {
+		return fmt.Errorf("epoch at max; refusing to increment (matches Config.Save)")
+	}
 	if err := enclave.SetEpoch(cur + 1); err != nil {
 		return fmt.Errorf("epoch set: %w", err)
 	}
