@@ -92,7 +92,7 @@ sinete manages the secure-element key storage:
   list              list created keys (name, type, fingerprint)
   export <name>     print a key's public key
   ssh-setup <name>  write the .pub + print ssh/git config to use the key
-  delete <name>     delete a key from the enclave and the index
+  delete <name>     delete a key from the secure element (requires presence)
   config            view/set presence TTLs (--list, --key <name>)
   status            show install + key state (--json for the app UI)
   agent             run the ssh-agent (foreground)
@@ -798,6 +798,7 @@ func cmdUninstall(args []string) error {
 	}
 	if p, perr := registry.ConfigPath(); perr == nil {
 		_ = os.Remove(p)
+		_ = os.Remove(p + ".lock") // the config write lock file (see Config.Save)
 	}
 	if p, perr := registry.DefaultPath(); perr == nil {
 		_ = os.Remove(p)

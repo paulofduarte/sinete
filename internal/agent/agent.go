@@ -131,13 +131,14 @@ func (s *EnclaveStore) config() *registry.Config {
 	if err != nil {
 		return nil
 	}
+	// Stat under the lock so the stamp and the cache decision are consistent: a
+	// change between stat and check could otherwise return a stale config.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	stamp := "absent"
 	if fi, serr := os.Stat(path); serr == nil {
 		stamp = fmt.Sprintf("%d:%d", fi.ModTime().UnixNano(), fi.Size())
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.cfg != nil && s.stamp == stamp {
 		return s.cfg
 	}
