@@ -16,7 +16,7 @@ The crypto/hardware core is [`facebookincubator/sks`](https://github.com/faceboo
 cmd/sinete/         # CLI entrypoint
 internal/enclave/   # thin sks wrapper: create/open/sign/remove, pubkey export, name <-> (label,tag)
 internal/agent/     # the ssh-agent (served via x/crypto ServeAgent)
-internal/registry/  # local key index + presence config at $XDG_CONFIG_HOME/sinete/keys.json
+internal/registry/  # signed presence config at $XDG_CONFIG_HOME/sinete/registry.json (keys are enumerated from the SE)
 internal/presence/  # user-presence check (macOS LocalAuthentication, cgo); stub elsewhere
 internal/loginitem/ # register the launchd agent as a login item (macOS SMAppService, cgo); stub elsewhere
 internal/install/   # app-driven setup/teardown: link + login item + install.json state; stub elsewhere
@@ -39,7 +39,7 @@ This is the core design; get it right:
 ## Architecture notes that aren't obvious from the code
 
 - **The main thread matters.** macOS only draws the presence (LocalAuthentication) prompt from the main OS thread. `main` calls `runtime.LockOSThread`; the agent serves connections on goroutines but dispatches signing (and its prompt) to a main-thread `Run` loop.
-- **A local registry exists because `sks` cannot enumerate an app's keys.** `internal/registry` maps `name → {label, tag, publicKey, created, config}` and caches public keys so `list`/`export` never touch hardware. It holds no secret material. keys.json is `{keys: [...], defaults: {...}}` (the legacy bare-array form is still read).
+- **Keys are enumerated from the secure element; config is a signed file.** sinete no longer keeps an on-disk key index — `list`/`export`/the agent enumerate the SE (the source of truth; the in-repo cgo in `internal/enclave` does what stock `sks` can't). `internal/registry` holds only the per-key presence config in a single signed `registry.json` (`$XDG_CONFIG_HOME/sinete/`), whose payload is signed by an internal enclave **master key** and bound to a replay **epoch** (a keychain item); tampering or replay is detected and falls back to built-in defaults. It holds no secret material.
 - **`sks.Key` is a `crypto.Signer`** wrapped with `ssh.NewSignerFromSigner`. It's a handle — `Sign` computes in the SE; for presence-less keys it does *not* prompt (the agent gates presence separately).
 - **`sks.NewKey(label, tag, useBiometrics, accessibleWhenUnlockedOnly, hash)`**: `hash == nil` generates, non-nil looks up. Algorithm is always ECDSA **P-256** (SE constraint). Upstream sks ignores `useBiometrics` on macOS — exactly what we want (presence-less keys), which is why the fork was dropped.
 - **The entitlement wall.** SE keys are bound to sinete's keychain access group, so only the signed sinete bundle can use them. `ssh`/`ssh-add`/any in-process library cannot reach the key — the agent is the only channel (this is why a PKCS#11 / SecurityKeyProvider can't give agentless access).

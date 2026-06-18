@@ -26,17 +26,19 @@ const (
 // Settings lists the recognised config keys.
 var Settings = []string{PresenceTTL, PresenceMaxTTL}
 
-// BuiltinDefaults are the values applied when a setting has no override or global
-// default. They are the single source of truth: the agent enforces them and the
-// CLI displays them. Keep agent.DefaultIdleTTL / DefaultMaxTTL in sync — a test
-// (TestBuiltinDefaultsMatchAgent) verifies they do.
-var BuiltinDefaults = map[string]string{
+// builtinDefaults are the values applied when a setting has no override or global
+// default — the single source of truth: the agent enforces them and the CLI
+// displays them (both via BuiltinDefault). Keep agent.DefaultIdleTTL /
+// DefaultMaxTTL in sync; TestBuiltinDefaultsMatchAgent verifies they do.
+// Unexported so importers can't mutate it (which would also risk a concurrent
+// map read/write panic).
+var builtinDefaults = map[string]string{
 	PresenceTTL:    "10m",
 	PresenceMaxTTL: "2h",
 }
 
 // BuiltinDefault returns the built-in value for a setting ("" if unknown).
-func BuiltinDefault(setting string) string { return BuiltinDefaults[setting] }
+func BuiltinDefault(setting string) string { return builtinDefaults[setting] }
 
 // ValidSetting reports whether name is a recognised config key.
 func ValidSetting(name string) bool {
