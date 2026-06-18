@@ -592,7 +592,8 @@ func checkAgainstCeiling(cfg *registry.Config, d time.Duration, value string) er
 		return nil
 	}
 	if d > ceiling {
-		return fmt.Errorf("presence-ttl %s exceeds the presence-max-ttl ceiling (%s); raise the ceiling first or choose a lower value", value, ceiling)
+		// Print the configured string (e.g. "2h"), not the time.Duration form ("2h0m0s").
+		return fmt.Errorf("presence-ttl %s exceeds the presence-max-ttl ceiling (%s); raise the ceiling first or choose a lower value", value, cfg.Defaults()[registry.PresenceMaxTTL])
 	}
 	return nil
 }
@@ -1057,8 +1058,20 @@ func configurePresenceOnInstall(ttlFlag, maxFlag string) error {
 		fmt.Fprintf(os.Stderr, "warning: could not write presence config (%v); leaving strict mode (every signature prompts). Set it later with `sinete config set …`.\n", err)
 		return nil
 	}
-	fmt.Printf("presence configured: presence-ttl=%s presence-max-ttl=%s\n", effTTL, effMax)
+	fmt.Printf("presence configured: presence-ttl=%s presence-max-ttl=%s\n", ttlForDisplay(effTTL), ttlForDisplay(effMax))
+	if effTTL == "" || effMax == "" {
+		fmt.Println("note: caching needs both presence-ttl and presence-max-ttl; while one is unset every signature still prompts (strict).")
+	}
 	return nil
+}
+
+// ttlForDisplay renders a TTL value for human output, making an unset one explicit
+// rather than blank.
+func ttlForDisplay(v string) string {
+	if v == "" {
+		return "(unset → strict)"
+	}
+	return v
 }
 
 // configFileExists reports whether the signed registry.json is present on disk
