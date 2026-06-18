@@ -172,9 +172,10 @@ func (c *Config) Ceiling() (time.Duration, bool) {
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil || d < 0 {
-		// A negative ceiling (only reachable via a pre-validation or hand-edited
-		// trusted config) is nonsense and would reject every non-negative ttl — treat
-		// it as unset rather than let it lock the user out.
+		// A negative ceiling (reachable only from a legacy or hand-edited signed
+		// config — older sinete accepted negative durations) is nonsense and would
+		// reject every non-negative ttl, so treat it as unset rather than lock the
+		// user out.
 		return 0, false
 	}
 	return d, true

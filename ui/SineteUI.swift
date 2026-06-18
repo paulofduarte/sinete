@@ -328,13 +328,13 @@ private struct PresenceSetupFields: View {
             .fixedSize(horizontal: false, vertical: true)
             HStack {
                 Text("Idle TTL").frame(width: 120, alignment: .leading)
-                TextField("10m", text: $ttl)
+                TextField("e.g. 10m", text: $ttl)
                     .textFieldStyle(.roundedBorder).frame(width: 90)
                     .accessibilityLabel("Idle TTL")
             }
             HStack {
                 Text("Max TTL (cap)").frame(width: 120, alignment: .leading)
-                TextField("2h", text: $maxTTL)
+                TextField("e.g. 2h", text: $maxTTL)
                     .textFieldStyle(.roundedBorder).frame(width: 90)
                     .accessibilityLabel("Max TTL cap")
             }
