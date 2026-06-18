@@ -901,16 +901,27 @@ func cmdInstall(args []string) error {
 		enc.SetIndent("", "  ")
 		return enc.Encode(p)
 	}
-	// Validate any provided TTL flags up front so a typo fails before we touch PATH.
-	if *ttl != "" {
-		if _, err := parseSetting(registry.PresenceTTL, *ttl); err != nil {
+	// Validate any provided TTL flags up front — including the ttl ≤ max-ttl
+	// relationship when both are given — so an invalid pair fails before we touch
+	// PATH, rather than after the link/login-item changes have already committed.
+	haveTTL, haveMax := *ttl != "", *maxTTL != ""
+	var dttl, dmax time.Duration
+	if haveTTL {
+		d, err := parseSetting(registry.PresenceTTL, *ttl)
+		if err != nil {
 			return err
 		}
+		dttl = d
 	}
-	if *maxTTL != "" {
-		if _, err := parseSetting(registry.PresenceMaxTTL, *maxTTL); err != nil {
+	if haveMax {
+		d, err := parseSetting(registry.PresenceMaxTTL, *maxTTL)
+		if err != nil {
 			return err
 		}
+		dmax = d
+	}
+	if haveTTL && haveMax && dttl > dmax {
+		return fmt.Errorf("presence-ttl %s exceeds presence-max-ttl %s; choose a ttl ≤ the cap", *ttl, *maxTTL)
 	}
 
 	st, err := install.Install(*replace, *skipLink)
