@@ -487,7 +487,10 @@ struct SetupView: View {
         DispatchQueue.global().async {
             var args = ["install"]
             // Pass the chosen presence TTLs so install writes the first signed config
-            // (one Touch ID). Blank fields fall back to the CLI's suggestions.
+            // (one Touch ID). The fields are pre-filled, so they're normally set; if a
+            // user clears just one, `sinete install` fills it from the suggestions, but
+            // clearing both passes no flags and — since the app runs install
+            // non-interactively — leaves TTLs unset (strict), not suggested.
             let ttl = presenceTTL.trimmingCharacters(in: .whitespaces)
             let maxTTL = presenceMaxTTL.trimmingCharacters(in: .whitespaces)
             if !ttl.isEmpty { args.append(contentsOf: ["--presence-ttl", ttl]) }

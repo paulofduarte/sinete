@@ -682,9 +682,9 @@ func parseSetting(setting, value string) (time.Duration, error) {
 	return d, nil
 }
 
-// popBoolFlag removes the first occurrence of any of names from args (anywhere in
-// the list, so it works after positional verbs too) and reports whether it was
-// present.
+// popBoolFlag removes every occurrence of any of names from args (anywhere in the
+// list, so it works after positional verbs too) and reports whether at least one
+// was present.
 func popBoolFlag(args []string, names ...string) ([]string, bool) {
 	out := make([]string, 0, len(args))
 	found := false

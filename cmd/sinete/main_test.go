@@ -88,6 +88,10 @@ func TestPopBoolFlag(t *testing.T) {
 	if _, found := popBoolFlag([]string{"show"}, "--yes", "-y"); found {
 		t.Error("--yes should not be found when absent")
 	}
+	// Every occurrence is removed, not just the first.
+	if got, _ := popBoolFlag([]string{"-y", "set", "--yes"}, "--yes", "-y"); len(got) != 1 || got[0] != "set" {
+		t.Errorf("popBoolFlag should strip all matches, got %v", got)
+	}
 }
 
 func TestParseSetting(t *testing.T) {
