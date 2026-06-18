@@ -26,7 +26,7 @@ import (
 //
 // Increment is NOT required to be internally atomic. The keychain has no atomic
 // increment, so the macOS read+1+store would lose updates under concurrency — it is
-// safe only because the sole caller, Config.Save, holds the config lock (an flock on
+// safe only because the sole caller, Config.Save, holds the config lock (a flock on
 // <path>.lock) across the whole read-epoch → sign → write → Increment sequence,
 // serialising every writer (across processes, and across goroutines via a fresh open
 // per Save). The agent never writes the epoch, only the `sinete config` CLI does, so
