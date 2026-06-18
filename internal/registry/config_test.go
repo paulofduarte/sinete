@@ -301,6 +301,13 @@ func TestConfigCeiling(t *testing.T) {
 		t.Errorf("Ceiling() = %v, %v, want 2h, true", d, ok)
 	}
 
+	// A negative ceiling is nonsense (would reject every ttl) → reported as unset.
+	c.SetDefault(PresenceMaxTTL, "-5m")
+	if _, ok := c.Ceiling(); ok {
+		t.Error("a negative ceiling should report ok=false")
+	}
+	c.SetDefault(PresenceMaxTTL, "2h")
+
 	// An untrusted store reports no ceiling (fail-closed).
 	c.trusted = false
 	if _, ok := c.Ceiling(); ok {

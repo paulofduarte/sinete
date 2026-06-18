@@ -705,10 +705,14 @@ func popBoolFlag(args []string, names ...string) ([]string, bool) {
 	return out, found
 }
 
-// confirm asks a yes/no question on stderr/stdin. A non-TTY (no input) or any
-// answer other than y/yes reads as "no", so the caller cancels rather than
-// proceeds — the safe default for a config change.
+// confirm asks a yes/no question on stderr/stdin. A non-TTY reads as "no" without
+// touching stdin (fmt.Scanln would otherwise block forever on a stdin that is open
+// but not a terminal), as does any answer other than y/yes — so the caller cancels
+// rather than proceeds, the safe default for a config change.
 func confirm(prompt string) bool {
+	if !isInteractive() {
+		return false
+	}
 	fmt.Fprintf(os.Stderr, "%s [y/N]: ", prompt)
 	var resp string
 	if _, err := fmt.Scanln(&resp); err != nil {
