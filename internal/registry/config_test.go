@@ -20,8 +20,9 @@ import (
 // Tampering with the payload makes Verify fail; advancing the epoch behind an
 // on-disk file makes that file stale.
 type fakeCrypto struct {
-	epoch       uint64
-	setEpochErr error
+	epoch        uint64
+	incrementErr error
+	incrementBy  uint64 // 0 = the normal +1; >0 advances by that (to test the mismatch branch)
 }
 
 func (f *fakeCrypto) tag(payload []byte) []byte {
@@ -31,17 +32,21 @@ func (f *fakeCrypto) tag(payload []byte) []byte {
 func (f *fakeCrypto) Sign(payload []byte) ([]byte, error) { return f.tag(payload), nil }
 func (f *fakeCrypto) Verify(payload, sig []byte) bool     { return bytes.Equal(f.tag(payload), sig) }
 func (f *fakeCrypto) Epoch() (uint64, error)              { return f.epoch, nil }
-func (f *fakeCrypto) SetEpoch(v uint64) error {
-	if f.setEpochErr != nil {
-		return f.setEpochErr
+func (f *fakeCrypto) Increment() (uint64, error) {
+	if f.incrementErr != nil {
+		return 0, f.incrementErr
 	}
-	f.epoch = v
-	return nil
+	by := uint64(1)
+	if f.incrementBy != 0 {
+		by = f.incrementBy
+	}
+	f.epoch += by
+	return f.epoch, nil
 }
 
 func TestConfigSaveEpochFailureUntrusted(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "registry.json")
-	fc := &fakeCrypto{setEpochErr: errors.New("epoch write failed")}
+	fc := &fakeCrypto{incrementErr: errors.New("epoch write failed")}
 
 	c, _, _ := OpenConfig(path, fc)
 	c.SetDefault(PresenceTTL, "5m")
@@ -181,6 +186,26 @@ func TestConfigUnreadableUntrusted(t *testing.T) {
 	}
 	if trusted {
 		t.Error("an unreadable config must be untrusted")
+	}
+	if got := c.Effective("x", PresenceTTL); got != "" {
+		t.Errorf("untrusted Effective = %q, want strict fallback (\"\")", got)
+	}
+}
+
+// If Increment lands on a value other than the expected next (e.g. an out-of-band
+// change, or a backend bug that skips/over-counts), Save must fail-close: the on-disk
+// file no longer matches the stored epoch, so a reload would distrust it anyway.
+func TestConfigSaveEpochMismatchUntrusted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.json")
+	fc := &fakeCrypto{incrementBy: 2} // got = 2, but Save signed next = 1
+
+	c, _, _ := OpenConfig(path, fc)
+	c.SetDefault(PresenceTTL, "5m")
+	if err := c.Save(); err == nil {
+		t.Fatal("Save should fail when Increment lands on an unexpected epoch")
+	}
+	if c.Trusted() {
+		t.Error("Config should be untrusted after an epoch mismatch")
 	}
 	if got := c.Effective("x", PresenceTTL); got != "" {
 		t.Errorf("untrusted Effective = %q, want strict fallback (\"\")", got)
