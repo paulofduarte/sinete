@@ -926,7 +926,7 @@ func cmdInstall(args []string) error {
 	plan := fs.Bool("plan", false, "print the install plan as JSON without acting")
 	replace := fs.Bool("replace-link", false, "replace an existing different link at the target")
 	skipLink := fs.Bool("skip-link", false, "register the login item but leave any existing link untouched")
-	ttl := fs.String("presence-ttl", "", "presence idle TTL to configure (e.g. 10m); prompts on a TTY when unset")
+	ttl := fs.String("presence-ttl", "", "presence idle TTL (e.g. 10m); a fresh interactive install prompts for it when unset")
 	maxTTL := fs.String("presence-max-ttl", "", "presence absolute-cap TTL (e.g. 2h); the global ceiling on presence-ttl")
 	_ = fs.Parse(args)
 
