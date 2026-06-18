@@ -20,8 +20,8 @@ import (
 // Tampering with the payload makes Verify fail; advancing the epoch behind an
 // on-disk file makes that file stale.
 type fakeCrypto struct {
-	epoch       uint64
-	setEpochErr error
+	epoch        uint64
+	incrementErr error
 }
 
 func (f *fakeCrypto) tag(payload []byte) []byte {
@@ -31,17 +31,17 @@ func (f *fakeCrypto) tag(payload []byte) []byte {
 func (f *fakeCrypto) Sign(payload []byte) ([]byte, error) { return f.tag(payload), nil }
 func (f *fakeCrypto) Verify(payload, sig []byte) bool     { return bytes.Equal(f.tag(payload), sig) }
 func (f *fakeCrypto) Epoch() (uint64, error)              { return f.epoch, nil }
-func (f *fakeCrypto) SetEpoch(v uint64) error {
-	if f.setEpochErr != nil {
-		return f.setEpochErr
+func (f *fakeCrypto) Increment() (uint64, error) {
+	if f.incrementErr != nil {
+		return 0, f.incrementErr
 	}
-	f.epoch = v
-	return nil
+	f.epoch++
+	return f.epoch, nil
 }
 
 func TestConfigSaveEpochFailureUntrusted(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "registry.json")
-	fc := &fakeCrypto{setEpochErr: errors.New("epoch write failed")}
+	fc := &fakeCrypto{incrementErr: errors.New("epoch write failed")}
 
 	c, _, _ := OpenConfig(path, fc)
 	c.SetDefault(PresenceTTL, "5m")

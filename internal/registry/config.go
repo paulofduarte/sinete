@@ -17,12 +17,17 @@ import (
 // Crypto signs and verifies the config envelope and tracks the replay epoch. The
 // production implementation is enclave.ConfigCrypto (the presence-enforced master
 // key + the keychain epoch item); tests use a fake. Sign requires user presence;
-// Verify, Epoch and SetEpoch do not.
+// Verify, Epoch and Increment do not.
+//
+// The epoch is advanced via Increment (returning the new value) rather than a
+// SetEpoch(v): a TPM-backed backend can only bump a hardware NV monotonic counter,
+// not set it to an arbitrary value, so Increment is the contract both backends can
+// honour (macOS implements it as read+1+store, Linux as NV_Increment).
 type Crypto interface {
 	Sign(payload []byte) (sig []byte, err error)
 	Verify(payload, sig []byte) bool
 	Epoch() (uint64, error)
-	SetEpoch(uint64) error
+	Increment() (uint64, error)
 }
 
 // ConfigPath returns $XDG_CONFIG_HOME/sinete/registry.json (the signed,
@@ -346,12 +351,18 @@ func (c *Config) Save() error {
 	if err := os.Rename(tmp, c.path); err != nil {
 		return err
 	}
-	if err := c.crypto.SetEpoch(next); err != nil {
-		// The new file is on disk but the epoch didn't advance, so a reload would
-		// see a mismatch and distrust it. Mark this instance untrusted too, to stay
-		// fail-safe and consistent with what a later OpenConfig observes.
+	// Advance the epoch by one. Under the config lock the read above is stable, so
+	// Increment lands on next; if it can't (or somehow lands elsewhere), the on-disk
+	// file no longer matches the stored epoch, so a reload distrusts it — mark this
+	// instance untrusted too to stay fail-safe and consistent with OpenConfig.
+	got, err := c.crypto.Increment()
+	if err != nil {
 		c.trusted = false
 		return fmt.Errorf("advance epoch: %w", err)
+	}
+	if got != next {
+		c.trusted = false
+		return fmt.Errorf("advance epoch: got %d, expected %d", got, next)
 	}
 	c.trusted = true
 	return nil

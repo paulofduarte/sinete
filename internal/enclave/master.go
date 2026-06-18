@@ -186,7 +186,7 @@ func DeleteEpoch() error {
 // ConfigCrypto adapts the master key and the epoch item to the registry's
 // signing needs: it signs and verifies the config envelope and tracks the replay
 // epoch. Sign triggers Touch ID (the master key's ACL) and must run on the main
-// OS thread; Verify, Epoch and SetEpoch do not prompt. Its method set satisfies
+// OS thread; Verify, Epoch and Increment do not prompt. Its method set satisfies
 // registry.Crypto structurally (no import cycle).
 type ConfigCrypto struct{}
 
@@ -220,8 +220,20 @@ func (ConfigCrypto) Epoch() (uint64, error) {
 	return v, err
 }
 
-// SetEpoch stores the registry epoch.
-func (ConfigCrypto) SetEpoch(v uint64) error { return SetEpoch(v) }
+// Increment advances the registry epoch by one and returns the new value. macOS
+// has no app-accessible hardware counter, so this is read+1+store on the keychain
+// item; a TPM backend implements it as a hardware NV_Increment. No presence prompt.
+func (ConfigCrypto) Increment() (uint64, error) {
+	v, _, err := Epoch()
+	if err != nil {
+		return 0, err
+	}
+	next := v + 1
+	if err := SetEpoch(next); err != nil {
+		return 0, err
+	}
+	return next, nil
+}
 
 // sshPubFromRaw parses an ANSI X9.63 uncompressed P-256 point (0x04‖X‖Y, 65
 // bytes) into an ssh.PublicKey.
