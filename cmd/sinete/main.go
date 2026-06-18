@@ -94,7 +94,7 @@ sinete manages the secure-element key storage:
   export <name>     print a key's public key
   ssh-setup <name>  write the .pub + print ssh/git config to use the key
   delete <name>     delete a key from the secure element (requires presence)
-  config            view/set presence TTLs (--list, --key <name>)
+  config            view/set presence TTLs (config show | set | key <name> set …)
   status            show install + key state (--json for the app UI)
   agent             run the ssh-agent (foreground)
 
@@ -105,8 +105,8 @@ prompts for Touch ID; further signatures are silent until its presence window
 }
 
 // openConfig loads the signed config (registry.json). Reads reflect exactly what
-// the agent enforces: the verified config, or built-in defaults when it is absent
-// or cannot be verified.
+// the agent enforces: the verified config, or strict mode (authenticate every
+// signature) when it is absent or cannot be verified.
 func openConfig() (*registry.Config, error) {
 	path, err := registry.ConfigPath()
 	if err != nil {
@@ -117,7 +117,7 @@ func openConfig() (*registry.Config, error) {
 		return nil, err
 	}
 	if !trusted {
-		fmt.Fprintln(os.Stderr, "warning: the signed config could not be verified; using built-in defaults. Re-run `sinete config` to rewrite it.")
+		fmt.Fprintln(os.Stderr, "warning: the signed config could not be verified; falling back to strict mode (every signature prompts). Re-run `sinete install` or `sinete config set …` to rewrite it.")
 	}
 	return cfg, nil
 }
@@ -474,93 +474,280 @@ func cmdEnclaveCheck(args []string) error {
 	return nil
 }
 
-// cmdConfig views and sets presence config: a global default, or a per-key
-// override with --key. Settings are durations (e.g. 10m, 2h).
+// cmdConfig views and sets presence config. Scope is explicit in the verb:
+//
+//	config [show]                       print everything
+//	config get   <setting>              print the global value
+//	config set   <setting> <value>      set the global value (Touch ID)
+//	config unset <setting>              clear the global value → strict
+//	config key <name> [show]            print a key's override
+//	config key <name> get   <setting>   print the effective value for a key
+//	config key <name> set   <setting> <value>   relax a key (Touch ID)
+//	config key <name> unset <setting>           drop a key's override
+//
+// presence-ttl resolves fail-closed to 0 (authenticate every signature) when
+// unset; presence-max-ttl is GLOBAL only and caps every presence-ttl. --yes (-y)
+// skips the confirmation when lowering the ceiling would reduce existing values.
 func cmdConfig(args []string) error {
-	fs := flag.NewFlagSet("config", flag.ExitOnError)
-	keyName := fs.String("key", "", "set/get for a specific key instead of the global default")
-	list := fs.Bool("list", false, "print all config")
-	_ = fs.Parse(args)
+	args, yes := popBoolFlag(args, "--yes", "-y")
 
 	cfg, err := openConfig()
 	if err != nil {
 		return err
 	}
 
-	if *list {
+	if len(args) == 0 || args[0] == "show" {
 		printConfig(cfg)
 		return nil
 	}
 
-	rest := fs.Args()
-	if len(rest) == 0 {
-		return errors.New("usage: sinete config [--key <name>] <setting> [<value>]  (--list to show all)")
-	}
-	setting := rest[0]
-	if !registry.ValidSetting(setting) {
-		return fmt.Errorf("unknown setting %q (valid: %s)", setting, strings.Join(registry.Settings, ", "))
-	}
-
-	if len(rest) == 1 { // get
-		if *keyName != "" {
-			// Reject an unknown key rather than silently answering with the global
-			// default (which would hide a typo).
-			if _, ok, err := enclave.Find(*keyName); err != nil {
-				return err
-			} else if !ok {
-				return fmt.Errorf("no key named %q", *keyName)
-			}
-			fmt.Println(cfg.Effective(*keyName, setting))
-		} else {
-			fmt.Println(cfg.Defaults()[setting])
+	switch args[0] {
+	case "get":
+		if len(args) != 2 {
+			return errors.New("usage: sinete config get <setting>")
 		}
+		if err := requireSetting(args[1]); err != nil {
+			return err
+		}
+		fmt.Println(cfg.Defaults()[args[1]])
+		return nil
+	case "set":
+		return configGlobalSet(cfg, args[1:], yes)
+	case "unset":
+		if len(args) != 2 {
+			return errors.New("usage: sinete config unset <setting>")
+		}
+		if err := requireSetting(args[1]); err != nil {
+			return err
+		}
+		cfg.UnsetDefault(args[1])
+		return saveConfig(cfg)
+	case "key":
+		return configKey(cfg, args[1:])
+	default:
+		return fmt.Errorf("unknown config subcommand %q (want: show, get, set, unset, key)", args[0])
+	}
+}
+
+// configGlobalSet handles `config set <setting> <value>`. presence-max-ttl is the
+// global ceiling (lowering it can reduce existing presence-ttl values); a
+// presence-ttl is rejected if it exceeds the ceiling.
+func configGlobalSet(cfg *registry.Config, rest []string, yes bool) error {
+	if len(rest) != 2 {
+		return errors.New("usage: sinete config set <setting> <value>")
+	}
+	setting, value := rest[0], rest[1]
+	d, err := parseSetting(setting, value)
+	if err != nil {
+		return err
+	}
+	if setting == registry.PresenceMaxTTL {
+		return setCeiling(cfg, d, value, yes)
+	}
+	if err := checkAgainstCeiling(cfg, d, value); err != nil {
+		return err
+	}
+	cfg.SetDefault(setting, value)
+	return saveConfig(cfg)
+}
+
+// setCeiling sets the global presence-max-ttl. Lowering it below existing
+// presence-ttl values would leave them stricter than the ceiling (inconsistent),
+// so it warns and — on confirmation — reduces each to the new ceiling.
+func setCeiling(cfg *registry.Config, d time.Duration, value string, yes bool) error {
+	if stranded := cfg.TTLsAbove(d); len(stranded) > 0 {
+		fmt.Fprintf(os.Stderr, "lowering presence-max-ttl to %s will reduce these presence-ttl values to %s:\n", value, value)
+		for _, r := range stranded {
+			if r.Key == "" {
+				fmt.Fprintf(os.Stderr, "  global default  (was %s)\n", r.Value)
+			} else {
+				fmt.Fprintf(os.Stderr, "  key %-12s (was %s)\n", r.Key, r.Value)
+			}
+		}
+		if !yes && !confirm("continue?") {
+			return errors.New("cancelled")
+		}
+		for _, r := range stranded {
+			if r.Key == "" {
+				cfg.SetDefault(registry.PresenceTTL, value)
+			} else {
+				cfg.SetKeyConfig(r.Key, registry.PresenceTTL, value)
+			}
+		}
+	}
+	cfg.SetDefault(registry.PresenceMaxTTL, value)
+	return saveConfig(cfg)
+}
+
+// checkAgainstCeiling rejects a presence-ttl above the global ceiling and, when no
+// ceiling is set, warns that the value has no effect yet (an unset presence-max-ttl
+// keeps every key strict).
+func checkAgainstCeiling(cfg *registry.Config, d time.Duration, value string) error {
+	ceiling, ok := cfg.Ceiling()
+	if !ok {
+		fmt.Fprintln(os.Stderr, "note: presence-max-ttl is unset, so presence-ttl has no effect yet (every signature still prompts). Set it with `sinete config set presence-max-ttl <d>`.")
 		return nil
 	}
+	if d > ceiling {
+		return fmt.Errorf("presence-ttl %s exceeds the presence-max-ttl ceiling (%s); raise the ceiling first or choose a lower value", value, ceiling)
+	}
+	return nil
+}
 
-	value := rest[1] // set
-	if _, err := time.ParseDuration(value); err != nil {
-		return fmt.Errorf("invalid duration %q: %w", value, err)
+// configKey handles the `config key <name> …` forms. The key must exist (a typo
+// must not silently configure a phantom key).
+func configKey(cfg *registry.Config, rest []string) error {
+	if len(rest) == 0 {
+		return errors.New("usage: sinete config key <name> [show|get|set|unset] …")
 	}
-	if *keyName != "" {
-		if _, ok, err := enclave.Find(*keyName); err != nil {
-			return err
-		} else if !ok {
-			return fmt.Errorf("no key named %q", *keyName)
+	name := rest[0]
+	rest = rest[1:]
+	if _, ok, err := enclave.Find(name); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("no key named %q", name)
+	}
+
+	verb := "show"
+	if len(rest) > 0 {
+		verb, rest = rest[0], rest[1:]
+	}
+	switch verb {
+	case "show":
+		printKeyConfig(cfg, name)
+		return nil
+	case "get":
+		if len(rest) != 1 {
+			return errors.New("usage: sinete config key <name> get <setting>")
 		}
-		cfg.SetKeyConfig(*keyName, setting, value)
-	} else {
-		cfg.SetDefault(setting, value)
+		if err := requireSetting(rest[0]); err != nil {
+			return err
+		}
+		fmt.Println(cfg.Effective(name, rest[0]))
+		return nil
+	case "set":
+		if len(rest) != 2 {
+			return errors.New("usage: sinete config key <name> set <setting> <value>")
+		}
+		return configKeySet(cfg, name, rest[0], rest[1])
+	case "unset":
+		if len(rest) != 1 {
+			return errors.New("usage: sinete config key <name> unset <setting>")
+		}
+		if err := requireSetting(rest[0]); err != nil {
+			return err
+		}
+		cfg.UnsetKeyConfig(name, rest[0])
+		return saveConfig(cfg)
+	default:
+		return fmt.Errorf("unknown config key subcommand %q (want: show, get, set, unset)", verb)
 	}
-	// Save signs the config with the presence-enforced master key, so this prompts
-	// for Touch ID — the human approval that gates every config change.
+}
+
+func configKeySet(cfg *registry.Config, name, setting, value string) error {
+	if setting == registry.PresenceMaxTTL {
+		return errors.New("presence-max-ttl is global; it caps every key's presence-ttl. Set it with `sinete config set presence-max-ttl <d>`")
+	}
+	d, err := parseSetting(setting, value)
+	if err != nil {
+		return err
+	}
+	if err := checkAgainstCeiling(cfg, d, value); err != nil {
+		return err
+	}
+	cfg.SetKeyConfig(name, setting, value)
 	return saveConfig(cfg)
+}
+
+// requireSetting validates a setting name.
+func requireSetting(s string) error {
+	if !registry.ValidSetting(s) {
+		return fmt.Errorf("unknown setting %q (valid: %s)", s, strings.Join(registry.Settings, ", "))
+	}
+	return nil
+}
+
+// parseSetting validates the setting name and its duration value (non-negative).
+func parseSetting(setting, value string) (time.Duration, error) {
+	if err := requireSetting(setting); err != nil {
+		return 0, err
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration %q: %w", value, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("duration must not be negative: %q", value)
+	}
+	return d, nil
+}
+
+// popBoolFlag removes the first occurrence of any of names from args (anywhere in
+// the list, so it works after positional verbs too) and reports whether it was
+// present.
+func popBoolFlag(args []string, names ...string) ([]string, bool) {
+	out := make([]string, 0, len(args))
+	found := false
+	for _, a := range args {
+		hit := false
+		for _, n := range names {
+			if a == n {
+				hit = true
+				break
+			}
+		}
+		if hit {
+			found = true
+			continue
+		}
+		out = append(out, a)
+	}
+	return out, found
+}
+
+// confirm asks a yes/no question on stderr/stdin. A non-TTY (no input) or any
+// answer other than y/yes reads as "no", so the caller cancels rather than
+// proceeds — the safe default for a config change.
+func confirm(prompt string) bool {
+	fmt.Fprintf(os.Stderr, "%s [y/N]: ", prompt)
+	var resp string
+	if _, err := fmt.Scanln(&resp); err != nil {
+		return false
+	}
+	resp = strings.ToLower(strings.TrimSpace(resp))
+	return resp == "y" || resp == "yes"
 }
 
 func printConfig(cfg *registry.Config) {
 	defaults := cfg.Defaults()
-	fmt.Println("defaults:")
+	fmt.Println("global:")
 	for _, s := range registry.Settings {
-		// Show the effective value: a configured global default, or the built-in
-		// value (tagged) so the end user can see what is actually applied.
-		v := defaults[s]
-		if v == "" {
-			v = registry.BuiltinDefault(s) + " (built-in)"
-		}
-		fmt.Printf("  %-16s %s\n", s, v)
+		printSetting(s, defaults[s])
 	}
 	for _, name := range cfg.Names() {
-		kc := cfg.KeyConfig(name)
-		printed := false
-		for _, s := range registry.Settings {
-			if v := kc[s]; v != "" {
-				if !printed {
-					fmt.Printf("%s:\n", name)
-					printed = true
-				}
-				fmt.Printf("  %-16s %s\n", s, v)
-			}
+		// Only presence-ttl is meaningful per-key (presence-max-ttl is global).
+		if v := cfg.KeyConfig(name)[registry.PresenceTTL]; v != "" {
+			fmt.Printf("%s:\n  %-16s %s\n", name, registry.PresenceTTL, v)
 		}
 	}
+}
+
+func printKeyConfig(cfg *registry.Config, name string) {
+	if v := cfg.KeyConfig(name)[registry.PresenceTTL]; v != "" {
+		fmt.Printf("%s:\n  %-16s %s\n", name, registry.PresenceTTL, v)
+		return
+	}
+	fmt.Printf("%s: no override (follows the global presence-ttl)\n", name)
+}
+
+// printSetting prints one global setting, making an unset value's strict meaning
+// explicit rather than blank.
+func printSetting(s, v string) {
+	if v == "" {
+		fmt.Printf("  %-16s %s\n", s, "(unset → strict: authenticate every signature)")
+		return
+	}
+	fmt.Printf("  %-16s %s\n", s, v)
 }
 
 // cmdPresent runs the user-presence check directly (no signing). Diagnostic for
@@ -693,6 +880,8 @@ func cmdInstall(args []string) error {
 	plan := fs.Bool("plan", false, "print the install plan as JSON without acting")
 	replace := fs.Bool("replace-link", false, "replace an existing different link at the target")
 	skipLink := fs.Bool("skip-link", false, "register the login item but leave any existing link untouched")
+	ttl := fs.String("presence-ttl", "", "presence idle TTL to configure (e.g. 10m); prompts on a TTY when unset")
+	maxTTL := fs.String("presence-max-ttl", "", "presence absolute-cap TTL (e.g. 2h); the global ceiling on presence-ttl")
 	_ = fs.Parse(args)
 
 	if *replace && *skipLink {
@@ -708,6 +897,18 @@ func cmdInstall(args []string) error {
 		enc.SetIndent("", "  ")
 		return enc.Encode(p)
 	}
+	// Validate any provided TTL flags up front so a typo fails before we touch PATH.
+	if *ttl != "" {
+		if _, err := parseSetting(registry.PresenceTTL, *ttl); err != nil {
+			return err
+		}
+	}
+	if *maxTTL != "" {
+		if _, err := parseSetting(registry.PresenceMaxTTL, *maxTTL); err != nil {
+			return err
+		}
+	}
+
 	st, err := install.Install(*replace, *skipLink)
 	if err != nil {
 		return err
@@ -717,7 +918,100 @@ func cmdInstall(args []string) error {
 	} else {
 		fmt.Println("installed: login item registered (existing link left untouched)")
 	}
+	return configurePresenceOnInstall(*ttl, *maxTTL)
+}
+
+// configurePresenceOnInstall writes the initial presence config as part of setup.
+// Built-in values are suggestions only, never an enforced fallback (unconfigured ⇒
+// strict). Behaviour:
+//   - flags given → use them (filling a missing one from the current value or the
+//     suggestion), then sign-and-save (Touch ID);
+//   - no flags, already configured & trusted → leave it (don't nag);
+//   - no flags, not configured, on a TTY → prompt, pre-filling the suggestions;
+//   - no flags, not configured, non-TTY → leave strict and print a hint.
+func configurePresenceOnInstall(ttlFlag, maxFlag string) error {
+	cfg, err := openConfig()
+	if err != nil {
+		return err
+	}
+	configured := cfg.Trusted() &&
+		(cfg.Defaults()[registry.PresenceTTL] != "" || cfg.Defaults()[registry.PresenceMaxTTL] != "")
+
+	ttl, max := ttlFlag, maxFlag
+	if ttl == "" && max == "" {
+		if configured {
+			return nil // already set up; setup must not re-prompt or clobber
+		}
+		if !isInteractive() {
+			fmt.Fprintln(os.Stderr, "note: presence TTLs are unset, so every signature prompts for Touch ID. Configure them with `sinete config set presence-ttl <d>` and `… presence-max-ttl <d>`, or re-run `sinete install` interactively.")
+			return nil
+		}
+		fmt.Fprintln(os.Stderr, "Configure presence caching (blank keeps the suggested value):")
+		ttl = promptDuration("  presence-ttl  (idle window)", firstNonEmpty(cfg.Defaults()[registry.PresenceTTL], registry.Suggested(registry.PresenceTTL)))
+		max = promptDuration("  presence-max-ttl (absolute cap)", firstNonEmpty(cfg.Defaults()[registry.PresenceMaxTTL], registry.Suggested(registry.PresenceMaxTTL)))
+	} else {
+		// Partial flags: fill the unset one from the current value, else the suggestion.
+		if ttl == "" {
+			ttl = firstNonEmpty(cfg.Defaults()[registry.PresenceTTL], registry.Suggested(registry.PresenceTTL))
+		}
+		if max == "" {
+			max = firstNonEmpty(cfg.Defaults()[registry.PresenceMaxTTL], registry.Suggested(registry.PresenceMaxTTL))
+		}
+	}
+
+	dttl, err := parseSetting(registry.PresenceTTL, ttl)
+	if err != nil {
+		return err
+	}
+	dmax, err := parseSetting(registry.PresenceMaxTTL, max)
+	if err != nil {
+		return err
+	}
+	if dttl > dmax {
+		return fmt.Errorf("presence-ttl %s exceeds presence-max-ttl %s; choose a ttl ≤ the cap", ttl, max)
+	}
+
+	cfg.SetDefault(registry.PresenceMaxTTL, max)
+	cfg.SetDefault(registry.PresenceTTL, ttl)
+	// The PATH link + login item already succeeded; a failed/denied config write
+	// (e.g. Touch ID cancelled) shouldn't fail the whole install — strict mode is
+	// the safe fallback, and `sinete config set …` can set it later.
+	if err := saveConfig(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not write presence config (%v); leaving strict mode (every signature prompts). Set it later with `sinete config set …`.\n", err)
+		return nil
+	}
+	fmt.Printf("presence configured: presence-ttl=%s presence-max-ttl=%s\n", ttl, max)
 	return nil
+}
+
+// isInteractive reports whether stdin is a terminal (so prompting makes sense).
+func isInteractive() bool {
+	fi, err := os.Stdin.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// promptDuration asks for a duration on stderr/stdin, returning suggestion when the
+// user just presses Enter (or input is unavailable).
+func promptDuration(label, suggestion string) string {
+	fmt.Fprintf(os.Stderr, "%s [%s]: ", label, suggestion)
+	var resp string
+	if _, err := fmt.Scanln(&resp); err != nil {
+		return suggestion
+	}
+	if resp = strings.TrimSpace(resp); resp == "" {
+		return suggestion
+	}
+	return resp
+}
+
+// firstNonEmpty returns the first non-empty string, or "".
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // cmdUninstall reverses the install: login item, the link sinete created, the

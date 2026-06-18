@@ -35,20 +35,20 @@ func TestValidSetting(t *testing.T) {
 	}
 }
 
-func TestBuiltinDefault(t *testing.T) {
-	if got := BuiltinDefault(PresenceTTL); got != "10m" {
-		t.Errorf("BuiltinDefault(PresenceTTL) = %q, want 10m", got)
+func TestSuggested(t *testing.T) {
+	if got := Suggested(PresenceTTL); got != "10m" {
+		t.Errorf("Suggested(PresenceTTL) = %q, want 10m", got)
 	}
-	if got := BuiltinDefault(PresenceMaxTTL); got != "2h" {
-		t.Errorf("BuiltinDefault(PresenceMaxTTL) = %q, want 2h", got)
+	if got := Suggested(PresenceMaxTTL); got != "2h" {
+		t.Errorf("Suggested(PresenceMaxTTL) = %q, want 2h", got)
 	}
-	if got := BuiltinDefault("bogus"); got != "" {
-		t.Errorf("BuiltinDefault(unknown) = %q, want \"\"", got)
+	if got := Suggested("bogus"); got != "" {
+		t.Errorf("Suggested(unknown) = %q, want \"\"", got)
 	}
-	// Every recognised setting must have a built-in default to display/enforce.
+	// Every recognised setting must have a wizard suggestion to pre-fill.
 	for _, s := range Settings {
-		if BuiltinDefault(s) == "" {
-			t.Errorf("setting %q has no built-in default", s)
+		if Suggested(s) == "" {
+			t.Errorf("setting %q has no suggested value", s)
 		}
 	}
 }

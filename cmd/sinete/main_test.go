@@ -8,6 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/paulofduarte/sinete/internal/registry"
 )
 
 // Keys come from secure-element enumeration (which needs the entitled bundle), so
@@ -64,5 +67,49 @@ func TestSameSocket(t *testing.T) {
 	}
 	if sameSocket(sock, filepath.Join(dir, "nope.sock")) {
 		t.Error("a nonexistent path should not match")
+	}
+}
+
+func TestPopBoolFlag(t *testing.T) {
+	// The flag is removed wherever it appears, even after positional verbs.
+	got, found := popBoolFlag([]string{"set", "presence-max-ttl", "1h", "--yes"}, "--yes", "-y")
+	if !found {
+		t.Error("--yes should be found")
+	}
+	want := []string{"set", "presence-max-ttl", "1h"}
+	if len(got) != len(want) {
+		t.Fatalf("popBoolFlag = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("popBoolFlag[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	if _, found := popBoolFlag([]string{"show"}, "--yes", "-y"); found {
+		t.Error("--yes should not be found when absent")
+	}
+}
+
+func TestParseSetting(t *testing.T) {
+	if d, err := parseSetting(registry.PresenceTTL, "10m"); err != nil || d != 10*time.Minute {
+		t.Errorf("parseSetting(ttl, 10m) = %v, %v, want 10m, nil", d, err)
+	}
+	if _, err := parseSetting("bogus", "10m"); err == nil {
+		t.Error("unknown setting should error")
+	}
+	if _, err := parseSetting(registry.PresenceTTL, "nope"); err == nil {
+		t.Error("invalid duration should error")
+	}
+	if _, err := parseSetting(registry.PresenceTTL, "-5m"); err == nil {
+		t.Error("a negative duration should error")
+	}
+}
+
+func TestFirstNonEmpty(t *testing.T) {
+	if got := firstNonEmpty("", "", "x", "y"); got != "x" {
+		t.Errorf("firstNonEmpty = %q, want x", got)
+	}
+	if got := firstNonEmpty("", ""); got != "" {
+		t.Errorf("firstNonEmpty(all empty) = %q, want empty", got)
 	}
 }
