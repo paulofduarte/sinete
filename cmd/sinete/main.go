@@ -1021,7 +1021,7 @@ func configurePresenceOnInstall(ttlFlag, maxFlag string) error {
 			return nil
 		}
 		if !isInteractive() {
-			fmt.Fprintln(os.Stderr, "note: presence TTLs are unset, so every signature prompts for Touch ID. Configure them with `sinete config set presence-ttl <d>` and `… presence-max-ttl <d>`, or re-run `sinete install` interactively.")
+			fmt.Fprintln(os.Stderr, "note: presence TTLs are unset, so every signature prompts for Touch ID. Configure them with `sinete config set presence-ttl <d>` and `sinete config set presence-max-ttl <d>`, or re-run `sinete install` interactively.")
 			return nil
 		}
 		fmt.Fprintln(os.Stderr, "Configure presence caching (blank keeps the suggested value):")

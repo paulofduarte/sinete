@@ -418,12 +418,18 @@ struct SetupView: View {
         // Unknown status (nil) is treated as a reconfigure for safety: reflect the
         // real config rather than risk relaxing a strict setup back to suggestions.
         let reconfigure = status?.configured ?? true
+        // Snapshot the fields now (main thread, .onAppear) so we don't overwrite any
+        // edits the user makes while the async fetch is in flight.
+        let startTTL = presenceTTL
+        let startMax = presenceMaxTTL
         DispatchQueue.global().async {
             let ttl = (try? Backend.run(["config", "get", "presence-ttl"]))?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let maxTTL = (try? Backend.run(["config", "get", "presence-max-ttl"]))?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             DispatchQueue.main.async {
+                // Skip if the user has typed into either field since the fetch began.
+                guard presenceTTL == startTTL, presenceMaxTTL == startMax else { return }
                 if reconfigure || !ttl.isEmpty || !maxTTL.isEmpty {
                     presenceTTL = ttl
                     presenceMaxTTL = maxTTL
