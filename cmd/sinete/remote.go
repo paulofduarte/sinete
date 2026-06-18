@@ -22,7 +22,7 @@ import (
 //   - darwin (remote_darwin.go): the peer's login session lacks window-server
 //     access (it is remote/SSH, or otherwise headless), so the LocalAuthentication
 //     Touch ID sheet cannot be drawn. Signal: SessionGetInfo on the peer's audit
-//     session id (see .claude/REMOTE-DETECTION.md).
+//     session id.
 //   - linux (future): the peer's logind session is remote (sd_session_is_remote).
 //     A local text console is NOT unavailable there — pinentry can prompt on a tty,
 //     so only genuinely remote sessions are refused.
