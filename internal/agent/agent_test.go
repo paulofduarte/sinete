@@ -317,16 +317,59 @@ func TestDelegatesToUpstream(t *testing.T) {
 	}
 }
 
-func TestOwnsKey(t *testing.T) {
-	e, pub, signer := testEntry(t, "work")
-	_, other, _ := testEntry(t, "other")
-	a := newAgent(t, &counter{}, time.Hour, time.Hour, e, signer)
+// errStore fails every Keys() read, to exercise the fail-closed path.
+type errStore struct{}
 
-	if !a.OwnsKey(pub) {
-		t.Error("OwnsKey should be true for a key in the store")
+func (errStore) Keys() ([]registry.Entry, error)      { return nil, errors.New("store unavailable") }
+func (errStore) TTL(string) (idle, max time.Duration) { return 0, 0 }
+
+func TestSignDenyingPresence(t *testing.T) {
+	// An owned (enclave) key is refused with ErrPresenceUnavailable and never
+	// prompts or signs — the prompt is exactly what a remote/headless peer can't
+	// satisfy.
+	e, pub, signer := testEntry(t, "work")
+	c := &counter{}
+	a := newAgent(t, c, time.Hour, time.Hour, e, signer)
+	go a.Run()
+
+	if _, err := a.SignDenyingPresence(pub, []byte("x")); !errors.Is(err, ErrPresenceUnavailable) {
+		t.Errorf("owned key: err = %v, want ErrPresenceUnavailable", err)
 	}
-	if a.OwnsKey(other) {
-		t.Error("OwnsKey should be false for an unknown key")
+	if _, err := a.SignWithFlagsDenyingPresence(pub, []byte("x"), 0); !errors.Is(err, ErrPresenceUnavailable) {
+		t.Errorf("owned key (flags): err = %v, want ErrPresenceUnavailable", err)
+	}
+	if got := c.count(); got != 0 {
+		t.Errorf("present called %d times for a refused key, want 0 (no prompt)", got)
+	}
+
+	// An upstream-delegated key still forwards and signs, with no prompt.
+	up := xagent.NewKeyring()
+	upPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := up.Add(xagent.AddedKey{PrivateKey: upPriv}); err != nil {
+		t.Fatal(err)
+	}
+	upPub, err := ssh.NewPublicKey(&upPriv.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := fakeStore{entries: []registry.Entry{e}, idle: time.Hour, max: time.Hour}
+	a2 := New(store, fakeSource{map[string]ssh.Signer{e.Label: signer}}, c.present, up.(xagent.ExtendedAgent))
+	sig, err := a2.SignDenyingPresence(upPub, []byte("data"))
+	if err != nil {
+		t.Fatalf("upstream key should delegate, got %v", err)
+	}
+	if err := upPub.Verify([]byte("data"), sig); err != nil {
+		t.Fatalf("delegated signature does not verify: %v", err)
+	}
+
+	// A store read error is surfaced (fail-closed), not swallowed into a delegate
+	// or a "not owned" — an unreadable index must not let an owned key slip past.
+	a3 := New(errStore{}, fakeSource{nil}, c.present, nil)
+	if _, err := a3.SignDenyingPresence(pub, []byte("x")); err == nil || errors.Is(err, ErrPresenceUnavailable) {
+		t.Errorf("store error: err = %v, want the underlying read error", err)
 	}
 }
 

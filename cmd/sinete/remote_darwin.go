@@ -31,6 +31,9 @@ static int peer_session_attrs(int fd, uint32_t *attrs) {
   if (getsockopt(fd, SOL_LOCAL, LOCAL_PEERTOKEN, &tok, &len) != 0) {
     return errno ? errno : -1;
   }
+  if (len != sizeof(tok)) {
+    return -2; // short token: don't derive an asid from a partial audit token
+  }
   au_asid_t asid = audit_token_to_asid(tok);
   SessionAttributeBits bits = 0;
   OSStatus rc = SessionGetInfo((SecuritySessionId)asid, NULL, &bits);

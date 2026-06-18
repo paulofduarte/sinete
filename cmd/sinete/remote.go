@@ -4,10 +4,6 @@
 package main
 
 import (
-	"errors"
-	"fmt"
-	"os"
-
 	"golang.org/x/crypto/ssh"
 	xagent "golang.org/x/crypto/ssh/agent"
 )
@@ -37,38 +33,30 @@ import (
 // false negative is at worst today's behaviour (a prompt that may not show), not a
 // lockout.
 
-// errRemotePresence is returned to a peer that can't satisfy a presence prompt when
-// it tries to sign with one of sinete's enclave keys.
-var errRemotePresence = errors.New("sinete: can't confirm user presence for this connection — it has no local interactive session (e.g. SSH); sign from the machine's console")
-
-// remoteRefusingAgent wraps the agent for a connection whose peer can't satisfy a
-// presence prompt (presenceUnavailable). It refuses signatures for sinete's own
-// enclave keys — which would otherwise block on a prompt the peer can't see — while
-// delegating everything else (List, and signing upstream-delegated keys) unchanged.
-// owns reports whether a key is one sinete gates with presence (Agent.OwnsKey).
-type remoteRefusingAgent struct {
+// presenceDenyingAgent is the agent capability the refusal flow needs: the full
+// ExtendedAgent, plus sign variants that refuse a presence-gated enclave key
+// (rather than prompt) while still delegating upstream keys. *agent.Agent provides
+// these; the refusal decision is made there with a single authoritative ownership
+// lookup, so this wrapper holds no ownership logic of its own.
+type presenceDenyingAgent interface {
 	xagent.ExtendedAgent
-	owns func(ssh.PublicKey) bool
+	SignDenyingPresence(key ssh.PublicKey, data []byte) (*ssh.Signature, error)
+	SignWithFlagsDenyingPresence(key ssh.PublicKey, data []byte, flags xagent.SignatureFlags) (*ssh.Signature, error)
 }
 
-func (r remoteRefusingAgent) refuse(key ssh.PublicKey) bool {
-	if r.owns(key) {
-		fmt.Fprintf(os.Stderr, "sinete agent: refused signing %s for a session that can't confirm presence (sign at the console)\n", ssh.FingerprintSHA256(key))
-		return true
-	}
-	return false
+// remoteRefusingAgent wraps the agent for a connection whose peer can't satisfy a
+// presence prompt (presenceUnavailable). It routes signing through the agent's
+// *DenyingPresence variants — which refuse sinete's own enclave keys (those would
+// otherwise block on a prompt the peer can't see) and delegate everything else
+// unchanged — while the embedded interface serves List and the rest as normal.
+type remoteRefusingAgent struct {
+	presenceDenyingAgent
 }
 
 func (r remoteRefusingAgent) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
-	if r.refuse(key) {
-		return nil, errRemotePresence
-	}
-	return r.ExtendedAgent.Sign(key, data)
+	return r.SignDenyingPresence(key, data)
 }
 
 func (r remoteRefusingAgent) SignWithFlags(key ssh.PublicKey, data []byte, flags xagent.SignatureFlags) (*ssh.Signature, error) {
-	if r.refuse(key) {
-		return nil, errRemotePresence
-	}
-	return r.ExtendedAgent.SignWithFlags(key, data, flags)
+	return r.SignWithFlagsDenyingPresence(key, data, flags)
 }

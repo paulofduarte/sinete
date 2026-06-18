@@ -40,6 +40,12 @@ import (
 var (
 	errUnsupported = errors.New("sinete agent is read-only; manage keys with the sinete CLI")
 	errNotFound    = errors.New("agent: no matching key")
+
+	// ErrPresenceUnavailable is returned by the *DenyingPresence sign variants when
+	// a caller that cannot satisfy a presence prompt (a remote/headless connection)
+	// asks to sign one of this agent's presence-gated enclave keys. It is surfaced to
+	// the ssh-agent client in place of hanging on an invisible Touch ID prompt.
+	ErrPresenceUnavailable = errors.New("sinete: can't confirm user presence for this connection — it has no local interactive session (e.g. SSH); sign from the machine's console")
 )
 
 // Store is the agent's live view of the keys it serves and their presence TTLs.
@@ -302,33 +308,58 @@ func (a *Agent) List() ([]*xagent.Key, error) {
 // Sign signs with an enclave key (prompting for presence as needed) or forwards
 // to the upstream agent.
 func (a *Agent) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
-	e, ok, err := a.entryFor(key)
-	if err != nil {
-		return nil, err
-	}
-	if ok {
-		return a.signEnclave(e, string(key.Marshal()), data)
-	}
-	if a.upstream != nil {
-		return a.upstream.Sign(key, data)
-	}
-	return nil, errNotFound
+	return a.signRouted(key, data, 0, false, false)
 }
 
 // SignWithFlags is like Sign but honours the rsa-sha2 flags for upstream keys
 // (enclave keys are ECDSA, so the flags do not apply to them).
 func (a *Agent) SignWithFlags(key ssh.PublicKey, data []byte, flags xagent.SignatureFlags) (*ssh.Signature, error) {
+	return a.signRouted(key, data, flags, true, false)
+}
+
+// SignDenyingPresence is Sign for a caller that cannot satisfy a presence prompt
+// (a remote/headless connection): an enclave key it owns is refused with
+// ErrPresenceUnavailable instead of dispatching a Touch ID prompt that would hang,
+// while upstream-delegated keys forward unchanged. See signRouted — there is a
+// single, authoritative ownership lookup, so no second check can diverge and
+// re-introduce the prompt this is meant to prevent.
+func (a *Agent) SignDenyingPresence(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
+	return a.signRouted(key, data, 0, false, true)
+}
+
+// SignWithFlagsDenyingPresence is SignWithFlags for a presence-unavailable caller;
+// see SignDenyingPresence.
+func (a *Agent) SignWithFlagsDenyingPresence(key ssh.PublicKey, data []byte, flags xagent.SignatureFlags) (*ssh.Signature, error) {
+	return a.signRouted(key, data, flags, true, true)
+}
+
+// signRouted resolves key once and routes it: an enclave key is either gated and
+// signed, or — when denyPresence is set for a caller that can't prompt — refused
+// with ErrPresenceUnavailable; any other key forwards to upstream (honouring flags
+// when useFlags is set). The single entryFor lookup is deliberate: a remote-refusal
+// wrapper must not run its own ownership check and then delegate here, since the two
+// checks could disagree (a transient store error, or a key added/removed in between)
+// and let an enclave key slip into a presence prompt. A lookup error is surfaced,
+// never treated as "not owned" — fail-closed, so an unreadable key index can't cause
+// an owned key to be delegated (and possibly prompted) instead of refused.
+func (a *Agent) signRouted(key ssh.PublicKey, data []byte, flags xagent.SignatureFlags, useFlags, denyPresence bool) (*ssh.Signature, error) {
 	e, ok, err := a.entryFor(key)
 	if err != nil {
 		return nil, err
 	}
 	if ok {
+		if denyPresence {
+			return nil, ErrPresenceUnavailable
+		}
 		return a.signEnclave(e, string(key.Marshal()), data)
 	}
-	if a.upstream != nil {
+	if a.upstream == nil {
+		return nil, errNotFound
+	}
+	if useFlags {
 		return a.upstream.SignWithFlags(key, data, flags)
 	}
-	return nil, errNotFound
+	return a.upstream.Sign(key, data)
 }
 
 // entryFor returns the store entry whose public key matches key. A non-nil error
@@ -351,16 +382,6 @@ func (a *Agent) entryFor(key ssh.PublicKey) (registry.Entry, bool, error) {
 		}
 	}
 	return registry.Entry{}, false, nil
-}
-
-// OwnsKey reports whether key is one of the enclave keys this agent gates with
-// presence (as opposed to an upstream-delegated key). A remote client's signature
-// for such a key must be refused, since presence can't be confirmed remotely (see
-// the agent wrapper in cmd/sinete). A key-index read failure reads as not-owned —
-// the real Sign path will then surface the error.
-func (a *Agent) OwnsKey(key ssh.PublicKey) bool {
-	_, owned, err := a.entryFor(key)
-	return err == nil && owned
 }
 
 // Remove forgets an enclave key's presence window (ssh-add -d: the next use

@@ -1275,7 +1275,7 @@ func cmdAgent(args []string) error {
 				// connection's peer, computed once here; see remote.go.
 				served := xagent.ExtendedAgent(a)
 				if presenceUnavailable(conn) {
-					served = remoteRefusingAgent{ExtendedAgent: a, owns: a.OwnsKey}
+					served = remoteRefusingAgent{a}
 				}
 				_ = xagent.ServeAgent(served, conn)
 			}()
