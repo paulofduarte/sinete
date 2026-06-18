@@ -434,10 +434,14 @@ func cmdEnclaveCheck(args []string) error {
 	defer func() {
 		// Restore the original state exactly: the prior value if the item existed,
 		// or its absence (delete) if it did not — so the diagnostic leaves no trace.
+		var restoreErr error
 		if epochExisted {
-			_ = enclave.SetEpoch(origEpoch)
+			restoreErr = enclave.SetEpoch(origEpoch)
 		} else {
-			_ = enclave.DeleteEpoch()
+			restoreErr = enclave.DeleteEpoch()
+		}
+		if restoreErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not restore the epoch after the check (%v); an existing signed registry.json may be stale until you re-run `sinete config`.\n", restoreErr)
 		}
 	}()
 
