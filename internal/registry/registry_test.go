@@ -7,123 +7,104 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
-func TestRoundTrip(t *testing.T) {
+func writeKeysJSON(t *testing.T, content string) string {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "keys.json")
-
-	r, err := Open(path)
-	if err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := len(r.List()); got != 0 {
-		t.Fatalf("new registry: got %d entries, want 0", got)
-	}
-
-	r.Add(Entry{
-		Name:      "work",
-		Label:     "sinete-work",
-		Tag:       "me.paulofduarte.sinete",
-		PublicKey: "ecdsa-sha2-nistp256 AAAA work",
-		Created:   time.Unix(0, 0).UTC(),
-	})
-	if err := r.Save(); err != nil {
-		t.Fatal(err)
-	}
-
-	r2, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, ok := r2.Get("work")
-	if !ok {
-		t.Fatal("entry missing after reload")
-	}
-	if got.Label != "sinete-work" {
-		t.Errorf("label = %q, want sinete-work", got.Label)
-	}
-
-	r2.Remove("work")
-	if _, ok := r2.Get("work"); ok {
-		t.Error("entry still present after remove")
-	}
+	return path
 }
 
-func TestOpenEmptyFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "keys.json")
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	r, err := Open(path)
-	if err != nil {
-		t.Fatalf("empty file should open as an empty registry: %v", err)
-	}
-	if got := len(r.List()); got != 0 {
-		t.Fatalf("got %d entries, want 0", got)
-	}
-}
+// Registry is now the read-only legacy loader used to migrate an old keys.json;
+// these cover the two on-disk formats it must still parse, plus the empty and
+// malformed cases.
 
-func TestConfigDefaultsAndOverrides(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "keys.json")
+func TestOpenObjectFormat(t *testing.T) {
+	path := writeKeysJSON(t, `{
+	  "keys": [
+	    {"name":"work","label":"sinete-work","tag":"me.paulofduarte.sinete","config":{"presence-ttl":"8h"}},
+	    {"name":"alt","label":"sinete-alt","tag":"me.paulofduarte.sinete"}
+	  ],
+	  "defaults": {"presence-ttl":"10m"}
+	}`)
 	r, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.Add(Entry{Name: "work", Label: "sinete-work", Tag: "me.paulofduarte.sinete"})
-	r.SetDefault(PresenceTTL, "10m")
-	if err := r.SetKeyConfig("work", PresenceTTL, "8h"); err != nil {
-		t.Fatal(err)
+	list := r.List()
+	if len(list) != 2 {
+		t.Fatalf("got %d entries, want 2", len(list))
 	}
-	if err := r.SetKeyConfig("missing", PresenceTTL, "1h"); err == nil {
-		t.Error("SetKeyConfig on an unknown key should error")
+	if list[0].Name != "alt" || list[1].Name != "work" {
+		t.Fatalf("entries not sorted by name: %q, %q", list[0].Name, list[1].Name)
 	}
-	if err := r.Save(); err != nil {
-		t.Fatal(err)
+	if got := list[1].Config[PresenceTTL]; got != "8h" {
+		t.Errorf("work per-key config = %q, want 8h", got)
 	}
-
-	r2, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := r2.Effective("work", PresenceTTL); got != "8h" {
-		t.Errorf("work %s = %q, want 8h (per-key override)", PresenceTTL, got)
-	}
-	if got := r2.Effective("other", PresenceTTL); got != "10m" {
-		t.Errorf("other %s = %q, want 10m (default)", PresenceTTL, got)
-	}
-	if got := r2.Effective("work", PresenceMaxTTL); got != "" {
-		t.Errorf("unset setting = %q, want empty", got)
+	if got := r.Defaults()[PresenceTTL]; got != "10m" {
+		t.Errorf("default = %q, want 10m", got)
 	}
 }
 
 func TestOpenLegacyArrayFormat(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "keys.json")
-	if err := os.WriteFile(path, []byte(`[{"name":"old","label":"sinete-old","tag":"me.paulofduarte.sinete"}]`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	path := writeKeysJSON(t, `[{"name":"old","label":"sinete-old","tag":"me.paulofduarte.sinete"}]`)
 	r, err := Open(path)
 	if err != nil {
 		t.Fatalf("legacy array should parse: %v", err)
 	}
-	if _, ok := r.Get("old"); !ok {
-		t.Fatal("entry from legacy array missing")
+	list := r.List()
+	if len(list) != 1 || list[0].Name != "old" {
+		t.Fatalf("legacy array: got %+v, want one entry named old", list)
 	}
 }
 
-func TestListSorted(t *testing.T) {
-	r, err := Open(filepath.Join(t.TempDir(), "keys.json"))
+func TestOpenEmptyAndAbsent(t *testing.T) {
+	r, err := Open(filepath.Join(t.TempDir(), "nope.json"))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("absent file should open empty: %v", err)
 	}
-	r.Add(Entry{Name: "b"})
-	r.Add(Entry{Name: "a"})
-	r.Add(Entry{Name: "c"})
+	if len(r.List()) != 0 {
+		t.Fatal("absent file should be empty")
+	}
 
-	list := r.List()
-	for i, want := range []string{"a", "b", "c"} {
-		if list[i].Name != want {
-			t.Errorf("list[%d] = %q, want %q", i, list[i].Name, want)
+	r2, err := Open(writeKeysJSON(t, ""))
+	if err != nil {
+		t.Fatalf("empty file should open empty: %v", err)
+	}
+	if len(r2.List()) != 0 {
+		t.Fatal("empty file should be empty")
+	}
+}
+
+func TestOpenUnrecognisedObject(t *testing.T) {
+	if _, err := Open(writeKeysJSON(t, `{"foo":1}`)); err == nil {
+		t.Error("an object without keys/defaults should error")
+	}
+}
+
+func TestHasConfig(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{"no config", `{"keys":[{"name":"a","label":"sinete-a","tag":"t"}]}`, false},
+		{"global default", `{"defaults":{"presence-ttl":"10m"}}`, true},
+		{"per-key override", `{"keys":[{"name":"a","label":"sinete-a","tag":"t","config":{"presence-ttl":"5m"}}]}`, true},
+		{"empty default value", `{"defaults":{"presence-ttl":""}}`, false},
+		{"unknown default setting", `{"defaults":{"bogus":"x"}}`, false},
+		{"config under invalid name", `{"keys":[{"name":"bad name!","label":"sinete-bad","tag":"t","config":{"presence-ttl":"5m"}}]}`, false},
+	}
+	for _, c := range cases {
+		r, err := Open(writeKeysJSON(t, c.content))
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got := r.HasConfig(); got != c.want {
+			t.Errorf("%s: HasConfig = %v, want %v", c.name, got, c.want)
 		}
 	}
 }

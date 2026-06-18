@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Paulo Duarte
 // SPDX-License-Identifier: Apache-2.0
 
-// Package registry maintains sinete's local index of enclave keys.
+// Package registry holds sinete's per-key presence config.
 //
-// sks cannot enumerate an application's keys, so sinete records each key it
-// creates here, mapping a human name to its enclave (label, tag) and cached
-// public key. The index holds no secret material; it lets list, export and
-// fingerprint run without touching the secure hardware.
+// Which keys exist is determined by enumerating the secure element, not by this
+// package. Config lives in a single signed file (see Config / config.go):
+// registry.json, whose payload is signed by the enclave master key and bound to
+// a replay epoch, so tampering or replay is detected and falls back to built-in
+// defaults. The legacy Entry-based Registry (this file) is now a read-only loader
+// for an old keys.json, used once to migrate its config into the signed Config.
 package registry
 
 import (
@@ -78,9 +80,11 @@ type fileFormat struct {
 	Defaults map[string]string `json:"defaults,omitempty"`
 }
 
-// Registry is the on-disk key index plus global config defaults.
+// Registry is the legacy keys.json index: enclave keys plus global config
+// defaults. It is now read-only — keys come from secure-element enumeration and
+// config from the signed Config (see config.go); Registry survives only to read
+// an old keys.json when migrating its config (see Config.MergeLegacy).
 type Registry struct {
-	path     string
 	entries  map[string]Entry
 	defaults map[string]string
 }
@@ -102,7 +106,7 @@ func DefaultPath() (string, error) {
 // Open loads the registry at path, returning an empty registry if the file
 // does not exist yet.
 func Open(path string) (*Registry, error) {
-	r := &Registry{path: path, entries: map[string]Entry{}, defaults: map[string]string{}}
+	r := &Registry{entries: map[string]Entry{}, defaults: map[string]string{}}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return r, nil
@@ -154,12 +158,6 @@ func Open(path string) (*Registry, error) {
 	return r, nil
 }
 
-// Get returns the entry for name.
-func (r *Registry) Get(name string) (Entry, bool) {
-	e, ok := r.entries[name]
-	return e, ok
-}
-
 // List returns the entries sorted by name.
 func (r *Registry) List() []Entry {
 	out := make([]Entry, 0, len(r.entries))
@@ -170,47 +168,27 @@ func (r *Registry) List() []Entry {
 	return out
 }
 
-// Add inserts or replaces an entry.
-func (r *Registry) Add(e Entry) {
-	r.entries[e.Name] = e
-}
-
-// Remove deletes the entry for name. It is not an error if the name is absent.
-func (r *Registry) Remove(name string) {
-	delete(r.entries, name)
-}
-
-// Effective returns the value of a config setting for a key: the per-key
-// override if set, else the global default, else "".
-func (r *Registry) Effective(name, setting string) string {
-	if e, ok := r.entries[name]; ok {
-		if v, ok := e.Config[setting]; ok && v != "" {
-			return v
+// HasConfig reports whether this legacy registry carries config that would
+// actually migrate — i.e. it mirrors MergeLegacy's filter (a recognised setting
+// with a non-empty value, under a valid key name for per-key overrides). This
+// keeps the "migration pending" note from firing when nothing real would move.
+func (r *Registry) HasConfig() bool {
+	for k, v := range r.defaults {
+		if v != "" && ValidSetting(k) {
+			return true
 		}
 	}
-	return r.defaults[setting]
-}
-
-// SetDefault sets a global config default.
-func (r *Registry) SetDefault(setting, value string) {
-	if r.defaults == nil {
-		r.defaults = map[string]string{}
+	for _, e := range r.entries {
+		if ValidName(e.Name) != nil {
+			continue
+		}
+		for setting, val := range e.Config {
+			if val != "" && ValidSetting(setting) {
+				return true
+			}
+		}
 	}
-	r.defaults[setting] = value
-}
-
-// SetKeyConfig sets a per-key config override. It errors if name is unknown.
-func (r *Registry) SetKeyConfig(name, setting, value string) error {
-	e, ok := r.entries[name]
-	if !ok {
-		return fmt.Errorf("no key named %q", name)
-	}
-	if e.Config == nil {
-		e.Config = map[string]string{}
-	}
-	e.Config[setting] = value
-	r.entries[name] = e
-	return nil
+	return false
 }
 
 // Defaults returns a copy of the global config defaults.
@@ -220,20 +198,4 @@ func (r *Registry) Defaults() map[string]string {
 		out[k] = v
 	}
 	return out
-}
-
-// Save writes the registry to disk, replacing it atomically.
-func (r *Registry) Save() error {
-	if err := os.MkdirAll(filepath.Dir(r.path), 0o700); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(fileFormat{Keys: r.List(), Defaults: r.defaults}, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp := r.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, r.path)
 }

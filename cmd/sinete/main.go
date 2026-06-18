@@ -14,6 +14,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"os/signal"
@@ -69,6 +70,8 @@ func main() {
 		"sign":      cmdSign,
 		"present":   cmdPresent,
 		"config":    cmdConfig,
+		// unlisted diagnostic for the signed-registry enclave layer
+		"_enclave-check": cmdEnclaveCheck,
 	}
 	cmd, ok := cmds[os.Args[1]]
 	if !ok {
@@ -90,7 +93,7 @@ sinete manages the secure-element key storage:
   list              list created keys (name, type, fingerprint)
   export <name>     print a key's public key
   ssh-setup <name>  write the .pub + print ssh/git config to use the key
-  delete <name>     delete a key from the enclave and the index
+  delete <name>     delete a key from the secure element (requires presence)
   config            view/set presence TTLs (--list, --key <name>)
   status            show install + key state (--json for the app UI)
   agent             run the ssh-agent (foreground)
@@ -101,13 +104,84 @@ prompts for Touch ID; further signatures are silent until its presence window
 (TTL) lapses. ssh-add -l lists them; ssh-add -d/-D forgets a key's window.`)
 }
 
-// openRegistry loads the local key index.
+// openRegistry loads the legacy keys.json index (kept only to migrate its config
+// into the signed registry; keys themselves now come from the secure element).
 func openRegistry() (*registry.Registry, error) {
 	path, err := registry.DefaultPath()
 	if err != nil {
 		return nil, err
 	}
 	return registry.Open(path)
+}
+
+// openConfig loads the signed config (registry.json). Reads reflect exactly what
+// the agent enforces: the verified config, or built-in defaults when it is absent
+// or cannot be verified. Legacy keys.json config is migrated on the first signed
+// write (saveConfig), not seeded into reads; until then a note is printed if such
+// config exists. A present-but-unverifiable file warns and yields built-in defaults.
+func openConfig() (*registry.Config, error) {
+	path, err := registry.ConfigPath()
+	if err != nil {
+		return nil, err
+	}
+	cfg, trusted, err := registry.OpenConfig(path, enclave.ConfigCrypto{})
+	if err != nil {
+		return nil, err
+	}
+	if !trusted {
+		fmt.Fprintln(os.Stderr, "warning: the signed config could not be verified; using built-in defaults. Re-run `sinete config` to rewrite it.")
+	}
+	// Legacy keys.json config is NOT enforced (the agent and these reads use the
+	// signed config / built-in defaults) until the next `sinete config` write
+	// migrates and signs it. Don't seed it into reads — that would make CLI output
+	// diverge from what the agent enforces; instead warn that migration is pending.
+	if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
+		if legacy, lerr := openRegistry(); lerr == nil && legacy.HasConfig() {
+			fmt.Fprintln(os.Stderr, "note: legacy keys.json config is not in effect; run `sinete config <setting> <value>` once to migrate and sign it.")
+		}
+	}
+	return cfg, nil
+}
+
+// saveConfig signs and writes the config (a Touch ID prompt), then drops the
+// legacy keys.json — migration is complete once the signed registry exists.
+func saveConfig(cfg *registry.Config) error {
+	// Ensure the master key exists before signing: on a fresh install the first
+	// config write is what creates it (creating it needs no presence; signing does).
+	if err := enclave.EnsureMaster(); err != nil {
+		return fmt.Errorf("ensure master key: %w", err)
+	}
+	// The first signed write also migrates any legacy keys.json config (without
+	// overwriting values just set), so upgrading loses nothing; afterwards
+	// registry.json is authoritative and keys.json is removed below.
+	if path, err := registry.ConfigPath(); err == nil {
+		if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
+			if legacy, lerr := openRegistry(); lerr == nil {
+				cfg.MergeLegacy(legacy)
+				// keys.json may be stale (a key deleted before this first signed
+				// write), so drop migrated per-key config for names no longer in the
+				// secure element — migration shouldn't resurrect orphaned entries.
+				if existing, eerr := enclave.List(); eerr == nil {
+					have := make(map[string]bool, len(existing))
+					for _, k := range existing {
+						have[k.Name] = true
+					}
+					for _, name := range cfg.Names() {
+						if !have[name] {
+							cfg.RemoveKey(name)
+						}
+					}
+				}
+			}
+		}
+	}
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+	if p, err := registry.DefaultPath(); err == nil {
+		_ = os.Remove(p)
+	}
+	return nil
 }
 
 func cmdGenerate(args []string) error {
@@ -121,11 +195,11 @@ func cmdGenerate(args []string) error {
 		return err
 	}
 
-	reg, err := openRegistry()
-	if err != nil {
+	// Keys are enumerated from the secure element, so a new key needs no registry
+	// write (and thus no presence prompt). Reject a name already in use.
+	if _, ok, err := enclave.Find(name); err != nil {
 		return err
-	}
-	if _, ok := reg.Get(name); ok {
+	} else if ok {
 		return fmt.Errorf("key %q already exists", name)
 	}
 
@@ -133,48 +207,24 @@ func cmdGenerate(args []string) error {
 	if err != nil {
 		return err
 	}
-	// Roll back the freshly created enclave key if anything fails before it is
-	// indexed, so a partial generate doesn't leave an orphan: remove needs a
-	// registry entry, and a re-run would fail because the key already exists.
-	committed := false
-	defer func() {
-		if !committed {
-			_ = key.Remove()
-		}
-	}()
-
 	pub, err := key.PublicKey()
 	if err != nil {
+		_ = key.Remove() // roll back a key whose public half we can't read
 		return err
 	}
-	line := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub))) + " " + name
-
-	reg.Add(registry.Entry{
-		Name:      name,
-		Label:     key.Label(),
-		Tag:       enclave.Tag,
-		PublicKey: line,
-		Created:   time.Now().UTC(),
-	})
-	if err := reg.Save(); err != nil {
-		return err
-	}
-	committed = true
-	fmt.Println(line)
+	fmt.Println(strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub))) + " " + name)
 	return nil
 }
 
 func cmdList(args []string) error {
-	reg, err := openRegistry()
+	// Keys are enumerated from the secure element, the source of truth for which
+	// keys exist (the registry no longer stores them).
+	keys, err := enclave.List()
 	if err != nil {
 		return err
 	}
-	for _, e := range reg.List() {
-		pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(e.PublicKey))
-		if err != nil {
-			return fmt.Errorf("registry key %q: %w", e.Name, err)
-		}
-		fmt.Printf("%-20s %-22s %s\n", e.Name, pub.Type(), ssh.FingerprintSHA256(pub))
+	for _, k := range keys {
+		fmt.Printf("%-20s %-22s %s\n", k.Name, k.PublicKey.Type(), ssh.FingerprintSHA256(k.PublicKey))
 	}
 	return nil
 }
@@ -183,16 +233,18 @@ func cmdExport(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: sinete export <name>")
 	}
-	reg, err := openRegistry()
+	name := args[0]
+	keys, err := enclave.List()
 	if err != nil {
 		return err
 	}
-	e, ok := reg.Get(args[0])
-	if !ok {
-		return fmt.Errorf("no key named %q", args[0])
+	for _, k := range keys {
+		if k.Name == name {
+			fmt.Println(strings.TrimSpace(string(ssh.MarshalAuthorizedKey(k.PublicKey))) + " " + name)
+			return nil
+		}
 	}
-	fmt.Println(e.PublicKey)
-	return nil
+	return fmt.Errorf("no key named %q", name)
 }
 
 // cmdSshSetup writes a key's public key to a file and prints the ssh/git config
@@ -212,11 +264,10 @@ func cmdSshSetup(args []string) error {
 		return err
 	}
 
-	reg, err := openRegistry()
+	listed, ok, err := enclave.Find(name)
 	if err != nil {
 		return err
 	}
-	e, ok := reg.Get(name)
 	if !ok {
 		return fmt.Errorf("no key named %q (create it with: sinete generate %s)", name, name)
 	}
@@ -232,7 +283,7 @@ func cmdSshSetup(args []string) error {
 	if err := os.MkdirAll(filepath.Dir(pubPath), 0o700); err != nil {
 		return err
 	}
-	pub := strings.TrimRight(e.PublicKey, "\n")
+	pub := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(listed.PublicKey))) + " " + name
 	if err := os.WriteFile(pubPath, []byte(pub+"\n"), 0o644); err != nil { //nolint:gosec // a public key is not secret
 		return err
 	}
@@ -266,46 +317,61 @@ echo '%[2]s %[3]s' >> ~/.config/git/allowed_signers
 	return nil
 }
 
-// cmdDelete destroys a key: it removes it from the secure element and the index.
-// Unloading a key from the running agent is `ssh-add -e`/`-d`, not this.
+// cmdDelete destroys a key in the secure element. It requires user presence, and
+// prunes the key's stored config. Unloading a key from the running agent is
+// `ssh-add -e`/`-d`, not this.
 func cmdDelete(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: sinete delete <name>")
 	}
 	name := args[0]
-	reg, err := openRegistry()
+	listed, ok, err := enclave.Find(name)
 	if err != nil {
 		return err
 	}
-	e, ok := reg.Get(name)
 	if !ok {
 		return fmt.Errorf("no key named %q", name)
 	}
-	if err := enclave.OpenLabelTag(e.Label, e.Tag).Remove(); err != nil {
+
+	// Deleting requires user presence. If the key has stored config, pruning it
+	// re-signs the registry — the master-key signature IS the prompt; otherwise
+	// prompt directly. Either way the user confirms before the key is destroyed.
+	cfg, err := openConfig()
+	if err != nil {
 		return err
 	}
-	reg.Remove(name)
-	return reg.Save()
+	if cfg.HasKey(name) {
+		cfg.RemoveKey(name)
+		if err := saveConfig(cfg); err != nil {
+			return err
+		}
+	} else if err := presence.Authenticate(fmt.Sprintf("authenticate to delete sinete key %q", name)); err != nil {
+		return err
+	}
+
+	if err := enclave.OpenLabelTag(listed.Label, enclave.Tag).Remove(); err != nil {
+		return err
+	}
+	fmt.Printf("deleted %s\n", name)
+	return nil
 }
 
 // cmdSign signs a fixed test message with the named key, foreground. Diagnostic:
-// it opens the key by the registry's authoritative label/tag (the agent's path)
-// and signs on the main thread, isolating the presence prompt from the agent's
-// socket/goroutine context.
+// it resolves the key by enumeration (the agent's path) and signs on the main
+// thread, isolating the presence prompt from the agent's socket/goroutine context.
 func cmdSign(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: sinete sign <name>")
 	}
 	name := args[0]
-	reg, err := openRegistry()
+	listed, ok, err := enclave.Find(name)
 	if err != nil {
 		return err
 	}
-	e, ok := reg.Get(name)
 	if !ok {
 		return fmt.Errorf("no key named %q", name)
 	}
-	signer, err := enclave.OpenLabelTag(e.Label, e.Tag).Signer()
+	signer, err := enclave.OpenLabelTag(listed.Label, enclave.Tag).Signer()
 	if err != nil {
 		return err
 	}
@@ -317,6 +383,148 @@ func cmdSign(args []string) error {
 	return nil
 }
 
+// cmdEnclaveCheck is an unlisted diagnostic for the signed-registry enclave layer
+// (phase 1): it enumerates user keys, ensures+exercises the presence-enforced
+// master key, and round-trips the epoch item. Run it from the signed bundle. The
+// master-key signature is meant to prompt for Touch ID — that prompt confirms the
+// ACL is enforced; pubkey and epoch reads must NOT prompt.
+func cmdEnclaveCheck(args []string) error {
+	fmt.Println("== enumerate user keys ==")
+	keys, err := enclave.List()
+	if err != nil {
+		return fmt.Errorf("enumerate: %w", err)
+	}
+	for _, k := range keys {
+		created := "?"
+		if !k.Created.IsZero() {
+			created = k.Created.Format(time.RFC3339)
+		}
+		fmt.Printf("  %-20s %s  created=%s\n", k.Name, ssh.FingerprintSHA256(k.PublicKey), created)
+	}
+	fmt.Printf("  (%d key(s))\n", len(keys))
+
+	fmt.Println("== master key ==")
+	if err := enclave.EnsureMaster(); err != nil {
+		return fmt.Errorf("ensure master: %w", err)
+	}
+	mpub, err := enclave.MasterPublicKey()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("  master pub (no prompt expected): %s\n", ssh.FingerprintSHA256(mpub))
+
+	fmt.Println("== master sign (expect a Touch ID prompt) ==")
+	msg := []byte("sinete enclave-check")
+	sig, err := enclave.MasterSign(msg)
+	if err != nil {
+		return fmt.Errorf("master sign: %w", err)
+	}
+	if err := mpub.Verify(msg, sig); err != nil {
+		return fmt.Errorf("master signature does not verify: %w", err)
+	}
+	fmt.Println("  signature verified")
+
+	// The epoch + config-round-trip tests below advance the global epoch item.
+	// Snapshot it and restore it on return, so running this diagnostic never
+	// invalidates a real signed registry.json (a higher epoch would make it stale
+	// -> fail-safe defaults until the user re-runs `sinete config`).
+	origEpoch, epochExisted, err := enclave.Epoch()
+	if err != nil {
+		return fmt.Errorf("epoch snapshot: %w", err)
+	}
+	defer func() {
+		// Restore the original state exactly: the prior value if the item existed,
+		// or its absence (delete) if it did not — so the diagnostic leaves no trace.
+		var restoreErr error
+		if epochExisted {
+			restoreErr = enclave.SetEpoch(origEpoch)
+		} else {
+			restoreErr = enclave.DeleteEpoch()
+		}
+		if restoreErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not restore the epoch after the check (%v); an existing signed registry.json may be stale until you re-run `sinete config`.\n", restoreErr)
+		}
+	}()
+
+	fmt.Println("== epoch item (no prompt expected) ==")
+	cur, ok, err := enclave.Epoch()
+	if err != nil {
+		return fmt.Errorf("epoch get: %w", err)
+	}
+	fmt.Printf("  current: %d (exists=%v)\n", cur, ok)
+	if cur == math.MaxUint64 {
+		return fmt.Errorf("epoch at max; refusing to increment (matches Config.Save)")
+	}
+	if err := enclave.SetEpoch(cur + 1); err != nil {
+		return fmt.Errorf("epoch set: %w", err)
+	}
+	next, _, err := enclave.Epoch()
+	if err != nil {
+		return fmt.Errorf("epoch get after set: %w", err)
+	}
+	if next != cur+1 {
+		return fmt.Errorf("epoch did not persist: got %d, want %d", next, cur+1)
+	}
+	fmt.Printf("  after increment: %d\n", next)
+
+	fmt.Println("== signed config round-trip (real master key, throwaway file) ==")
+	tmp, err := os.MkdirTemp("", "sinete-cfgcheck")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	cfgPath := filepath.Join(tmp, "registry.json")
+	crypto := enclave.ConfigCrypto{}
+
+	cfg, trusted, err := registry.OpenConfig(cfgPath, crypto)
+	if err != nil {
+		return fmt.Errorf("open config: %w", err)
+	}
+	if !trusted {
+		return fmt.Errorf("an absent config should be trusted")
+	}
+	cfg.SetKeyConfig("enclave-check", registry.PresenceTTL, "7m")
+	fmt.Println("  saving config (expect a Touch ID prompt)...")
+	if err := cfg.Save(); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+
+	reopened, trusted, err := registry.OpenConfig(cfgPath, crypto)
+	if err != nil {
+		return err
+	}
+	if !trusted {
+		return fmt.Errorf("a freshly signed config should be trusted")
+	}
+	if got := reopened.Effective("enclave-check", registry.PresenceTTL); got != "7m" {
+		return fmt.Errorf("config value = %q, want 7m", got)
+	}
+	fmt.Println("  signed config verified (no prompt)")
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return err
+	}
+	data[len(data)/2] ^= 0xff // corrupt a byte: breaks the signature (or the JSON)
+	if err := os.WriteFile(cfgPath, data, 0o600); err != nil {
+		return err
+	}
+	tampered, trusted, err := registry.OpenConfig(cfgPath, crypto)
+	if err != nil {
+		return err
+	}
+	if trusted {
+		return fmt.Errorf("a tampered config must not be trusted")
+	}
+	if got := tampered.Effective("enclave-check", registry.PresenceTTL); got != "" {
+		return fmt.Errorf("tampered config value = %q, want built-in default (empty)", got)
+	}
+	fmt.Println("  tamper correctly rejected -> built-in defaults")
+
+	fmt.Println("all enclave-check steps passed")
+	return nil
+}
+
 // cmdConfig views and sets presence config: a global default, or a per-key
 // override with --key. Settings are durations (e.g. 10m, 2h).
 func cmdConfig(args []string) error {
@@ -325,13 +533,13 @@ func cmdConfig(args []string) error {
 	list := fs.Bool("list", false, "print all config")
 	_ = fs.Parse(args)
 
-	reg, err := openRegistry()
+	cfg, err := openConfig()
 	if err != nil {
 		return err
 	}
 
 	if *list {
-		printConfig(reg)
+		printConfig(cfg)
 		return nil
 	}
 
@@ -346,15 +554,16 @@ func cmdConfig(args []string) error {
 
 	if len(rest) == 1 { // get
 		if *keyName != "" {
-			// Effective falls back to the global default, which would silently
-			// answer for a key that doesn't exist (hiding a typo); reject it,
-			// matching SetKeyConfig's behaviour.
-			if _, ok := reg.Get(*keyName); !ok {
+			// Reject an unknown key rather than silently answering with the global
+			// default (which would hide a typo).
+			if _, ok, err := enclave.Find(*keyName); err != nil {
+				return err
+			} else if !ok {
 				return fmt.Errorf("no key named %q", *keyName)
 			}
-			fmt.Println(reg.Effective(*keyName, setting))
+			fmt.Println(cfg.Effective(*keyName, setting))
 		} else {
-			fmt.Println(reg.Defaults()[setting])
+			fmt.Println(cfg.Defaults()[setting])
 		}
 		return nil
 	}
@@ -364,17 +573,22 @@ func cmdConfig(args []string) error {
 		return fmt.Errorf("invalid duration %q: %w", value, err)
 	}
 	if *keyName != "" {
-		if err := reg.SetKeyConfig(*keyName, setting, value); err != nil {
+		if _, ok, err := enclave.Find(*keyName); err != nil {
 			return err
+		} else if !ok {
+			return fmt.Errorf("no key named %q", *keyName)
 		}
+		cfg.SetKeyConfig(*keyName, setting, value)
 	} else {
-		reg.SetDefault(setting, value)
+		cfg.SetDefault(setting, value)
 	}
-	return reg.Save()
+	// Save signs the config with the presence-enforced master key, so this prompts
+	// for Touch ID — the human approval that gates every config change.
+	return saveConfig(cfg)
 }
 
-func printConfig(reg *registry.Registry) {
-	defaults := reg.Defaults()
+func printConfig(cfg *registry.Config) {
+	defaults := cfg.Defaults()
 	fmt.Println("defaults:")
 	for _, s := range registry.Settings {
 		v := defaults[s]
@@ -383,13 +597,15 @@ func printConfig(reg *registry.Registry) {
 		}
 		fmt.Printf("  %-16s %s\n", s, v)
 	}
-	for _, e := range reg.List() {
-		if len(e.Config) == 0 {
-			continue
-		}
-		fmt.Printf("%s:\n", e.Name)
+	for _, name := range cfg.Names() {
+		kc := cfg.KeyConfig(name)
+		printed := false
 		for _, s := range registry.Settings {
-			if v := e.Config[s]; v != "" {
+			if v := kc[s]; v != "" {
+				if !printed {
+					fmt.Printf("%s:\n", name)
+					printed = true
+				}
 				fmt.Printf("  %-16s %s\n", s, v)
 			}
 		}
@@ -448,22 +664,18 @@ func cmdStatus(args []string) error {
 	asJSON := fs.Bool("json", false, "emit JSON for the app UI")
 	_ = fs.Parse(args)
 
-	reg, err := openRegistry()
-	if err != nil {
-		return err
-	}
 	type keyInfo struct {
 		Name        string `json:"name"`
 		Type        string `json:"type"`
 		Fingerprint string `json:"fingerprint"`
 	}
 	keys := make([]keyInfo, 0)
-	for _, e := range reg.List() {
-		pub, _, _, _, perr := ssh.ParseAuthorizedKey([]byte(e.PublicKey))
-		if perr != nil {
-			return fmt.Errorf("registry key %q: %w", e.Name, perr)
-		}
-		keys = append(keys, keyInfo{e.Name, pub.Type(), ssh.FingerprintSHA256(pub)})
+	listed, err := enclave.List()
+	if err != nil {
+		return err
+	}
+	for _, k := range listed {
+		keys = append(keys, keyInfo{k.Name, k.PublicKey.Type(), ssh.FingerprintSHA256(k.PublicKey)})
 	}
 	st, err := install.LoadState()
 	if err != nil {
@@ -573,20 +785,27 @@ func cmdUninstall(args []string) error {
 		fmt.Println("uninstalled: login item, link, PATH, and generated .pub files removed (keys kept)")
 		return nil
 	}
-	reg, err := openRegistry()
+	listed, err := enclave.List()
 	if err != nil {
 		return err
 	}
 	removed := 0
-	for _, e := range reg.List() {
-		if err := enclave.OpenLabelTag(e.Label, e.Tag).Remove(); err != nil {
-			return fmt.Errorf("remove key %q: %w", e.Name, err)
+	for _, k := range listed {
+		if err := enclave.OpenLabelTag(k.Label, enclave.Tag).Remove(); err != nil {
+			return fmt.Errorf("remove key %q: %w", k.Name, err)
 		}
-		reg.Remove(e.Name)
 		removed++
 	}
-	if err := reg.Save(); err != nil {
-		return err
+	// Also remove the internal master key + epoch item, and the config files.
+	if err := enclave.RemoveMaster(); err != nil {
+		return fmt.Errorf("remove master key: %w", err)
+	}
+	if p, perr := registry.ConfigPath(); perr == nil {
+		_ = os.Remove(p)
+		_ = os.Remove(p + ".lock") // the config write lock file (see Config.Save)
+	}
+	if p, perr := registry.DefaultPath(); perr == nil {
+		_ = os.Remove(p)
 	}
 	fmt.Printf("uninstalled and removed %d key(s)\n", removed)
 	return nil
@@ -656,11 +875,6 @@ func cmdAgent(args []string) error {
 		os.Exit(0)
 	}()
 
-	regPath, err := registry.DefaultPath()
-	if err != nil {
-		return err
-	}
-
 	// Superset agent: delegate everything we don't own to the session's existing
 	// agent -- the SSH_AUTH_SOCK we inherit (normally macOS's com.openssh.ssh-agent)
 	// -- so a client that reaches sinete still sees its other keys. Skip it when
@@ -676,7 +890,7 @@ func cmdAgent(args []string) error {
 		}
 	}
 
-	a := agent.New(agent.RegistryStore{Path: regPath}, agent.EnclaveSource{}, presence.Authenticate, upstream)
+	a := agent.New(agent.NewEnclaveStore(), agent.EnclaveSource{}, presence.Authenticate, upstream)
 	fmt.Printf("export SSH_AUTH_SOCK=%s\n", path)
 
 	// Accept and serve connections off the main thread; signing (and its Touch ID

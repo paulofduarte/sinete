@@ -7,40 +7,26 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
-
-	"github.com/paulofduarte/sinete/internal/registry"
 )
 
-func TestSshSetup(t *testing.T) {
-	cfg := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", cfg)
+// Keys come from secure-element enumeration (which needs the entitled bundle), so
+// the success path is exercised on-device via `sinete _enclave-check` and manual
+// `ssh-setup`. Here we cover the error paths: an invalid name is rejected before
+// any keychain access, and a valid name with no usable key — enumeration errors
+// or finds no match for an unentitled test process — yields an error rather than
+// writing a file.
+func TestSshSetupErrors(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "k.pub")
 
-	const pub = "ecdsa-sha2-nistp256 AAAATESTKEYBLOB work"
-	r, err := registry.Open(filepath.Join(cfg, "sinete", "keys.json"))
-	if err != nil {
-		t.Fatal(err)
+	if err := cmdSshSetup([]string{"--out", out, "../evil"}); err == nil {
+		t.Error("ssh-setup should reject an invalid key name")
 	}
-	r.Add(registry.Entry{Name: "work", Label: "sinete-work", Tag: "me.paulofduarte.sinete", PublicKey: pub})
-	if err := r.Save(); err != nil {
-		t.Fatal(err)
-	}
-
-	out := filepath.Join(t.TempDir(), "work.pub")
-	if err := cmdSshSetup([]string{"--out", out, "work"}); err != nil {
-		t.Fatalf("cmdSshSetup: %v", err)
-	}
-	data, err := os.ReadFile(out)
-	if err != nil {
-		t.Fatalf("public key not written: %v", err)
-	}
-	if got := strings.TrimSpace(string(data)); got != pub {
-		t.Errorf("wrote %q, want %q", got, pub)
-	}
-
-	if err := cmdSshSetup([]string{"--out", out, "missing"}); err == nil {
+	if err := cmdSshSetup([]string{"--out", out, "work"}); err == nil {
 		t.Error("ssh-setup on an unknown key should error")
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Errorf("ssh-setup wrote %s for a key that does not exist", out)
 	}
 }
 
