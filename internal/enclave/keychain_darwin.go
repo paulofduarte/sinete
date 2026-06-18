@@ -144,9 +144,13 @@ func enumerateKeys(tag string) ([]rawKey, error) {
 		C.CFTypeRef(C.kSecAttrKeyType):        C.CFTypeRef(C.kSecAttrKeyTypeEC),
 		C.CFTypeRef(C.kSecAttrApplicationTag): C.CFTypeRef(cfTag),
 		C.CFTypeRef(C.kSecAttrKeyClass):       C.CFTypeRef(C.kSecAttrKeyClassPrivate),
-		C.CFTypeRef(C.kSecReturnRef):          C.CFTypeRef(C.kCFBooleanTrue),
-		C.CFTypeRef(C.kSecReturnAttributes):   C.CFTypeRef(C.kCFBooleanTrue),
-		C.CFTypeRef(C.kSecMatchLimit):         C.CFTypeRef(C.kSecMatchLimitAll),
+		// Constrain to the Secure Enclave token so enumeration can only ever return
+		// hardware-backed keys ("keys come from the secure element" invariant); a
+		// non-SE EC key sharing our tag would otherwise be included.
+		C.CFTypeRef(C.kSecAttrTokenID):      C.CFTypeRef(C.kSecAttrTokenIDSecureEnclave),
+		C.CFTypeRef(C.kSecReturnRef):        C.CFTypeRef(C.kCFBooleanTrue),
+		C.CFTypeRef(C.kSecReturnAttributes): C.CFTypeRef(C.kCFBooleanTrue),
+		C.CFTypeRef(C.kSecMatchLimit):       C.CFTypeRef(C.kSecMatchLimitAll),
 	})
 	if err != nil {
 		return nil, err
