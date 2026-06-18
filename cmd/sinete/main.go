@@ -94,7 +94,7 @@ sinete manages the secure-element key storage:
   export <name>     print a key's public key
   ssh-setup <name>  write the .pub + print ssh/git config to use the key
   delete <name>     delete a key from the secure element (requires presence)
-  config            view/set presence TTLs (config show | set | key <name> set …)
+  config            presence config: show | get | set | unset | key <name> …
   status            show install + key state (--json for the app UI)
   agent             run the ssh-agent (foreground)
 
@@ -1003,13 +1003,17 @@ func configurePresenceOnInstall(ttlFlag, maxFlag string) error {
 		return nil
 	}
 
-	// Reject an inconsistent resulting pair (e.g. a new ttl above an existing cap).
-	// Current values come from a trusted config, so they parse; guard anyway.
+	// An inconsistent resulting pair (e.g. a lone --presence-ttl above an existing
+	// cap) is non-fatal: the PATH link + login item already committed, so don't fail
+	// the install — warn and leave the config unchanged (a both-flags conflict is
+	// already rejected up front in cmdInstall, before PATH). Current values come from
+	// a trusted config, so they parse; guard anyway.
 	if effTTL != "" && effMax != "" {
 		dttl, derr := time.ParseDuration(effTTL)
 		dmax, merr := time.ParseDuration(effMax)
 		if derr == nil && merr == nil && dttl > dmax {
-			return fmt.Errorf("presence-ttl %s exceeds presence-max-ttl %s; choose a ttl ≤ the cap", effTTL, effMax)
+			fmt.Fprintf(os.Stderr, "warning: presence-ttl %s exceeds presence-max-ttl %s; presence config left unchanged. Raise the cap or pass --presence-max-ttl too.\n", effTTL, effMax)
+			return nil
 		}
 	}
 

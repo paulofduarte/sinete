@@ -407,18 +407,19 @@ struct SetupView: View {
     }
 
     /// Pre-fill the presence fields from the current config so reconfiguring an
-    /// already-set-up sinete shows (and keeps) its values. For a configured install
-    /// an *unset* setting is reflected as an empty field — not the suggestion — so
-    /// reconfigure can't silently relax an intentionally strict setup. A fresh
-    /// install (both empty) keeps the pre-filled suggestions.
+    /// already-set-up sinete shows (and keeps) its values. On a reconfigure (sinete
+    /// already set up) the live config is always reflected — even when both TTLs are
+    /// empty (an intentionally strict setup) — so clicking Install can't re-suggest
+    /// relaxed values. A fresh install keeps the pre-filled suggestions.
     private func loadCurrentTTLs() {
+        let reconfigure = status?.configured ?? false
         DispatchQueue.global().async {
             let ttl = (try? Backend.run(["config", "get", "presence-ttl"]))?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let maxTTL = (try? Backend.run(["config", "get", "presence-max-ttl"]))?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             DispatchQueue.main.async {
-                if !ttl.isEmpty || !maxTTL.isEmpty {
+                if reconfigure || !ttl.isEmpty || !maxTTL.isEmpty {
                     presenceTTL = ttl
                     presenceMaxTTL = maxTTL
                 }
