@@ -524,7 +524,13 @@ func cmdConfig(args []string) error {
 			return nil // already unset; no-op (avoid a needless Touch ID + epoch bump)
 		}
 		cfg.UnsetDefault(args[1])
-		return saveConfig(cfg)
+		if err := saveConfig(cfg); err != nil {
+			return err
+		}
+		if args[1] == registry.PresenceMaxTTL {
+			fmt.Fprintln(os.Stderr, "note: presence-max-ttl is now unset — the absolute cap is 0, so every signature prompts and any presence-ttl has no effect until you set it again.")
+		}
+		return nil
 	case "key":
 		return configKey(cfg, args[1:])
 	default:
@@ -731,14 +737,18 @@ func confirm(prompt string) bool {
 
 func printConfig(cfg *registry.Config) {
 	defaults := cfg.Defaults()
+	// With the global presence-max-ttl unset, the absolute cap is 0 — every signature
+	// prompts — so every presence-ttl is inert. Flag that on the ttl lines so the
+	// values don't look active when they aren't.
+	ttlInert := defaults[registry.PresenceMaxTTL] == ""
 	fmt.Println("global:")
 	for _, s := range registry.Settings {
-		printSetting(s, defaults[s])
+		printSetting(s, defaults[s], ttlInert)
 	}
 	for _, name := range cfg.Names() {
 		if kc := cfg.KeyConfig(name); len(kc) > 0 {
 			fmt.Printf("%s:\n", name)
-			printKeySettings(kc)
+			printKeySettings(kc, ttlInert)
 		}
 	}
 }
@@ -750,26 +760,40 @@ func printKeyConfig(cfg *registry.Config, name string) {
 		return
 	}
 	fmt.Printf("%s:\n", name)
-	printKeySettings(kc)
+	printKeySettings(kc, cfg.Defaults()[registry.PresenceMaxTTL] == "")
 }
 
 // printKeySettings prints a key's stored overrides. presence-ttl is the only
 // per-key setting: presence-max-ttl is global-only and the registry refuses to
 // store it per-key (registry.Config.SetKeyConfig), so that is the only thing shown.
-func printKeySettings(kc map[string]string) {
+// ttlInert marks it as having no effect while the global presence-max-ttl is unset.
+func printKeySettings(kc map[string]string, ttlInert bool) {
 	if v := kc[registry.PresenceTTL]; v != "" {
-		fmt.Printf("  %-16s %s\n", registry.PresenceTTL, v)
+		fmt.Printf("  %-16s %s\n", registry.PresenceTTL, ttlNote(v, ttlInert))
 	}
 }
 
 // printSetting prints one global setting, making an unset value's strict meaning
-// explicit rather than blank.
-func printSetting(s, v string) {
+// explicit rather than blank, and flagging a set presence-ttl as inert when the
+// cap is unset.
+func printSetting(s, v string, ttlInert bool) {
 	if v == "" {
 		fmt.Printf("  %-16s %s\n", s, "(unset → strict: authenticate every signature)")
 		return
 	}
+	if s == registry.PresenceTTL {
+		v = ttlNote(v, ttlInert)
+	}
 	fmt.Printf("  %-16s %s\n", s, v)
+}
+
+// ttlNote appends a "no effect" note to a presence-ttl value when the global
+// presence-max-ttl is unset (so the cap is 0 and caching is off).
+func ttlNote(v string, inert bool) string {
+	if inert {
+		return v + " (no effect — presence-max-ttl unset)"
+	}
+	return v
 }
 
 // cmdPresent runs the user-presence check directly (no signing). Diagnostic for
