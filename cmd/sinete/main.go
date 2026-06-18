@@ -972,6 +972,18 @@ func configurePresenceOnInstall(ttlFlag, maxFlag string) error {
 		if configured {
 			return nil // already set up; setup must not re-prompt or clobber
 		}
+		if !cfg.Trusted() {
+			// A present-but-untrusted file (tampered/stale/corrupt): best-effort
+			// recovery — rewrite a valid, signed strict config so the untrusted warning
+			// clears, even in the app's non-interactive context. Non-fatal: a denied
+			// Touch ID just leaves it untrusted (still safe — strict), to retry later.
+			if err := saveConfig(cfg); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not rewrite the signed config (%v); it stays in strict mode. Set TTLs with `sinete config set …`.\n", err)
+				return nil
+			}
+			fmt.Println("recovered: rewrote a valid signed config (strict; set TTLs with `sinete config set …`)")
+			return nil
+		}
 		if !isInteractive() {
 			fmt.Fprintln(os.Stderr, "note: presence TTLs are unset, so every signature prompts for Touch ID. Configure them with `sinete config set presence-ttl <d>` and `… presence-max-ttl <d>`, or re-run `sinete install` interactively.")
 			return nil
