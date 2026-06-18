@@ -108,12 +108,3 @@ func TestParseSetting(t *testing.T) {
 		t.Error("a negative duration should error")
 	}
 }
-
-func TestFirstNonEmpty(t *testing.T) {
-	if got := firstNonEmpty("", "", "x", "y"); got != "x" {
-		t.Errorf("firstNonEmpty = %q, want x", got)
-	}
-	if got := firstNonEmpty("", ""); got != "" {
-		t.Errorf("firstNonEmpty(all empty) = %q, want empty", got)
-	}
-}

@@ -938,22 +938,27 @@ func cmdInstall(args []string) error {
 
 // configurePresenceOnInstall writes the initial presence config as part of setup.
 // Built-in values are suggestions only, never an enforced fallback (unconfigured ⇒
-// strict). Behaviour:
-//   - flags given → use them (filling a missing one from the current value or the
-//     suggestion), then sign-and-save (Touch ID);
-//   - no flags, already configured & trusted → leave it (don't nag);
-//   - no flags, not configured, on a TTY → prompt, pre-filling the suggestions;
-//   - no flags, not configured, non-TTY → leave strict and print a hint.
+// strict) — and they apply ONLY to a fresh install. Reconfiguring an existing
+// config changes just the explicitly-provided values, never injecting a suggestion
+// over (or relaxing) a setting the user left unset/strict. Behaviour:
+//   - no flags, already configured → leave it untouched (don't nag or clobber);
+//   - no flags, fresh, on a TTY → prompt both, pre-filling the suggestions;
+//   - no flags, fresh, non-TTY → leave strict and print a hint;
+//   - flags given → set those; on a *fresh* install a missing one fills from the
+//     suggestion (so a lone --presence-ttl still caches), on an *existing* config a
+//     missing one is left as the current value.
 func configurePresenceOnInstall(ttlFlag, maxFlag string) error {
 	cfg, err := openConfig()
 	if err != nil {
 		return err
 	}
-	configured := cfg.Trusted() &&
-		(cfg.Defaults()[registry.PresenceTTL] != "" || cfg.Defaults()[registry.PresenceMaxTTL] != "")
+	curTTL := cfg.Defaults()[registry.PresenceTTL]
+	curMax := cfg.Defaults()[registry.PresenceMaxTTL]
+	configured := cfg.Trusted() && (curTTL != "" || curMax != "")
 
 	ttl, max := ttlFlag, maxFlag
-	if ttl == "" && max == "" {
+	switch {
+	case ttl == "" && max == "":
 		if configured {
 			return nil // already set up; setup must not re-prompt or clobber
 		}
@@ -962,32 +967,52 @@ func configurePresenceOnInstall(ttlFlag, maxFlag string) error {
 			return nil
 		}
 		fmt.Fprintln(os.Stderr, "Configure presence caching (blank keeps the suggested value):")
-		ttl = promptDuration("  presence-ttl  (idle window)", firstNonEmpty(cfg.Defaults()[registry.PresenceTTL], registry.Suggested(registry.PresenceTTL)))
-		max = promptDuration("  presence-max-ttl (absolute cap)", firstNonEmpty(cfg.Defaults()[registry.PresenceMaxTTL], registry.Suggested(registry.PresenceMaxTTL)))
-	} else {
-		// Partial flags: fill the unset one from the current value, else the suggestion.
+		ttl = promptDuration("  presence-ttl  (idle window)", registry.Suggested(registry.PresenceTTL))
+		max = promptDuration("  presence-max-ttl (absolute cap)", registry.Suggested(registry.PresenceMaxTTL))
+	case !configured:
+		// Fresh install with partial flags: fill the missing one from the suggestion
+		// so a lone --presence-ttl still caches. On an existing config we leave the
+		// unprovided setting as-is (below), never relaxing a strict one.
 		if ttl == "" {
-			ttl = firstNonEmpty(cfg.Defaults()[registry.PresenceTTL], registry.Suggested(registry.PresenceTTL))
+			ttl = registry.Suggested(registry.PresenceTTL)
 		}
 		if max == "" {
-			max = firstNonEmpty(cfg.Defaults()[registry.PresenceMaxTTL], registry.Suggested(registry.PresenceMaxTTL))
+			max = registry.Suggested(registry.PresenceMaxTTL)
 		}
 	}
 
-	dttl, err := parseSetting(registry.PresenceTTL, ttl)
-	if err != nil {
-		return err
+	// Apply only the values we resolved; an empty one keeps the current value, so
+	// reconfiguring a strict setup with a single flag never relaxes the other.
+	effTTL, effMax := curTTL, curMax
+	changed := false
+	if ttl != "" {
+		if _, err := parseSetting(registry.PresenceTTL, ttl); err != nil {
+			return err
+		}
+		cfg.SetDefault(registry.PresenceTTL, ttl)
+		effTTL, changed = ttl, true
 	}
-	dmax, err := parseSetting(registry.PresenceMaxTTL, max)
-	if err != nil {
-		return err
+	if max != "" {
+		if _, err := parseSetting(registry.PresenceMaxTTL, max); err != nil {
+			return err
+		}
+		cfg.SetDefault(registry.PresenceMaxTTL, max)
+		effMax, changed = max, true
 	}
-	if dttl > dmax {
-		return fmt.Errorf("presence-ttl %s exceeds presence-max-ttl %s; choose a ttl ≤ the cap", ttl, max)
+	if !changed {
+		return nil
 	}
 
-	cfg.SetDefault(registry.PresenceMaxTTL, max)
-	cfg.SetDefault(registry.PresenceTTL, ttl)
+	// Reject an inconsistent resulting pair (e.g. a new ttl above an existing cap).
+	// Current values come from a trusted config, so they parse; guard anyway.
+	if effTTL != "" && effMax != "" {
+		dttl, derr := time.ParseDuration(effTTL)
+		dmax, merr := time.ParseDuration(effMax)
+		if derr == nil && merr == nil && dttl > dmax {
+			return fmt.Errorf("presence-ttl %s exceeds presence-max-ttl %s; choose a ttl ≤ the cap", effTTL, effMax)
+		}
+	}
+
 	// The PATH link + login item already succeeded; a failed/denied config write
 	// (e.g. Touch ID cancelled) shouldn't fail the whole install — strict mode is
 	// the safe fallback, and `sinete config set …` can set it later.
@@ -995,7 +1020,7 @@ func configurePresenceOnInstall(ttlFlag, maxFlag string) error {
 		fmt.Fprintf(os.Stderr, "warning: could not write presence config (%v); leaving strict mode (every signature prompts). Set it later with `sinete config set …`.\n", err)
 		return nil
 	}
-	fmt.Printf("presence configured: presence-ttl=%s presence-max-ttl=%s\n", ttl, max)
+	fmt.Printf("presence configured: presence-ttl=%s presence-max-ttl=%s\n", effTTL, effMax)
 	return nil
 }
 
@@ -1017,16 +1042,6 @@ func promptDuration(label, suggestion string) string {
 		return suggestion
 	}
 	return resp
-}
-
-// firstNonEmpty returns the first non-empty string, or "".
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 // cmdUninstall reverses the install: login item, the link sinete created, the

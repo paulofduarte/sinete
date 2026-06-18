@@ -407,18 +407,21 @@ struct SetupView: View {
     }
 
     /// Pre-fill the presence fields from the current config so reconfiguring an
-    /// already-set-up sinete shows (and keeps) its values instead of silently
-    /// resetting them to the suggestions. An unset/unverifiable config returns
-    /// empty, leaving the suggestions in place.
+    /// already-set-up sinete shows (and keeps) its values. For a configured install
+    /// an *unset* setting is reflected as an empty field — not the suggestion — so
+    /// reconfigure can't silently relax an intentionally strict setup. A fresh
+    /// install (both empty) keeps the pre-filled suggestions.
     private func loadCurrentTTLs() {
         DispatchQueue.global().async {
             let ttl = (try? Backend.run(["config", "get", "presence-ttl"]))?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let maxTTL = (try? Backend.run(["config", "get", "presence-max-ttl"]))?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             DispatchQueue.main.async {
-                if let ttl, !ttl.isEmpty { presenceTTL = ttl }
-                if let maxTTL, !maxTTL.isEmpty { presenceMaxTTL = maxTTL }
+                if !ttl.isEmpty || !maxTTL.isEmpty {
+                    presenceTTL = ttl
+                    presenceMaxTTL = maxTTL
+                }
             }
         }
     }
@@ -486,11 +489,10 @@ struct SetupView: View {
         busy = true
         DispatchQueue.global().async {
             var args = ["install"]
-            // Pass the chosen presence TTLs so install writes the first signed config
-            // (one Touch ID). The fields are pre-filled, so they're normally set; if a
-            // user clears just one, `sinete install` fills it from the suggestions, but
-            // clearing both passes no flags and — since the app runs install
-            // non-interactively — leaves TTLs unset (strict), not suggested.
+            // Pass the chosen presence TTLs as flags so install writes the signed
+            // config (one Touch ID). On a fresh install a missing flag fills from the
+            // suggestions; on an existing config install changes only what's passed and
+            // leaves a cleared field untouched — so reconfigure never silently relaxes.
             let ttl = presenceTTL.trimmingCharacters(in: .whitespaces)
             let maxTTL = presenceMaxTTL.trimmingCharacters(in: .whitespaces)
             if !ttl.isEmpty { args.append(contentsOf: ["--presence-ttl", ttl]) }
