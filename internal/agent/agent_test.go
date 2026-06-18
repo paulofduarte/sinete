@@ -328,8 +328,9 @@ func TestMutationsUnsupported(t *testing.T) {
 	}
 }
 
-// TestBuiltinDefaultsMatchAgent keeps registry.BuiltinDefaults (what the CLI
-// displays) in sync with the durations the agent actually enforces.
+// TestBuiltinDefaultsMatchAgent keeps the registry's built-in defaults (what the
+// CLI displays via registry.BuiltinDefault) in sync with the durations the agent
+// actually enforces.
 func TestBuiltinDefaultsMatchAgent(t *testing.T) {
 	idle, err := time.ParseDuration(registry.BuiltinDefault(registry.PresenceTTL))
 	if err != nil || idle != DefaultIdleTTL {
