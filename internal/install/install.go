@@ -33,8 +33,8 @@ const (
 const AdminLinkPath = "/usr/local/bin/sinete"
 
 // State records what an install created, so uninstall reverses exactly that.
-// It lives beside keys.json and is intentionally separate from it: uninstall may
-// remove this file while preserving the keys.
+// It lives beside the signed config (registry.json) and is intentionally separate
+// from it: uninstall may remove this file while preserving the keys.
 type State struct {
 	Method       Method    `json:"method"`
 	LinkPath     string    `json:"linkPath,omitempty"`  // empty if we kept a pre-existing link
@@ -44,7 +44,7 @@ type State struct {
 	ConfiguredAt time.Time `json:"configuredAt"`
 }
 
-// StatePath returns $XDG_CONFIG_HOME/sinete/install.json (beside keys.json),
+// StatePath returns $XDG_CONFIG_HOME/sinete/install.json (beside registry.json),
 // falling back to ~/.config/sinete/install.json.
 func StatePath() (string, error) {
 	dir := os.Getenv("XDG_CONFIG_HOME")

@@ -167,38 +167,6 @@ func TestConfigUnknownVersionUntrusted(t *testing.T) {
 	}
 }
 
-func TestMergeLegacyFilters(t *testing.T) {
-	legacy, err := Open(writeKeysJSON(t, `{
-	  "defaults": {"presence-ttl":"10m","bogus-setting":"x"},
-	  "keys": [
-	    {"name":"work","label":"sinete-work","tag":"t","config":{"presence-ttl":"5m","bogus":"y"}},
-	    {"name":"bad name!","label":"sinete-bad","tag":"t","config":{"presence-ttl":"1m"}}
-	  ]
-	}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	c, _, _ := OpenConfig(filepath.Join(t.TempDir(), "registry.json"), &fakeCrypto{})
-	c.MergeLegacy(legacy)
-
-	if got := c.Defaults()[PresenceTTL]; got != "10m" {
-		t.Errorf("valid default not migrated: %q", got)
-	}
-	if _, ok := c.Defaults()["bogus-setting"]; ok {
-		t.Error("unknown default setting should be filtered out")
-	}
-	if got := c.KeyConfig("work")[PresenceTTL]; got != "5m" {
-		t.Errorf("valid per-key setting not migrated: %q", got)
-	}
-	if _, ok := c.KeyConfig("work")["bogus"]; ok {
-		t.Error("unknown per-key setting should be filtered out")
-	}
-	if c.HasKey("bad name!") {
-		t.Error("config for an invalid key name should not be migrated")
-	}
-}
-
 func TestConfigUnreadableUntrusted(t *testing.T) {
 	// A directory at the config path makes os.ReadFile fail with a non-NotExist
 	// error; OpenConfig should treat that fail-safe (untrusted), not hard-error.

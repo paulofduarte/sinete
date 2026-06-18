@@ -203,40 +203,6 @@ func (c *Config) Names() []string {
 	return out
 }
 
-// MergeLegacy copies config from the legacy keys.json registry (global defaults
-// and per-key overrides) into this store, without overwriting values already set.
-// Used once to migrate config off the old format; the next Save persists it.
-func (c *Config) MergeLegacy(r *Registry) {
-	// keys.json is unsigned, so filter what we carry forward: only recognised
-	// settings, and only valid key names. This stops unexpected setting keys or
-	// invalid/hostile names from being signed into registry.json and surfacing in
-	// printConfig or future consumers.
-	for k, v := range r.Defaults() {
-		if v == "" || !ValidSetting(k) {
-			continue
-		}
-		if _, ok := c.defaults[k]; !ok {
-			c.defaults[k] = v
-		}
-	}
-	for _, e := range r.List() {
-		if ValidName(e.Name) != nil {
-			continue
-		}
-		for setting, val := range e.Config {
-			if val == "" || !ValidSetting(setting) {
-				continue
-			}
-			if c.keys[e.Name] == nil {
-				c.keys[e.Name] = map[string]string{}
-			}
-			if _, ok := c.keys[e.Name][setting]; !ok {
-				c.keys[e.Name][setting] = val
-			}
-		}
-	}
-}
-
 // Save signs and writes the config, advancing the epoch. Write order is: sign
 // with epoch+1 → write the file atomically → store epoch+1. A crash before the
 // last step leaves a file whose epoch no longer matches, so it loads as untrusted

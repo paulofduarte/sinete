@@ -327,3 +327,19 @@ func TestMutationsUnsupported(t *testing.T) {
 		t.Error("Add should be unsupported")
 	}
 }
+
+// TestBuiltinDefaultsMatchAgent keeps the registry's built-in defaults (what the
+// CLI displays via registry.BuiltinDefault) in sync with the durations the agent
+// actually enforces.
+func TestBuiltinDefaultsMatchAgent(t *testing.T) {
+	idle, err := time.ParseDuration(registry.BuiltinDefault(registry.PresenceTTL))
+	if err != nil || idle != DefaultIdleTTL {
+		t.Errorf("registry PresenceTTL built-in %q != agent DefaultIdleTTL %v",
+			registry.BuiltinDefault(registry.PresenceTTL), DefaultIdleTTL)
+	}
+	max, err := time.ParseDuration(registry.BuiltinDefault(registry.PresenceMaxTTL))
+	if err != nil || max != DefaultMaxTTL {
+		t.Errorf("registry PresenceMaxTTL built-in %q != agent DefaultMaxTTL %v",
+			registry.BuiltinDefault(registry.PresenceMaxTTL), DefaultMaxTTL)
+	}
+}

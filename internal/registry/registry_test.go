@@ -4,107 +4,51 @@
 package registry
 
 import (
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 )
 
-func writeKeysJSON(t *testing.T, content string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "keys.json")
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-// Registry is now the read-only legacy loader used to migrate an old keys.json;
-// these cover the two on-disk formats it must still parse, plus the empty and
-// malformed cases.
-
-func TestOpenObjectFormat(t *testing.T) {
-	path := writeKeysJSON(t, `{
-	  "keys": [
-	    {"name":"work","label":"sinete-work","tag":"me.paulofduarte.sinete","config":{"presence-ttl":"8h"}},
-	    {"name":"alt","label":"sinete-alt","tag":"me.paulofduarte.sinete"}
-	  ],
-	  "defaults": {"presence-ttl":"10m"}
-	}`)
-	r, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	list := r.List()
-	if len(list) != 2 {
-		t.Fatalf("got %d entries, want 2", len(list))
-	}
-	if list[0].Name != "alt" || list[1].Name != "work" {
-		t.Fatalf("entries not sorted by name: %q, %q", list[0].Name, list[1].Name)
-	}
-	if got := list[1].Config[PresenceTTL]; got != "8h" {
-		t.Errorf("work per-key config = %q, want 8h", got)
-	}
-	if got := r.Defaults()[PresenceTTL]; got != "10m" {
-		t.Errorf("default = %q, want 10m", got)
-	}
-}
-
-func TestOpenLegacyArrayFormat(t *testing.T) {
-	path := writeKeysJSON(t, `[{"name":"old","label":"sinete-old","tag":"me.paulofduarte.sinete"}]`)
-	r, err := Open(path)
-	if err != nil {
-		t.Fatalf("legacy array should parse: %v", err)
-	}
-	list := r.List()
-	if len(list) != 1 || list[0].Name != "old" {
-		t.Fatalf("legacy array: got %+v, want one entry named old", list)
-	}
-}
-
-func TestOpenEmptyAndAbsent(t *testing.T) {
-	r, err := Open(filepath.Join(t.TempDir(), "nope.json"))
-	if err != nil {
-		t.Fatalf("absent file should open empty: %v", err)
-	}
-	if len(r.List()) != 0 {
-		t.Fatal("absent file should be empty")
-	}
-
-	r2, err := Open(writeKeysJSON(t, ""))
-	if err != nil {
-		t.Fatalf("empty file should open empty: %v", err)
-	}
-	if len(r2.List()) != 0 {
-		t.Fatal("empty file should be empty")
-	}
-}
-
-func TestOpenUnrecognisedObject(t *testing.T) {
-	if _, err := Open(writeKeysJSON(t, `{"foo":1}`)); err == nil {
-		t.Error("an object without keys/defaults should error")
-	}
-}
-
-func TestHasConfig(t *testing.T) {
-	cases := []struct {
-		name    string
-		content string
-		want    bool
-	}{
-		{"no config", `{"keys":[{"name":"a","label":"sinete-a","tag":"t"}]}`, false},
-		{"global default", `{"defaults":{"presence-ttl":"10m"}}`, true},
-		{"per-key override", `{"keys":[{"name":"a","label":"sinete-a","tag":"t","config":{"presence-ttl":"5m"}}]}`, true},
-		{"empty default value", `{"defaults":{"presence-ttl":""}}`, false},
-		{"unknown default setting", `{"defaults":{"bogus":"x"}}`, false},
-		{"config under invalid name", `{"keys":[{"name":"bad name!","label":"sinete-bad","tag":"t","config":{"presence-ttl":"5m"}}]}`, false},
-	}
-	for _, c := range cases {
-		r, err := Open(writeKeysJSON(t, c.content))
-		if err != nil {
-			t.Fatalf("%s: %v", c.name, err)
+func TestValidName(t *testing.T) {
+	valid := []string{"work", "a", "A1", "user@host", "key.1", "a_b-c+d"}
+	for _, n := range valid {
+		if err := ValidName(n); err != nil {
+			t.Errorf("ValidName(%q) = %v, want nil", n, err)
 		}
-		if got := r.HasConfig(); got != c.want {
-			t.Errorf("%s: HasConfig = %v, want %v", c.name, got, c.want)
+	}
+	invalid := []string{
+		"", "bad name", "../x", "a/b", "a:b", ".hidden", "_x", "a\nb",
+		strings.Repeat("a", 129), // too long
+	}
+	for _, n := range invalid {
+		if err := ValidName(n); err == nil {
+			t.Errorf("ValidName(%q) = nil, want error", n)
+		}
+	}
+}
+
+func TestValidSetting(t *testing.T) {
+	if !ValidSetting(PresenceTTL) || !ValidSetting(PresenceMaxTTL) {
+		t.Error("known settings should be valid")
+	}
+	if ValidSetting("bogus") {
+		t.Error("unknown setting should be invalid")
+	}
+}
+
+func TestBuiltinDefault(t *testing.T) {
+	if got := BuiltinDefault(PresenceTTL); got != "10m" {
+		t.Errorf("BuiltinDefault(PresenceTTL) = %q, want 10m", got)
+	}
+	if got := BuiltinDefault(PresenceMaxTTL); got != "2h" {
+		t.Errorf("BuiltinDefault(PresenceMaxTTL) = %q, want 2h", got)
+	}
+	if got := BuiltinDefault("bogus"); got != "" {
+		t.Errorf("BuiltinDefault(unknown) = %q, want \"\"", got)
+	}
+	// Every recognised setting must have a built-in default to display/enforce.
+	for _, s := range Settings {
+		if BuiltinDefault(s) == "" {
+			t.Errorf("setting %q has no built-in default", s)
 		}
 	}
 }

@@ -104,21 +104,9 @@ prompts for Touch ID; further signatures are silent until its presence window
 (TTL) lapses. ssh-add -l lists them; ssh-add -d/-D forgets a key's window.`)
 }
 
-// openRegistry loads the legacy keys.json index (kept only to migrate its config
-// into the signed registry; keys themselves now come from the secure element).
-func openRegistry() (*registry.Registry, error) {
-	path, err := registry.DefaultPath()
-	if err != nil {
-		return nil, err
-	}
-	return registry.Open(path)
-}
-
 // openConfig loads the signed config (registry.json). Reads reflect exactly what
 // the agent enforces: the verified config, or built-in defaults when it is absent
-// or cannot be verified. Legacy keys.json config is migrated on the first signed
-// write (saveConfig), not seeded into reads; until then a note is printed if such
-// config exists. A present-but-unverifiable file warns and yields built-in defaults.
+// or cannot be verified.
 func openConfig() (*registry.Config, error) {
 	path, err := registry.ConfigPath()
 	if err != nil {
@@ -131,57 +119,18 @@ func openConfig() (*registry.Config, error) {
 	if !trusted {
 		fmt.Fprintln(os.Stderr, "warning: the signed config could not be verified; using built-in defaults. Re-run `sinete config` to rewrite it.")
 	}
-	// Legacy keys.json config is NOT enforced (the agent and these reads use the
-	// signed config / built-in defaults) until the next `sinete config` write
-	// migrates and signs it. Don't seed it into reads — that would make CLI output
-	// diverge from what the agent enforces; instead warn that migration is pending.
-	if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
-		if legacy, lerr := openRegistry(); lerr == nil && legacy.HasConfig() {
-			fmt.Fprintln(os.Stderr, "note: legacy keys.json config is not in effect; run `sinete config <setting> <value>` once to migrate and sign it.")
-		}
-	}
 	return cfg, nil
 }
 
-// saveConfig signs and writes the config (a Touch ID prompt), then drops the
-// legacy keys.json — migration is complete once the signed registry exists.
+// saveConfig signs and writes the config (a Touch ID prompt). The master key is
+// created on the first write if it does not exist yet.
 func saveConfig(cfg *registry.Config) error {
-	// Ensure the master key exists before signing: on a fresh install the first
-	// config write is what creates it (creating it needs no presence; signing does).
+	// Creating the master key needs no presence; signing with it does — so the
+	// first `sinete config` on a fresh install creates it, then signs.
 	if err := enclave.EnsureMaster(); err != nil {
 		return fmt.Errorf("ensure master key: %w", err)
 	}
-	// The first signed write also migrates any legacy keys.json config (without
-	// overwriting values just set), so upgrading loses nothing; afterwards
-	// registry.json is authoritative and keys.json is removed below.
-	if path, err := registry.ConfigPath(); err == nil {
-		if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
-			if legacy, lerr := openRegistry(); lerr == nil {
-				cfg.MergeLegacy(legacy)
-				// keys.json may be stale (a key deleted before this first signed
-				// write), so drop migrated per-key config for names no longer in the
-				// secure element — migration shouldn't resurrect orphaned entries.
-				if existing, eerr := enclave.List(); eerr == nil {
-					have := make(map[string]bool, len(existing))
-					for _, k := range existing {
-						have[k.Name] = true
-					}
-					for _, name := range cfg.Names() {
-						if !have[name] {
-							cfg.RemoveKey(name)
-						}
-					}
-				}
-			}
-		}
-	}
-	if err := cfg.Save(); err != nil {
-		return err
-	}
-	if p, err := registry.DefaultPath(); err == nil {
-		_ = os.Remove(p)
-	}
-	return nil
+	return cfg.Save()
 }
 
 func cmdGenerate(args []string) error {
@@ -591,9 +540,11 @@ func printConfig(cfg *registry.Config) {
 	defaults := cfg.Defaults()
 	fmt.Println("defaults:")
 	for _, s := range registry.Settings {
+		// Show the effective value: a configured global default, or the built-in
+		// value (tagged) so the end user can see what is actually applied.
 		v := defaults[s]
 		if v == "" {
-			v = "(built-in)"
+			v = registry.BuiltinDefault(s) + " (built-in)"
 		}
 		fmt.Printf("  %-16s %s\n", s, v)
 	}
@@ -803,9 +754,6 @@ func cmdUninstall(args []string) error {
 	if p, perr := registry.ConfigPath(); perr == nil {
 		_ = os.Remove(p)
 		_ = os.Remove(p + ".lock") // the config write lock file (see Config.Save)
-	}
-	if p, perr := registry.DefaultPath(); perr == nil {
-		_ = os.Remove(p)
 	}
 	fmt.Printf("uninstalled and removed %d key(s)\n", removed)
 	return nil
