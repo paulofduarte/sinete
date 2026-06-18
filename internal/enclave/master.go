@@ -223,6 +223,10 @@ func (ConfigCrypto) Epoch() (uint64, error) {
 // Increment advances the registry epoch by one and returns the new value. macOS
 // has no app-accessible hardware counter, so this is read+1+store on the keychain
 // item; a TPM backend implements it as a hardware NV_Increment. No presence prompt.
+//
+// This read+1+store is NOT atomic and must be called with the config lock held (as
+// Config.Save does) — the keychain has no compare-and-swap, so concurrent un-locked
+// callers would lose updates. See registry.Crypto.
 func (ConfigCrypto) Increment() (uint64, error) {
 	v, _, err := Epoch()
 	if err != nil {

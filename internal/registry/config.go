@@ -23,6 +23,15 @@ import (
 // SetEpoch(v): a TPM-backed backend can only bump a hardware NV monotonic counter,
 // not set it to an arbitrary value, so Increment is the contract both backends can
 // honour (macOS implements it as read+1+store, Linux as NV_Increment).
+//
+// Increment is NOT required to be internally atomic. The keychain has no atomic
+// increment, so the macOS read+1+store would lose updates under concurrency — it is
+// safe only because the sole caller, Config.Save, holds the config lock (an flock on
+// <path>.lock) across the whole read-epoch → sign → write → Increment sequence,
+// serialising every writer (across processes, and across goroutines via a fresh open
+// per Save). The agent never writes the epoch, only the `sinete config` CLI does, so
+// the lock is sufficient. A TPM NV_Increment is atomic regardless, but the lock is
+// still held for the file+signature atomicity.
 type Crypto interface {
 	Sign(payload []byte) (sig []byte, err error)
 	Verify(payload, sig []byte) bool
