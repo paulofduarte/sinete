@@ -308,6 +308,63 @@ struct ReadyView: View {
 
 // MARK: - Setup wizard
 
+/// The presence-caching fields shown in the install step, split out to keep
+/// SetupView's body small. Suggestions are pre-filled; an unconfigured sinete
+/// prompts on every signature (strict), so these only relax from that.
+private struct PresenceSetupFields: View {
+    @Binding var ttl: String
+    @Binding var maxTTL: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Presence caching").font(.headline)
+            Text("""
+            How long Touch ID stays valid before the next prompt. Keep the \
+            suggestions, or lower them for stricter prompting. Leaving sinete \
+            unconfigured prompts on every signature.
+            """)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Text("Idle TTL").frame(width: 120, alignment: .leading)
+                TextField("e.g. 10m", text: $ttl)
+                    .textFieldStyle(.roundedBorder).frame(width: 90)
+                    .accessibilityLabel("Idle TTL")
+            }
+            HStack {
+                Text("Max TTL (cap)").frame(width: 120, alignment: .leading)
+                TextField("e.g. 2h", text: $maxTTL)
+                    .textFieldStyle(.roundedBorder).frame(width: 90)
+                    .accessibilityLabel("Max TTL cap")
+            }
+        }
+        .frame(maxWidth: 340)
+    }
+}
+
+/// Shows the link-conflict alert and returns the install arg that resolves it
+/// ("--replace-link" or "--skip-link"), or nil if the user cancelled. Must run on
+/// the main thread (it presents an NSAlert).
+private func resolveLinkConflictArg(_ plan: InstallPlan) -> String? {
+    let alert = NSAlert()
+    alert.messageText = "Something already exists at the link path"
+    alert.informativeText = """
+    \(plan.linkPath) already exists and isn't sinete's link. \
+    Replace it so it points at sinete, or keep the existing one? \
+    If you keep it, sinete isn't added to PATH and won't remove \
+    it on uninstall.
+    """
+    alert.addButton(withTitle: "Replace")
+    alert.addButton(withTitle: "Keep existing")
+    alert.addButton(withTitle: "Cancel")
+    switch alert.runModal() {
+    case .alertFirstButtonReturn: return "--replace-link"
+    case .alertSecondButtonReturn: return "--skip-link"
+    default: return nil
+    }
+}
+
 struct SetupView: View {
     let status: Status?
     let onDone: () -> Void
@@ -317,6 +374,11 @@ struct SetupView: View {
     @State private var keyName = ""
     @State private var instructions = ""
     @State private var busy = false
+    // Suggested starting values for presence caching; mirror registry.Suggested in
+    // Go. These are suggestions, not enforced defaults — an unconfigured sinete
+    // prompts on every signature (strict). The user can override before installing.
+    @State private var presenceTTL = "10m"
+    @State private var presenceMaxTTL = "2h"
 
     var body: some View {
         VStack(spacing: 18) {
@@ -343,6 +405,37 @@ struct SetupView: View {
             Spacer()
         }
         .disabled(busy)
+        .onAppear { loadCurrentTTLs() }
+    }
+
+    /// Pre-fill the presence fields from the current config so reconfiguring an
+    /// already-set-up sinete shows (and keeps) its values. When sinete is already set
+    /// up — or its status is unknown (decode failed) — the live config is always
+    /// reflected, even when both TTLs are empty (an intentionally strict setup), so
+    /// clicking Install can't re-suggest relaxed values. Only a confirmed fresh
+    /// install keeps the pre-filled suggestions.
+    private func loadCurrentTTLs() {
+        // Unknown status (nil) is treated as a reconfigure for safety: reflect the
+        // real config rather than risk relaxing a strict setup back to suggestions.
+        let reconfigure = status?.configured ?? true
+        // Snapshot the fields now (main thread, .onAppear) so we don't overwrite any
+        // edits the user makes while the async fetch is in flight.
+        let startTTL = presenceTTL
+        let startMax = presenceMaxTTL
+        DispatchQueue.global().async {
+            let ttl = (try? Backend.run(["config", "get", "presence-ttl"]))?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let maxTTL = (try? Backend.run(["config", "get", "presence-max-ttl"]))?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            DispatchQueue.main.async {
+                // Skip if the user has typed into either field since the fetch began.
+                guard presenceTTL == startTTL, presenceMaxTTL == startMax else { return }
+                if reconfigure || !ttl.isEmpty || !maxTTL.isEmpty {
+                    presenceTTL = ttl
+                    presenceMaxTTL = maxTTL
+                }
+            }
+        }
     }
 
     private var stepInstall: some View {
@@ -353,6 +446,9 @@ struct SetupView: View {
             """)
             .multilineTextAlignment(.center)
             .foregroundStyle(.secondary)
+
+            PresenceSetupFields(ttl: $presenceTTL, maxTTL: $presenceMaxTTL)
+
             Button("Install") { install() }
                 .keyboardShortcut(.defaultAction)
         }
@@ -365,6 +461,7 @@ struct SetupView: View {
             TextField("key name (e.g. your email)", text: $keyName)
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 280)
+                .accessibilityLabel("Key name")
             HStack {
                 Button("Skip") { step = 2 }
                 Button("Create") { generate() }
@@ -405,35 +502,24 @@ struct SetupView: View {
         busy = true
         DispatchQueue.global().async {
             var args = ["install"]
+            // Pass the chosen presence TTLs as flags so install writes the signed
+            // config (one Touch ID). On a fresh install a missing flag fills from the
+            // suggestions; on an existing config install changes only what's passed and
+            // leaves a cleared field untouched — so reconfigure never silently relaxes.
+            let ttl = presenceTTL.trimmingCharacters(in: .whitespacesAndNewlines)
+            let maxTTL = presenceMaxTTL.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !ttl.isEmpty { args.append(contentsOf: ["--presence-ttl", ttl]) }
+            if !maxTTL.isEmpty { args.append(contentsOf: ["--presence-max-ttl", maxTTL]) }
             if let planOut = try? Backend.run(["install", "--plan"]),
                let data = planOut.data(using: .utf8),
                let plan = try? JSONDecoder().decode(InstallPlan.self, from: data),
                plan.linkConflicts {
-                let choice = DispatchQueue.main.sync { () -> Int in
-                    let alert = NSAlert()
-                    alert.messageText = "Something already exists at the link path"
-                    alert.informativeText = """
-                    \(plan.linkPath) already exists and isn't sinete's link. \
-                    Replace it so it points at sinete, or keep the existing one? \
-                    If you keep it, sinete isn't added to PATH and won't remove \
-                    it on uninstall.
-                    """
-                    alert.addButton(withTitle: "Replace")
-                    alert.addButton(withTitle: "Keep existing")
-                    alert.addButton(withTitle: "Cancel")
-                    switch alert.runModal() {
-                    case .alertFirstButtonReturn: return 0
-                    case .alertSecondButtonReturn: return 1
-                    default: return 2
-                    }
-                }
-                switch choice {
-                case 0: args.append("--replace-link")
-                case 1: args.append("--skip-link")
-                default:
+                let resolved = DispatchQueue.main.sync { resolveLinkConflictArg(plan) }
+                guard let arg = resolved else {
                     DispatchQueue.main.async { busy = false }
                     return
                 }
+                args.append(arg)
             }
             var failure: String?
             do { try Backend.run(args) } catch { failure = error.localizedDescription }

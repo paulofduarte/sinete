@@ -37,13 +37,6 @@ import (
 	xagent "golang.org/x/crypto/ssh/agent"
 )
 
-// Built-in presence TTLs, used when config leaves them unset. 10m/2h mirror
-// gpg-agent's default-cache-ttl / max-cache-ttl.
-const (
-	DefaultIdleTTL = 10 * time.Minute
-	DefaultMaxTTL  = 2 * time.Hour
-)
-
 var (
 	errUnsupported = errors.New("sinete agent is read-only; manage keys with the sinete CLI")
 	errNotFound    = errors.New("agent: no matching key")
@@ -77,8 +70,9 @@ func (EnclaveSource) Signer(label, tag string) (ssh.Signer, error) {
 // signed config registry. The config is re-verified only when registry.json
 // changes (see config), so a `sinete config` write is picked up promptly without
 // re-reading and re-verifying on every signature. A config that fails
-// verification (for any reason) yields built-in TTLs: Effective returns "" when
-// the store is untrusted, so this is the fail-safe path.
+// verification (for any reason) yields strict TTLs (0/0 — authenticate every
+// signature): Effective returns "" when the store is untrusted, so this is the
+// fail-CLOSED path — tampering can only tighten, never relax.
 type EnclaveStore struct {
 	mu    sync.Mutex
 	cfg   *registry.Config
@@ -104,12 +98,15 @@ func (s *EnclaveStore) Keys() ([]registry.Entry, error) {
 }
 
 // TTL resolves the effective idle and absolute-cap durations for a key from the
-// (cached) signed config (built-in defaults when unset, unparseable, or untrusted).
+// (cached) signed config. The fail-closed fallback is 0/0 — authenticate on every
+// signature — applied when a value is unset, unparseable, or the config is
+// untrusted; only a configured, verified value relaxes from strict. (max == 0 or
+// idle == 0 both force a prompt every signature, so an unset presence-max-ttl
+// keeps a configured presence-ttl strict — the ceiling is enforced structurally.)
 func (s *EnclaveStore) TTL(name string) (idle, max time.Duration) {
-	idle, max = DefaultIdleTTL, DefaultMaxTTL
 	cfg := s.config()
 	if cfg == nil {
-		return idle, max
+		return 0, 0
 	}
 	if d, ok := parseDur(cfg.Effective(name, registry.PresenceTTL)); ok {
 		idle = d

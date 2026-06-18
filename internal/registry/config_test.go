@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // fakeCrypto stands in for the master key + epoch item: Sign is a deterministic
@@ -51,7 +52,7 @@ func TestConfigSaveEpochFailureUntrusted(t *testing.T) {
 		t.Error("Config should be untrusted after a failed epoch advance")
 	}
 	if got := c.Effective("x", PresenceTTL); got != "" {
-		t.Errorf("untrusted Effective = %q, want built-in default (\"\")", got)
+		t.Errorf("untrusted Effective = %q, want strict fallback (\"\")", got)
 	}
 }
 
@@ -64,7 +65,7 @@ func TestConfigRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !trusted {
-		t.Fatal("an absent config file should be trusted (defaults)")
+		t.Fatal("an absent config file should be trusted (strict until configured)")
 	}
 	if got := c.Effective("work", PresenceTTL); got != "" {
 		t.Fatalf("empty store Effective = %q, want \"\"", got)
@@ -97,7 +98,7 @@ func TestConfigRoundTrip(t *testing.T) {
 	}
 }
 
-func TestConfigTamperFallsBackToDefaults(t *testing.T) {
+func TestConfigTamperFallsClosedToStrict(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "registry.json")
 	fc := &fakeCrypto{}
 
@@ -128,7 +129,7 @@ func TestConfigTamperFallsBackToDefaults(t *testing.T) {
 		t.Fatal("tampered config must not be trusted")
 	}
 	if got := c2.Effective("work", PresenceTTL); got != "" {
-		t.Fatalf("tampered config Effective = %q, want built-in default (\"\")", got)
+		t.Fatalf("tampered config Effective = %q, want strict fallback (\"\")", got)
 	}
 }
 
@@ -163,7 +164,7 @@ func TestConfigUnknownVersionUntrusted(t *testing.T) {
 		t.Fatal("config with an unknown envelope version must not be trusted")
 	}
 	if got := c2.Effective("work", PresenceTTL); got != "" {
-		t.Fatalf("unknown-version config Effective = %q, want built-in default (\"\")", got)
+		t.Fatalf("unknown-version config Effective = %q, want strict fallback (\"\")", got)
 	}
 }
 
@@ -182,7 +183,7 @@ func TestConfigUnreadableUntrusted(t *testing.T) {
 		t.Error("an unreadable config must be untrusted")
 	}
 	if got := c.Effective("x", PresenceTTL); got != "" {
-		t.Errorf("untrusted Effective = %q, want built-in default (\"\")", got)
+		t.Errorf("untrusted Effective = %q, want strict fallback (\"\")", got)
 	}
 }
 
@@ -225,7 +226,7 @@ func TestConfigReplayRejected(t *testing.T) {
 		t.Fatal("a replayed (stale-epoch) config must not be trusted")
 	}
 	if got := c2.Effective("work", PresenceTTL); got != "" {
-		t.Fatalf("replayed config Effective = %q, want built-in default (\"\")", got)
+		t.Fatalf("replayed config Effective = %q, want strict fallback (\"\")", got)
 	}
 }
 
@@ -257,5 +258,110 @@ func TestConfigRemoveKey(t *testing.T) {
 	}
 	if got := c2.Effective("work", PresenceTTL); got != "10m" {
 		t.Fatalf("after RemoveKey, Effective = %q, want default 10m", got)
+	}
+}
+
+// presence-max-ttl is global-only: SetKeyConfig refuses to store it per-key, so it
+// never persists and Effective always reports the global value for the ceiling.
+func TestConfigMaxTTLGlobalOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.json")
+	fc := &fakeCrypto{}
+
+	c, _, _ := OpenConfig(path, fc)
+	c.SetDefault(PresenceMaxTTL, "2h")
+	c.SetKeyConfig("work", PresenceMaxTTL, "24h") // ignored — not stored per-key
+	c.SetKeyConfig("work", PresenceTTL, "30m")
+	if got := c.KeyConfig("work")[PresenceMaxTTL]; got != "" {
+		t.Errorf("per-key max-ttl stored = %q, want it ignored (\"\")", got)
+	}
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	c2, _, _ := OpenConfig(path, fc)
+	if got := c2.Effective("work", PresenceMaxTTL); got != "2h" {
+		t.Errorf("per-key max-ttl honoured = %q, want the global 2h", got)
+	}
+	if got := c2.Effective("work", PresenceTTL); got != "30m" {
+		t.Errorf("per-key ttl = %q, want 30m", got)
+	}
+}
+
+// A signed config whose per-key map carries a (disallowed) presence-max-ttl — built
+// by hand to bypass SetKeyConfig — must have it stripped at the read boundary.
+func TestConfigLoadStripsPerKeyMaxTTL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.json")
+	fc := &fakeCrypto{epoch: 1}
+
+	pl := cfgPayload{Epoch: 1, Keys: map[string]map[string]string{
+		"work": {PresenceTTL: "30m", PresenceMaxTTL: "24h"},
+	}}
+	payload, _ := json.Marshal(pl)
+	env := cfgEnvelope{V: cfgVersion, Alg: cfgAlg, Payload: payload, Sig: fc.tag(payload)}
+	data, _ := json.MarshalIndent(env, "", "  ")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c, trusted, err := OpenConfig(path, fc)
+	if err != nil || !trusted {
+		t.Fatalf("OpenConfig trusted=%v err=%v", trusted, err)
+	}
+	if got := c.KeyConfig("work")[PresenceMaxTTL]; got != "" {
+		t.Errorf("per-key max-ttl survived load = %q, want stripped", got)
+	}
+	if got := c.KeyConfig("work")[PresenceTTL]; got != "30m" {
+		t.Errorf("per-key ttl = %q, want 30m", got)
+	}
+}
+
+func TestConfigCeiling(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.json")
+	fc := &fakeCrypto{}
+
+	c, _, _ := OpenConfig(path, fc)
+	if _, ok := c.Ceiling(); ok {
+		t.Error("an unset ceiling should report ok=false")
+	}
+	c.SetDefault(PresenceMaxTTL, "2h")
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if d, ok := c.Ceiling(); !ok || d != 2*time.Hour {
+		t.Errorf("Ceiling() = %v, %v, want 2h, true", d, ok)
+	}
+
+	// A negative ceiling is nonsense (would reject every ttl) → reported as unset.
+	c.SetDefault(PresenceMaxTTL, "-5m")
+	if _, ok := c.Ceiling(); ok {
+		t.Error("a negative ceiling should report ok=false")
+	}
+	c.SetDefault(PresenceMaxTTL, "2h")
+
+	// An untrusted store reports no ceiling (fail-closed).
+	c.trusted = false
+	if _, ok := c.Ceiling(); ok {
+		t.Error("an untrusted store should report no ceiling")
+	}
+}
+
+func TestConfigTTLsAbove(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.json")
+	fc := &fakeCrypto{}
+
+	c, _, _ := OpenConfig(path, fc)
+	c.SetDefault(PresenceTTL, "3h")
+	c.SetKeyConfig("alpha", PresenceTTL, "4h")
+	c.SetKeyConfig("bravo", PresenceTTL, "1h")
+
+	got := c.TTLsAbove(2 * time.Hour)
+	want := []TTLRef{{Key: "", Value: "3h"}, {Key: "alpha", Value: "4h"}}
+	if len(got) != len(want) {
+		t.Fatalf("TTLsAbove = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("TTLsAbove[%d] = %+v, want %+v", i, got[i], want[i])
+		}
 	}
 }

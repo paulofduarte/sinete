@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 )
 
 // Crypto signs and verifies the config envelope and tracks the replay epoch. The
@@ -71,11 +72,13 @@ type Config struct {
 }
 
 // OpenConfig loads the signed config. A missing file is an empty, trusted store
-// (everything uses built-in defaults). A present-but-untrustworthy file — bad
-// signature, epoch mismatch (replay/stale), or corrupt — loads empty and
-// UNtrusted, so Effective yields built-in defaults rather than honouring possibly
-// tampered values. The bool reports whether on-disk config was trusted: false
-// means a warning is warranted (an absent file is trusted, not a warning).
+// (every setting resolves to 0 — strict — until configured). A
+// present-but-untrustworthy file — bad signature, epoch mismatch (replay/stale),
+// or corrupt — loads empty and UNtrusted, so Effective yields "" (⇒ strict 0)
+// rather than honouring possibly tampered values. Fail-CLOSED: losing or tampering
+// with config can only tighten to strict, never relax. The bool reports whether
+// on-disk config was trusted: false means a warning is warranted (an absent file
+// is trusted, not a warning).
 func OpenConfig(path string, crypto Crypto) (*Config, bool, error) {
 	c := &Config{
 		path:     path,
@@ -128,6 +131,15 @@ func OpenConfig(path string, crypto Crypto) (*Config, bool, error) {
 	}
 	if pl.Keys != nil {
 		c.keys = pl.Keys
+		// presence-max-ttl is global-only: SetKeyConfig won't store it per-key, but
+		// enforce the same invariant at the read boundary so a per-key value can never
+		// be honoured or surfaced regardless of what is on disk.
+		for name, kc := range c.keys {
+			delete(kc, PresenceMaxTTL)
+			if len(kc) == 0 {
+				delete(c.keys, name)
+			}
+		}
 	}
 	return c, true, nil
 }
@@ -136,18 +148,74 @@ func OpenConfig(path string, crypto Crypto) (*Config, bool, error) {
 func (c *Config) Trusted() bool { return c.trusted }
 
 // Effective returns the configured value of setting for a key: the per-key
-// override, else the global default, else "" (the caller applies the built-in
-// default). An untrusted store returns "" for everything — the fail-safe.
+// override, else the global default, else "" — and the caller maps "" to the
+// strict fallback (0). An untrusted store returns "" for everything (fail-closed).
+// presence-max-ttl is GLOBAL-only (a per-key value is never honoured), so it is
+// always taken from the global default; it acts as a ceiling on presence-ttl,
+// enforced both at set time (see the CLI) and structurally by the agent's
+// absolute-cap bound.
 func (c *Config) Effective(name, setting string) string {
 	if !c.trusted {
 		return ""
 	}
-	if kc, ok := c.keys[name]; ok {
-		if v, ok := kc[setting]; ok && v != "" {
-			return v
+	if setting != PresenceMaxTTL {
+		if kc, ok := c.keys[name]; ok {
+			if v, ok := kc[setting]; ok && v != "" {
+				return v
+			}
 		}
 	}
 	return c.defaults[setting]
+}
+
+// Ceiling returns the global presence-max-ttl as a duration and whether it is set
+// to a usable (non-empty, parseable) value. An untrusted or unset store returns
+// (0, false). The CLI uses it to reject a presence-ttl above the ceiling.
+func (c *Config) Ceiling() (time.Duration, bool) {
+	if !c.trusted {
+		return 0, false
+	}
+	v := c.defaults[PresenceMaxTTL]
+	if v == "" {
+		return 0, false
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < 0 {
+		// Defensive: the CLI validates non-negative durations before signing, so a
+		// trusted config should never hold a negative ceiling — but were one present
+		// it would reject every non-negative ttl, so treat it as unset rather than
+		// lock the user out.
+		return 0, false
+	}
+	return d, true
+}
+
+// TTLRef points at one stored presence-ttl value — the global default (Key == "")
+// or a per-key override — for the ceiling-lowering warn/reduce flow.
+type TTLRef struct {
+	Key   string // "" for the global default
+	Value string
+}
+
+// TTLsAbove returns every stored presence-ttl (global default first, then per-key
+// overrides sorted by name) whose duration exceeds max. Used when lowering
+// presence-max-ttl to warn about, and then reduce, the now-too-relaxed values.
+// Unparseable values are skipped (they can't be honoured anyway).
+func (c *Config) TTLsAbove(max time.Duration) []TTLRef {
+	var out []TTLRef
+	if v := c.defaults[PresenceTTL]; v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > max {
+			out = append(out, TTLRef{Key: "", Value: v})
+		}
+	}
+	for _, name := range c.Names() {
+		if v := c.keys[name][PresenceTTL]; v != "" {
+			if d, err := time.ParseDuration(v); err == nil && d > max {
+				out = append(out, TTLRef{Key: name, Value: v})
+			}
+		}
+	}
+	return out
 }
 
 // Defaults returns a copy of the global config defaults.
@@ -179,11 +247,34 @@ func (c *Config) SetDefault(setting, value string) {
 
 // SetKeyConfig sets a per-key override (in memory; call Save to persist). It does
 // not check that the key exists — callers validate that against enumeration.
+// presence-max-ttl is global-only, so it is ignored here and can never be stored
+// per-key — keeping the persisted model consistent with how Effective resolves it
+// (and the CLI rejects it up front, with a message).
 func (c *Config) SetKeyConfig(name, setting, value string) {
+	if setting == PresenceMaxTTL {
+		return
+	}
 	if c.keys[name] == nil {
 		c.keys[name] = map[string]string{}
 	}
 	c.keys[name][setting] = value
+}
+
+// UnsetDefault removes a global default so the setting resolves to strict (in
+// memory; call Save to persist). It is not an error if the setting was unset.
+func (c *Config) UnsetDefault(setting string) { delete(c.defaults, setting) }
+
+// UnsetKeyConfig removes one setting from a key's overrides, dropping the key
+// entry entirely when no overrides remain (in memory; call Save to persist).
+func (c *Config) UnsetKeyConfig(name, setting string) {
+	kc, ok := c.keys[name]
+	if !ok {
+		return
+	}
+	delete(kc, setting)
+	if len(kc) == 0 {
+		delete(c.keys, name)
+	}
 }
 
 // RemoveKey drops a key's overrides, e.g. when the key is deleted (in memory;
@@ -206,8 +297,8 @@ func (c *Config) Names() []string {
 // Save signs and writes the config, advancing the epoch. Write order is: sign
 // with epoch+1 → write the file atomically → store epoch+1. A crash before the
 // last step leaves a file whose epoch no longer matches, so it loads as untrusted
-// (built-in defaults) — fail-safe; re-applying the change fixes it. Save requires
-// user presence (the master-key signature prompts).
+// (⇒ strict 0) — fail-closed; re-applying the change fixes it. Save requires user
+// presence (the master-key signature prompts).
 func (c *Config) Save() error {
 	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
 		return err

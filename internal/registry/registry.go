@@ -6,8 +6,11 @@
 // Which keys exist is determined by enumerating the secure element, not by this
 // package. Config lives in a single signed file (see Config / config.go):
 // registry.json, whose payload is signed by the enclave master key and bound to a
-// replay epoch, so tampering or replay is detected and falls back to the built-in
-// defaults below.
+// replay epoch. Verification is fail-CLOSED: any missing, tampered, forged or
+// stale config makes every setting resolve to 0 — authenticate on every signature
+// (the strictest possible value), so losing config can only ever tighten, never
+// regress a hardened setting. The values below are setup *suggestions*, never a
+// runtime fallback (see Suggested).
 package registry
 
 import (
@@ -16,29 +19,30 @@ import (
 )
 
 // Presence-config setting names (see `sinete config`). Durations parsed with
-// time.ParseDuration; the agent applies the built-in defaults when a value is
-// unset.
+// time.ParseDuration; an unset/unverifiable value resolves to 0 (strict), not to
+// any default. presence-max-ttl is a GLOBAL-only ceiling on every presence-ttl.
 const (
 	PresenceTTL    = "presence-ttl"     // idle window; resets on each signature
-	PresenceMaxTTL = "presence-max-ttl" // absolute cap from the first signature
+	PresenceMaxTTL = "presence-max-ttl" // absolute cap from the first signature (global ceiling)
 )
 
 // Settings lists the recognised config keys.
 var Settings = []string{PresenceTTL, PresenceMaxTTL}
 
-// builtinDefaults are the values applied when a setting has no override or global
-// default — the single source of truth: the agent enforces them and the CLI
-// displays them (both via BuiltinDefault). Keep agent.DefaultIdleTTL /
-// DefaultMaxTTL in sync; TestBuiltinDefaultsMatchAgent verifies they do.
+// suggested holds the values the setup wizard pre-fills (CLI `install` prompt and
+// the SwiftUI setup step) so a fresh install isn't prompt-on-every-signature in
+// practice. These are SUGGESTIONS ONLY — never a runtime fallback. The enforced
+// fallback for a missing/unverifiable setting is 0 (strict); see the package doc.
 // Unexported so importers can't mutate it (which would also risk a concurrent
 // map read/write panic).
-var builtinDefaults = map[string]string{
+var suggested = map[string]string{
 	PresenceTTL:    "10m",
 	PresenceMaxTTL: "2h",
 }
 
-// BuiltinDefault returns the built-in value for a setting ("" if unknown).
-func BuiltinDefault(setting string) string { return builtinDefaults[setting] }
+// Suggested returns the setup-wizard suggestion for a setting ("" if unknown). It
+// is not an enforced default — config left unset resolves to 0 (strict).
+func Suggested(setting string) string { return suggested[setting] }
 
 // ValidSetting reports whether name is a recognised config key.
 func ValidSetting(name string) bool {
