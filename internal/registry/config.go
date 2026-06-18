@@ -287,6 +287,10 @@ func (c *Config) Save() error {
 		return err
 	}
 	if err := c.crypto.SetEpoch(next); err != nil {
+		// The new file is on disk but the epoch didn't advance, so a reload would
+		// see a mismatch and distrust it. Mark this instance untrusted too, to stay
+		// fail-safe and consistent with what a later OpenConfig observes.
+		c.trusted = false
 		return fmt.Errorf("advance epoch: %w", err)
 	}
 	c.trusted = true

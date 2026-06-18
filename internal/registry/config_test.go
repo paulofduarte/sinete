@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -17,7 +18,10 @@ import (
 // tag over the payload, Verify recomputes it, and the epoch lives in a field.
 // Tampering with the payload makes Verify fail; advancing the epoch behind an
 // on-disk file makes that file stale.
-type fakeCrypto struct{ epoch uint64 }
+type fakeCrypto struct {
+	epoch       uint64
+	setEpochErr error
+}
 
 func (f *fakeCrypto) tag(payload []byte) []byte {
 	h := sha256.Sum256(append([]byte("test-secret\x00"), payload...))
@@ -26,7 +30,30 @@ func (f *fakeCrypto) tag(payload []byte) []byte {
 func (f *fakeCrypto) Sign(payload []byte) ([]byte, error) { return f.tag(payload), nil }
 func (f *fakeCrypto) Verify(payload, sig []byte) bool     { return bytes.Equal(f.tag(payload), sig) }
 func (f *fakeCrypto) Epoch() (uint64, error)              { return f.epoch, nil }
-func (f *fakeCrypto) SetEpoch(v uint64) error             { f.epoch = v; return nil }
+func (f *fakeCrypto) SetEpoch(v uint64) error {
+	if f.setEpochErr != nil {
+		return f.setEpochErr
+	}
+	f.epoch = v
+	return nil
+}
+
+func TestConfigSaveEpochFailureUntrusted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.json")
+	fc := &fakeCrypto{setEpochErr: errors.New("epoch write failed")}
+
+	c, _, _ := OpenConfig(path, fc)
+	c.SetDefault(PresenceTTL, "5m")
+	if err := c.Save(); err == nil {
+		t.Fatal("Save should fail when advancing the epoch fails")
+	}
+	if c.Trusted() {
+		t.Error("Config should be untrusted after a failed epoch advance")
+	}
+	if got := c.Effective("x", PresenceTTL); got != "" {
+		t.Errorf("untrusted Effective = %q, want built-in default (\"\")", got)
+	}
+}
 
 func TestConfigRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "registry.json")

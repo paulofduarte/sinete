@@ -6,6 +6,7 @@ package enclave
 import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"math/big"
@@ -151,7 +152,7 @@ func MasterSign(data []byte) (*ssh.Signature, error) {
 	if err != nil {
 		return nil, err
 	}
-	return signer.Sign(nil, data)
+	return signer.Sign(rand.Reader, data)
 }
 
 // Epoch returns the current registry epoch, and whether the item exists yet.

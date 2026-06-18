@@ -157,6 +157,20 @@ func saveConfig(cfg *registry.Config) error {
 		if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
 			if legacy, lerr := openRegistry(); lerr == nil {
 				cfg.MergeLegacy(legacy)
+				// keys.json may be stale (a key deleted before this first signed
+				// write), so drop migrated per-key config for names no longer in the
+				// secure element — migration shouldn't resurrect orphaned entries.
+				if existing, eerr := enclave.List(); eerr == nil {
+					have := make(map[string]bool, len(existing))
+					for _, k := range existing {
+						have[k.Name] = true
+					}
+					for _, name := range cfg.Names() {
+						if !have[name] {
+							cfg.RemoveKey(name)
+						}
+					}
+				}
 			}
 		}
 	}
