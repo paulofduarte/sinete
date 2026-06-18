@@ -1069,17 +1069,25 @@ func isInteractive() bool {
 }
 
 // promptDuration asks for a duration on stderr/stdin, returning suggestion when the
-// user just presses Enter (or input is unavailable).
+// user just presses Enter (or input is unavailable). An entered value is validated
+// here and the prompt repeats on a bad one, so an invalid interactive answer can't
+// slip through to fail later (after install has already touched PATH).
 func promptDuration(label, suggestion string) string {
-	fmt.Fprintf(os.Stderr, "%s [%s]: ", label, suggestion)
-	var resp string
-	if _, err := fmt.Scanln(&resp); err != nil {
-		return suggestion
+	for {
+		fmt.Fprintf(os.Stderr, "%s [%s]: ", label, suggestion)
+		var resp string
+		if _, err := fmt.Scanln(&resp); err != nil {
+			return suggestion // blank line / no input → accept the suggestion
+		}
+		if resp = strings.TrimSpace(resp); resp == "" {
+			return suggestion
+		}
+		if d, err := time.ParseDuration(resp); err != nil || d < 0 {
+			fmt.Fprintf(os.Stderr, "  invalid duration %q (e.g. 10m, 2h); try again.\n", resp)
+			continue
+		}
+		return resp
 	}
-	if resp = strings.TrimSpace(resp); resp == "" {
-		return suggestion
-	}
-	return resp
 }
 
 // cmdUninstall reverses the install: login item, the link sinete created, the

@@ -497,8 +497,8 @@ struct SetupView: View {
             // config (one Touch ID). On a fresh install a missing flag fills from the
             // suggestions; on an existing config install changes only what's passed and
             // leaves a cleared field untouched — so reconfigure never silently relaxes.
-            let ttl = presenceTTL.trimmingCharacters(in: .whitespaces)
-            let maxTTL = presenceMaxTTL.trimmingCharacters(in: .whitespaces)
+            let ttl = presenceTTL.trimmingCharacters(in: .whitespacesAndNewlines)
+            let maxTTL = presenceMaxTTL.trimmingCharacters(in: .whitespacesAndNewlines)
             if !ttl.isEmpty { args.append(contentsOf: ["--presence-ttl", ttl]) }
             if !maxTTL.isEmpty { args.append(contentsOf: ["--presence-max-ttl", maxTTL]) }
             if let planOut = try? Backend.run(["install", "--plan"]),
