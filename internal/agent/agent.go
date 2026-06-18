@@ -26,6 +26,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -73,15 +74,23 @@ func (EnclaveSource) Signer(label, tag string) (ssh.Signer, error) {
 
 // EnclaveStore is the production Store. Keys are enumerated from the secure
 // element — the source of truth for which keys exist — and TTLs come from the
-// signed config registry, both re-read per call so `sinete generate`/`config`
-// take effect without an agent restart. A config that fails verification (for
-// any reason) yields built-in TTLs: Effective returns "" when the store is
-// untrusted, so this is the fail-safe path.
-type EnclaveStore struct{}
+// signed config registry. The config is re-verified only when registry.json
+// changes (see config), so a `sinete config` write is picked up promptly without
+// re-reading and re-verifying on every signature. A config that fails
+// verification (for any reason) yields built-in TTLs: Effective returns "" when
+// the store is untrusted, so this is the fail-safe path.
+type EnclaveStore struct {
+	mu    sync.Mutex
+	cfg   *registry.Config
+	stamp string // mtime:size of registry.json at last load ("absent" if missing)
+}
+
+// NewEnclaveStore returns the production Store.
+func NewEnclaveStore() *EnclaveStore { return &EnclaveStore{} }
 
 // Keys enumerates the secure element and presents each key as a registry.Entry
 // (the on-the-fly index the agent's matching/signing logic expects).
-func (EnclaveStore) Keys() ([]registry.Entry, error) {
+func (s *EnclaveStore) Keys() ([]registry.Entry, error) {
 	listed, err := enclave.List()
 	if err != nil {
 		return nil, err
@@ -95,15 +104,11 @@ func (EnclaveStore) Keys() ([]registry.Entry, error) {
 }
 
 // TTL resolves the effective idle and absolute-cap durations for a key from the
-// signed config (built-in defaults when unset, unparseable, or untrusted).
-func (EnclaveStore) TTL(name string) (idle, max time.Duration) {
+// (cached) signed config (built-in defaults when unset, unparseable, or untrusted).
+func (s *EnclaveStore) TTL(name string) (idle, max time.Duration) {
 	idle, max = DefaultIdleTTL, DefaultMaxTTL
-	path, err := registry.ConfigPath()
-	if err != nil {
-		return idle, max
-	}
-	cfg, _, err := registry.OpenConfig(path, enclave.ConfigCrypto{})
-	if err != nil {
+	cfg := s.config()
+	if cfg == nil {
 		return idle, max
 	}
 	if d, ok := parseDur(cfg.Effective(name, registry.PresenceTTL)); ok {
@@ -113,6 +118,35 @@ func (EnclaveStore) TTL(name string) (idle, max time.Duration) {
 		max = d
 	}
 	return idle, max
+}
+
+// config returns the verified signed config, reloading (and re-verifying) it only
+// when registry.json's mtime/size changes. This keeps per-signature TTL lookups
+// off the filesystem/keychain on the hot path while still picking up a
+// `sinete config` write promptly — a write atomically replaces the file, changing
+// its stamp. Tamper/replay is still caught: any on-disk change reloads and
+// re-verifies (and the verify itself checks signature + keychain epoch).
+func (s *EnclaveStore) config() *registry.Config {
+	path, err := registry.ConfigPath()
+	if err != nil {
+		return nil
+	}
+	stamp := "absent"
+	if fi, serr := os.Stat(path); serr == nil {
+		stamp = fmt.Sprintf("%d:%d", fi.ModTime().UnixNano(), fi.Size())
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cfg != nil && s.stamp == stamp {
+		return s.cfg
+	}
+	cfg, _, err := registry.OpenConfig(path, enclave.ConfigCrypto{})
+	if err != nil {
+		return nil
+	}
+	s.cfg, s.stamp = cfg, stamp
+	return cfg
 }
 
 func parseDur(s string) (time.Duration, bool) {

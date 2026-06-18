@@ -250,10 +250,9 @@ func (c *Config) Save() error {
 	// atomic: otherwise two processes could both read epoch N and sign distinct
 	// payloads at N+1, letting one be replayed later (it would still match the
 	// keychain epoch). The lock is held across the signing prompt. lockConfig is a
-	// real flock on unix (macOS/Linux — sinete's only platforms with a secure
-	// element); the no-op stub elsewhere just keeps the package compiling, where
-	// Save can't succeed anyway without an enclave backend, so nothing relies on
-	// the lock on those platforms.
+	// real flock on unix; the no-op stub elsewhere only keeps the package compiling,
+	// where Save can't succeed anyway (no secure-element backend), so nothing relies
+	// on the lock there.
 	unlock, err := lockConfig(c.path)
 	if err != nil {
 		return fmt.Errorf("lock config: %w", err)
