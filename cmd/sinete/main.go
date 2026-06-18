@@ -1073,12 +1073,6 @@ func configFileExists() bool {
 	return err == nil
 }
 
-// isInteractive reports whether stdin is a terminal (so prompting makes sense).
-func isInteractive() bool {
-	fi, err := os.Stdin.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
-}
-
 // promptDuration asks for a duration on stderr/stdin, returning suggestion when the
 // user just presses Enter (or input is unavailable). An entered value is validated
 // here and the prompt repeats on a bad one, so an invalid interactive answer can't

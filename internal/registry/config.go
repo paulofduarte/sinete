@@ -131,6 +131,15 @@ func OpenConfig(path string, crypto Crypto) (*Config, bool, error) {
 	}
 	if pl.Keys != nil {
 		c.keys = pl.Keys
+		// presence-max-ttl is global-only: SetKeyConfig won't store it per-key, but
+		// enforce the same invariant at the read boundary so a per-key value can never
+		// be honoured or surfaced regardless of what is on disk.
+		for name, kc := range c.keys {
+			delete(kc, PresenceMaxTTL)
+			if len(kc) == 0 {
+				delete(c.keys, name)
+			}
+		}
 	}
 	return c, true, nil
 }

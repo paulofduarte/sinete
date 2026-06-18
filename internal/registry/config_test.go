@@ -287,6 +287,34 @@ func TestConfigMaxTTLGlobalOnly(t *testing.T) {
 	}
 }
 
+// A signed config whose per-key map carries a (disallowed) presence-max-ttl — built
+// by hand to bypass SetKeyConfig — must have it stripped at the read boundary.
+func TestConfigLoadStripsPerKeyMaxTTL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.json")
+	fc := &fakeCrypto{epoch: 1}
+
+	pl := cfgPayload{Epoch: 1, Keys: map[string]map[string]string{
+		"work": {PresenceTTL: "30m", PresenceMaxTTL: "24h"},
+	}}
+	payload, _ := json.Marshal(pl)
+	env := cfgEnvelope{V: cfgVersion, Alg: cfgAlg, Payload: payload, Sig: fc.tag(payload)}
+	data, _ := json.MarshalIndent(env, "", "  ")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c, trusted, err := OpenConfig(path, fc)
+	if err != nil || !trusted {
+		t.Fatalf("OpenConfig trusted=%v err=%v", trusted, err)
+	}
+	if got := c.KeyConfig("work")[PresenceMaxTTL]; got != "" {
+		t.Errorf("per-key max-ttl survived load = %q, want stripped", got)
+	}
+	if got := c.KeyConfig("work")[PresenceTTL]; got != "30m" {
+		t.Errorf("per-key ttl = %q, want 30m", got)
+	}
+}
+
 func TestConfigCeiling(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "registry.json")
 	fc := &fakeCrypto{}

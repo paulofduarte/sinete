@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/facebookincubator/sks v0.0.0-20260414012743-2ba33de48bd7
 	golang.org/x/crypto v0.53.0
+	golang.org/x/sys v0.46.0
 )
 
 require (
@@ -21,5 +22,4 @@ require (
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/jgoguen/go-utils v0.0.0-20200211015258-b42ad41486fd // indirect
 	github.com/peterbourgon/diskv v2.0.1+incompatible // indirect
-	golang.org/x/sys v0.46.0 // indirect
 )
