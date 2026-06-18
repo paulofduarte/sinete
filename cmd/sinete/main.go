@@ -752,21 +752,14 @@ func printKeyConfig(cfg *registry.Config, name string) {
 	printKeySettings(kc)
 }
 
-// printKeySettings prints a key's stored overrides in Settings order. A per-key
-// presence-max-ttl is global-only and thus not honoured, but a stored value (e.g.
-// from an older config) is still shown — marked ignored — so it stays visible for
-// cleanup via `config key <name> unset presence-max-ttl`.
+// printKeySettings prints a key's stored overrides in Settings order. Only
+// presence-ttl is settable per-key (presence-max-ttl is global, rejected for a
+// key), so in practice that is all that appears.
 func printKeySettings(kc map[string]string) {
 	for _, s := range registry.Settings {
-		v := kc[s]
-		if v == "" {
-			continue
+		if v := kc[s]; v != "" {
+			fmt.Printf("  %-16s %s\n", s, v)
 		}
-		if s == registry.PresenceMaxTTL {
-			fmt.Printf("  %-16s %s (ignored — presence-max-ttl is global)\n", s, v)
-			continue
-		}
-		fmt.Printf("  %-16s %s\n", s, v)
 	}
 }
 
