@@ -317,6 +317,19 @@ func TestDelegatesToUpstream(t *testing.T) {
 	}
 }
 
+func TestOwnsKey(t *testing.T) {
+	e, pub, signer := testEntry(t, "work")
+	_, other, _ := testEntry(t, "other")
+	a := newAgent(t, &counter{}, time.Hour, time.Hour, e, signer)
+
+	if !a.OwnsKey(pub) {
+		t.Error("OwnsKey should be true for a key in the store")
+	}
+	if a.OwnsKey(other) {
+		t.Error("OwnsKey should be false for an unknown key")
+	}
+}
+
 func TestMutationsUnsupported(t *testing.T) {
 	e, _, signer := testEntry(t, "work")
 	a := newAgent(t, &counter{}, time.Hour, time.Hour, e, signer)

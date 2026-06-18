@@ -353,6 +353,16 @@ func (a *Agent) entryFor(key ssh.PublicKey) (registry.Entry, bool, error) {
 	return registry.Entry{}, false, nil
 }
 
+// OwnsKey reports whether key is one of the enclave keys this agent gates with
+// presence (as opposed to an upstream-delegated key). A remote client's signature
+// for such a key must be refused, since presence can't be confirmed remotely (see
+// the agent wrapper in cmd/sinete). A key-index read failure reads as not-owned —
+// the real Sign path will then surface the error.
+func (a *Agent) OwnsKey(key ssh.PublicKey) bool {
+	_, owned, err := a.entryFor(key)
+	return err == nil && owned
+}
+
 // Remove forgets an enclave key's presence window (ssh-add -d: the next use
 // prompts again; it does not delete the key) or forwards to the upstream agent.
 func (a *Agent) Remove(key ssh.PublicKey) error {

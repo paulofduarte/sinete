@@ -4,6 +4,10 @@
 package main
 
 import (
+	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"net"
 	"os"
 	"path/filepath"
@@ -11,6 +15,8 @@ import (
 	"time"
 
 	"github.com/paulofduarte/sinete/internal/registry"
+	"golang.org/x/crypto/ssh"
+	xagent "golang.org/x/crypto/ssh/agent"
 )
 
 // Keys come from secure-element enumeration (which needs the entitled bundle), so
@@ -67,6 +73,64 @@ func TestSameSocket(t *testing.T) {
 	}
 	if sameSocket(sock, filepath.Join(dir, "nope.sock")) {
 		t.Error("a nonexistent path should not match")
+	}
+}
+
+// recordingAgent is a stub ExtendedAgent that records whether Sign was reached.
+// The nil embedded interface supplies the other methods (unused by the test).
+type recordingAgent struct {
+	xagent.ExtendedAgent
+	signed bool
+}
+
+func (r *recordingAgent) Sign(ssh.PublicKey, []byte) (*ssh.Signature, error) {
+	r.signed = true
+	return &ssh.Signature{}, nil
+}
+
+func (r *recordingAgent) SignWithFlags(ssh.PublicKey, []byte, xagent.SignatureFlags) (*ssh.Signature, error) {
+	r.signed = true
+	return &ssh.Signature{}, nil
+}
+
+func testPub(t *testing.T) ssh.PublicKey {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := ssh.NewPublicKey(&priv.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pub
+}
+
+func TestRemoteRefusingAgent(t *testing.T) {
+	owned, other := testPub(t), testPub(t)
+	owns := func(k ssh.PublicKey) bool { return bytes.Equal(k.Marshal(), owned.Marshal()) }
+	stub := &recordingAgent{}
+	r := remoteRefusingAgent{ExtendedAgent: stub, owns: owns}
+
+	// An owned (enclave) key is refused and never reaches the wrapped agent.
+	if _, err := r.Sign(owned, []byte("x")); err == nil {
+		t.Error("remote Sign of an owned key should be refused")
+	}
+	if stub.signed {
+		t.Error("a refused owned-key sign must not reach the wrapped agent")
+	}
+
+	// A non-owned (upstream) key is delegated normally.
+	if _, err := r.Sign(other, []byte("x")); err != nil {
+		t.Errorf("remote Sign of a non-owned key should delegate: %v", err)
+	}
+	if !stub.signed {
+		t.Error("a non-owned-key sign should reach the wrapped agent")
+	}
+
+	// Same routing via SignWithFlags.
+	if _, err := r.SignWithFlags(owned, []byte("x"), 0); err == nil {
+		t.Error("remote SignWithFlags of an owned key should be refused")
 	}
 }
 
