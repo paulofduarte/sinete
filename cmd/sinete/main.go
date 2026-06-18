@@ -753,8 +753,8 @@ func printKeyConfig(cfg *registry.Config, name string) {
 }
 
 // printKeySettings prints a key's stored overrides. presence-ttl is the only
-// per-key setting (presence-max-ttl is global — the CLI rejects it for a key, so it
-// is never stored), so that is the only thing shown.
+// per-key setting: presence-max-ttl is global-only and the registry refuses to
+// store it per-key (registry.Config.SetKeyConfig), so that is the only thing shown.
 func printKeySettings(kc map[string]string) {
 	if v := kc[registry.PresenceTTL]; v != "" {
 		fmt.Printf("  %-16s %s\n", registry.PresenceTTL, v)

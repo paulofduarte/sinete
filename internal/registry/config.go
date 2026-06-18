@@ -238,7 +238,13 @@ func (c *Config) SetDefault(setting, value string) {
 
 // SetKeyConfig sets a per-key override (in memory; call Save to persist). It does
 // not check that the key exists — callers validate that against enumeration.
+// presence-max-ttl is global-only, so it is ignored here and can never be stored
+// per-key — keeping the persisted model consistent with how Effective resolves it
+// (and the CLI rejects it up front, with a message).
 func (c *Config) SetKeyConfig(name, setting, value string) {
+	if setting == PresenceMaxTTL {
+		return
+	}
 	if c.keys[name] == nil {
 		c.keys[name] = map[string]string{}
 	}

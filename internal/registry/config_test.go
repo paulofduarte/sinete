@@ -261,17 +261,19 @@ func TestConfigRemoveKey(t *testing.T) {
 	}
 }
 
-// presence-max-ttl is global-only: even if a per-key value is somehow present,
-// Effective for the ceiling always reports the global value, so a per-key entry
-// can never widen the absolute cap.
+// presence-max-ttl is global-only: SetKeyConfig refuses to store it per-key, so it
+// never persists and Effective always reports the global value for the ceiling.
 func TestConfigMaxTTLGlobalOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "registry.json")
 	fc := &fakeCrypto{}
 
 	c, _, _ := OpenConfig(path, fc)
 	c.SetDefault(PresenceMaxTTL, "2h")
-	c.SetKeyConfig("work", PresenceMaxTTL, "24h") // must be ignored for the ceiling
+	c.SetKeyConfig("work", PresenceMaxTTL, "24h") // ignored — not stored per-key
 	c.SetKeyConfig("work", PresenceTTL, "30m")
+	if got := c.KeyConfig("work")[PresenceMaxTTL]; got != "" {
+		t.Errorf("per-key max-ttl stored = %q, want it ignored (\"\")", got)
+	}
 	if err := c.Save(); err != nil {
 		t.Fatal(err)
 	}
