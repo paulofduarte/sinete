@@ -520,6 +520,9 @@ func cmdConfig(args []string) error {
 		if err := requireSetting(args[1]); err != nil {
 			return err
 		}
+		if cfg.Defaults()[args[1]] == "" {
+			return nil // already unset; no-op (avoid a needless Touch ID + epoch bump)
+		}
 		cfg.UnsetDefault(args[1])
 		return saveConfig(cfg)
 	case "key":
@@ -636,6 +639,9 @@ func configKey(cfg *registry.Config, rest []string) error {
 		}
 		if err := requireSetting(rest[0]); err != nil {
 			return err
+		}
+		if cfg.KeyConfig(name)[rest[0]] == "" {
+			return nil // no such override; no-op (avoid a needless Touch ID + epoch bump)
 		}
 		cfg.UnsetKeyConfig(name, rest[0])
 		return saveConfig(cfg)
@@ -954,7 +960,11 @@ func configurePresenceOnInstall(ttlFlag, maxFlag string) error {
 	}
 	curTTL := cfg.Defaults()[registry.PresenceTTL]
 	curMax := cfg.Defaults()[registry.PresenceMaxTTL]
-	configured := cfg.Trusted() && (curTTL != "" || curMax != "")
+	// "Configured" means a trusted registry.json already exists — even with both
+	// TTLs unset (an intentionally strict setup): re-running install must not nudge
+	// it back toward relaxed caching. A missing file (fresh) or an untrusted one
+	// (broken → recovery) is not configured, so install offers the suggestions.
+	configured := cfg.Trusted() && configFileExists()
 
 	ttl, max := ttlFlag, maxFlag
 	switch {
@@ -1026,6 +1036,18 @@ func configurePresenceOnInstall(ttlFlag, maxFlag string) error {
 	}
 	fmt.Printf("presence configured: presence-ttl=%s presence-max-ttl=%s\n", effTTL, effMax)
 	return nil
+}
+
+// configFileExists reports whether the signed registry.json is present on disk
+// (regardless of whether it verifies) — used to tell a fresh install from an
+// existing config whose presence values may both be unset (intentionally strict).
+func configFileExists() bool {
+	path, err := registry.ConfigPath()
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(path)
+	return err == nil
 }
 
 // isInteractive reports whether stdin is a terminal (so prompting makes sense).

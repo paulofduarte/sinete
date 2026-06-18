@@ -330,11 +330,13 @@ private struct PresenceSetupFields: View {
                 Text("Idle TTL").frame(width: 120, alignment: .leading)
                 TextField("10m", text: $ttl)
                     .textFieldStyle(.roundedBorder).frame(width: 90)
+                    .accessibilityLabel("Idle TTL")
             }
             HStack {
                 Text("Max TTL (cap)").frame(width: 120, alignment: .leading)
                 TextField("2h", text: $maxTTL)
                     .textFieldStyle(.roundedBorder).frame(width: 90)
+                    .accessibilityLabel("Max TTL cap")
             }
         }
         .frame(maxWidth: 340)
@@ -450,6 +452,7 @@ struct SetupView: View {
             TextField("key name (e.g. your email)", text: $keyName)
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 280)
+                .accessibilityLabel("Key name")
             HStack {
                 Button("Skip") { step = 2 }
                 Button("Create") { generate() }
