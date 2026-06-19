@@ -35,7 +35,12 @@ cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 
 echo "== build static linux/amd64 sinete =="
-(cd "$GOMOD" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$WORK/sinete" ./cmd/sinete)
+# e2e_assume_local: TEST-ONLY tag. This guest is a minimal busybox initramfs with no
+# D-Bus/logind, so the real local-session check (org.freedesktop.login1) can't run; the
+# guest IS local (the console), so the tag compiles in a no-op requireLocalSession to
+# exercise the master-key path. Production `nix build` never sets this tag, so shipped
+# binaries always enforce the real remote-session refusal.
+(cd "$GOMOD" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags e2e_assume_local -o "$WORK/sinete" ./cmd/sinete)
 
 echo "== fetch prebuilt kernel + busybox (substituted from cache) =="
 KERNEL="$(nix build --no-link --print-out-paths --system x86_64-linux "$NIXPKGS#linux")/bzImage"
