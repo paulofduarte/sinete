@@ -231,6 +231,11 @@
 
         devShells.default = pkgs.mkShell {
           inherit (pre-commit-local) shellHook;
+          # OpenSSL is needed by the go-tpm simulator (cgo, the MS-TPM 2.0 reference)
+          # that backs the `tpmsim`-tagged NV-counter test. As a buildInput it puts
+          # the headers/libs on cgo's search path, so `go test -tags tpmsim` builds
+          # without manual CGO_CFLAGS. (Normal, untagged builds don't pull it in.)
+          buildInputs = [ pkgs.openssl ];
           packages = [
             pkgs.go
             pkgs.gopls

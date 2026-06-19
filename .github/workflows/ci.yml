@@ -45,3 +45,9 @@ jobs:
         run: nix build --accept-flake-config
       - name: test
         run: nix develop --accept-flake-config -c go test ./...
+      # The Linux TPM epoch backend's NV-counter algorithm (epoch_tpm.go) is verified
+      # against the in-process go-tpm simulator. It's behind the `tpmsim` build tag so
+      # the normal build stays cgo-light; the devshell provides the OpenSSL the
+      # simulator's cgo needs. Runs on both OSes — the algorithm is platform-neutral.
+      - name: tpmsim test (NV counter vs go-tpm simulator)
+        run: nix develop --accept-flake-config -c go test -tags tpmsim ./internal/enclave
