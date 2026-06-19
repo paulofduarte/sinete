@@ -24,3 +24,5 @@ require (
 	github.com/jgoguen/go-utils v0.0.0-20200211015258-b42ad41486fd // indirect
 	github.com/peterbourgon/diskv v2.0.1+incompatible // indirect
 )
+
+replace github.com/facebookincubator/sks => github.com/paulofduarte/sks v0.0.0-20260619135928-a47104fc1c21

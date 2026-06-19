@@ -5,14 +5,13 @@ package enclave
 
 import (
 	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"fmt"
-	"math/big"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/facebookincubator/sks"
 	"github.com/paulofduarte/sinete/internal/registry"
 	"golang.org/x/crypto/ssh"
 )
@@ -28,15 +27,6 @@ const (
 	EpochService = Tag
 	EpochAccount = "_epoch"
 )
-
-// rawKey is one enumerated keychain key: its sks label, the raw ANSI X9.63
-// public key (0x04‖X‖Y for P-256), and its creation time (Unix seconds, 0 if
-// unavailable). Populated by the platform layer (keychain_darwin.go / _other.go).
-type rawKey struct {
-	label   string
-	pub     []byte
-	created int64
-}
 
 // Listed is a key discovered by enumerating the secure element — the source of
 // truth for which keys exist (the registry no longer stores them).
@@ -56,33 +46,34 @@ func reserved(label string) bool {
 // List enumerates sinete's user keys from the secure element, skipping internal
 // keys. It requires no user presence (public attributes only).
 func List() ([]Listed, error) {
-	raws, err := enumerateKeys(Tag)
+	keys, err := sks.Enumerate(Tag)
 	if err != nil {
 		return nil, err
 	}
 	prefix := DefaultLabelPrefix + "-"
-	out := make([]Listed, 0, len(raws))
-	for _, r := range raws {
+	out := make([]Listed, 0, len(keys))
+	for _, k := range keys {
+		label := k.Label()
 		// Skip internal keys and any with our tag but an unexpected label: only a
 		// "sinete-<name>" label maps to a user key, and the derived name must be a
 		// valid sinete name (so callers building paths / authorized_keys lines from
 		// it are safe).
-		if reserved(r.label) || !strings.HasPrefix(r.label, prefix) {
+		if reserved(label) || !strings.HasPrefix(label, prefix) {
 			continue
 		}
-		name := strings.TrimPrefix(r.label, prefix)
+		name := strings.TrimPrefix(label, prefix)
 		if registry.ValidName(name) != nil {
 			continue
 		}
-		pub, err := sshPubFromRaw(r.pub)
+		ecPub, ok := k.Public().(*ecdsa.PublicKey)
+		if !ok || ecPub == nil {
+			continue
+		}
+		pub, err := ssh.NewPublicKey(ecPub)
 		if err != nil {
-			return nil, fmt.Errorf("enclave: key %q: %w", r.label, err)
+			return nil, fmt.Errorf("enclave: key %q: %w", label, err)
 		}
-		l := Listed{Name: name, Label: r.label, PublicKey: pub}
-		if r.created > 0 {
-			l.Created = time.Unix(r.created, 0).UTC()
-		}
-		out = append(out, l)
+		out = append(out, Listed{Name: name, Label: label, PublicKey: pub, Created: k.Created})
 	}
 	// Keychain enumeration order is not guaranteed; sort by name so list/export
 	// and callers get deterministic output.
@@ -126,13 +117,16 @@ func EnsureMaster() error {
 	if _, err := masterKey().PublicKey(); err == nil {
 		return nil // already present
 	}
-	if err := createPresenceKey(MasterLabel, Tag); err != nil {
+	// Create the master key requiring user presence to sign: on macOS useBiometrics
+	// maps to a Secure Enclave user-presence ACL (Touch ID); on Linux it is presence-
+	// less for now (no PIN machinery yet). sks.NewKey is idempotent.
+	if _, err := sks.NewKey(MasterLabel, Tag, true, false, nil); err != nil {
 		// Tolerate a concurrent creator: if the key now exists, another process
 		// won the race and that is success, not a duplicate-item failure.
 		if _, perr := masterKey().PublicKey(); perr == nil {
 			return nil
 		}
-		return err
+		return fmt.Errorf("enclave: create master key: %w", err)
 	}
 	return nil
 }
@@ -212,17 +206,3 @@ func (ConfigCrypto) Epoch() (uint64, error) {
 // — the keychain has no compare-and-swap; Linux maps it to an atomic hardware TPM
 // NV_Increment. See registry.Crypto.
 func (ConfigCrypto) Increment() (uint64, error) { return epochIncrement() }
-
-// sshPubFromRaw parses an ANSI X9.63 uncompressed P-256 point (0x04‖X‖Y, 65
-// bytes) into an ssh.PublicKey.
-func sshPubFromRaw(raw []byte) (ssh.PublicKey, error) {
-	if len(raw) != 65 || raw[0] != 0x04 {
-		return nil, fmt.Errorf("unexpected public key encoding (%d bytes)", len(raw))
-	}
-	pub := &ecdsa.PublicKey{
-		Curve: elliptic.P256(),
-		X:     new(big.Int).SetBytes(raw[1:33]),
-		Y:     new(big.Int).SetBytes(raw[33:65]),
-	}
-	return ssh.NewPublicKey(pub)
-}

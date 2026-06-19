@@ -7,17 +7,16 @@ package enclave
 
 import "errors"
 
-// errUnsupported is returned on platforms with no secure-element backend yet (the
-// key enumeration, presence-enforced master key, and replay epoch). macOS is cgo +
-// Security.framework (keychain_darwin.go); Linux is go-tpm (keychain_linux.go).
-var errUnsupported = errors.New("enclave: secure-element backend is not implemented on this platform")
+// errUnsupported is returned on platforms with no replay-epoch backend yet. Key
+// enumeration and the master key now go through sks directly (see master.go); only
+// the epoch remains platform-specific — macOS is a keychain item (keychain_darwin.go),
+// Linux a TPM NV counter (epoch_linux.go).
+var errUnsupported = errors.New("enclave: replay-epoch backend is not implemented on this platform")
 
-func enumerateKeys(string) ([]rawKey, error) { return nil, errUnsupported }
-func createPresenceKey(_, _ string) error    { return errUnsupported }
-func ensureEpoch() error                     { return errUnsupported }
-func epochGet() (uint64, bool, error)        { return 0, false, errUnsupported }
-func epochIncrement() (uint64, error)        { return 0, errUnsupported }
-func epochDelete() error                     { return errUnsupported }
+func ensureEpoch() error              { return errUnsupported }
+func epochGet() (uint64, bool, error) { return 0, false, errUnsupported }
+func epochIncrement() (uint64, error) { return 0, errUnsupported }
+func epochDelete() error              { return errUnsupported }
 
 func scratchEpochEnsure() error              { return errUnsupported }
 func scratchEpochGet() (uint64, bool, error) { return 0, false, errUnsupported }
