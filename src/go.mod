@@ -9,6 +9,7 @@ require (
 	github.com/twpayne/go-pinentry v0.3.0
 	golang.org/x/crypto v0.53.0
 	golang.org/x/sys v0.46.0
+	golang.org/x/term v0.44.0
 )
 
 require (

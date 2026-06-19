@@ -3,94 +3,239 @@
 
 //go:build linux
 
-// Package pinentry prompts for a PIN via the GnuPG pinentry program, which renders
-// a native dialog per desktop (pinentry-qt/-gnome3 on a graphical session, -curses/
-// -tty on a text console) over one Assuan code path. It is used on Linux for the TPM
-// master-key PIN and PIN-presence; macOS uses the Secure Enclave's own Touch ID.
+// Package pinentry prompts for a PIN on Linux for the TPM master-key PIN and
+// PIN-presence (macOS uses the Secure Enclave's own Touch ID). It picks the most
+// complete, portable prompt available, in this order:
 //
-// It runs the pinentry program directly (no gpg/gpg-agent needed at runtime), but a
-// pinentry program MUST be installed — the standalone `pinentry` package (which
-// provides pinentry-curses/-gnome3/-qt/-tty), separate from GnuPG. When none is found
-// the prompt functions return a clear "install pinentry" error.
+//   - An explicit gpg-agent.conf pinentry-program always wins when it is runnable.
+//   - In a graphical session (DISPLAY/WAYLAND_DISPLAY set): a graphical pinentry
+//     (pinentry-gnome3/-qt/-gtk-2) — used even when launched from a TTY. If none is
+//     installed, fall back to a terminal read when on a TTY, else show a graphical
+//     error box saying a pinentry program is required.
+//   - Outside a graphical session: pinentry-curses then pinentry-tty (then the generic
+//     pinentry); if none is installed, read directly from the terminal.
+//
+// The terminal fallback reads with echo off via golang.org/x/term, so a PIN can still
+// be entered with no pinentry program installed as long as there is a controlling
+// terminal. pinentry itself runs directly (no gpg/gpg-agent needed at runtime), but a
+// pinentry program is a SEPARATE package from GnuPG (pinentry-curses/-gnome3/-qt/-tty).
 package pinentry
 
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
-	"github.com/twpayne/go-pinentry"
+	pinentry "github.com/twpayne/go-pinentry"
+	"golang.org/x/term"
 )
 
-// ErrCancelled is returned when the user dismisses the dialog.
+// ErrCancelled is returned when the user dismisses the dialog or sends EOF at the
+// terminal prompt.
 var ErrCancelled = errors.New("pinentry: cancelled")
 
-// client opens a pinentry using a desktop-appropriate program, and binds the
-// controlling tty so the curses/tty flavours can prompt on a text console.
-func client(opts ...pinentry.ClientOption) (*pinentry.Client, error) {
-	bin, err := pinentryBinary()
-	if err != nil {
-		return nil, err
+// ttyAvailable reports whether a controlling terminal can be opened. It is a package
+// var so tests can simulate headless vs interactive without a real tty.
+var ttyAvailable = func() bool { return ttyOpenable(devTTY) }
+
+const devTTY = "/dev/tty"
+
+// prompter is how a single PIN prompt will be performed: via a pinentry program
+// (bin set) or by reading from the terminal (terminal true).
+type prompter struct {
+	bin      string
+	terminal bool
+}
+
+// selectPrompter resolves the prompt method per the package's portability matrix, or
+// returns an error (after best-effort showing a graphical error box) when neither a
+// pinentry program nor a terminal is available.
+func selectPrompter() (prompter, error) {
+	// An explicitly configured, runnable pinentry-program always wins.
+	if bin := configuredPinentry(); bin != "" {
+		return prompter{bin: bin}, nil
 	}
+	if hasDisplay() {
+		if bin := graphicalPinentry(); bin != "" {
+			return prompter{bin: bin}, nil
+		}
+		if ttyAvailable() {
+			return prompter{terminal: true}, nil
+		}
+		msg := "sinete needs a pinentry program to ask for your PIN in a graphical session — install one, e.g. pinentry-gnome3 or pinentry-qt."
+		showGraphicalError(msg)
+		return prompter{}, fmt.Errorf("pinentry: %s", msg)
+	}
+	if bin := textPinentry(); bin != "" {
+		return prompter{bin: bin}, nil
+	}
+	if ttyAvailable() {
+		return prompter{terminal: true}, nil
+	}
+	return prompter{}, errors.New("pinentry: no pinentry program found and no terminal to read a PIN from — install pinentry-curses (or pinentry-tty), or run sinete from a terminal")
+}
+
+// Get prompts for an existing PIN. title is the window title, desc the explanatory
+// text, prompt the field label. A dismissed dialog (or terminal EOF) returns
+// ErrCancelled.
+func Get(title, desc, prompt string) (string, error) {
+	p, err := selectPrompter()
+	if err != nil {
+		return "", err
+	}
+	if p.terminal {
+		return readTerminal(desc, prompt)
+	}
+	return getViaPinentry(p.bin, title, desc, prompt)
+}
+
+// Set prompts to choose a new PIN, asking for it twice and returning it only when both
+// entries match. A dismissed dialog returns ErrCancelled.
+func Set(title, desc string) (string, error) {
+	first, err := Get(title, desc, "New PIN:")
+	if err != nil {
+		return "", err
+	}
+	second, err := Get(title, "Confirm the PIN.", "Confirm PIN:")
+	if err != nil {
+		return "", err
+	}
+	if first != second {
+		return "", fmt.Errorf("pinentry: the PINs did not match")
+	}
+	return first, nil
+}
+
+// getViaPinentry runs the named pinentry program for a single GETPIN.
+func getViaPinentry(bin, title, desc, prompt string) (string, error) {
+	c, err := newClient(
+		bin,
+		pinentry.WithTitle(title),
+		pinentry.WithDesc(desc),
+		pinentry.WithPrompt(prompt),
+	)
+	if err != nil {
+		return "", err
+	}
+	defer c.Close()
+
+	pin, _, err := c.GetPIN()
+	if err != nil {
+		if pinentry.IsCancelled(err) {
+			return "", ErrCancelled
+		}
+		return "", err
+	}
+	if pin == "" {
+		return "", errors.New("pinentry: empty PIN")
+	}
+	return pin, nil
+}
+
+// newClient opens a pinentry using the given program, binding the controlling tty so
+// the curses/tty flavours can prompt on a text console — but only a tty we can open.
+// Both $GPG_TTY and /dev/tty can name a tty that exists yet isn't usable, so opening
+// it is the real test and a stale $GPG_TTY falls through to /dev/tty.
+func newClient(bin string, opts ...pinentry.ClientOption) (*pinentry.Client, error) {
 	base := []pinentry.ClientOption{pinentry.WithBinaryName(bin)}
-	// pinentry-curses/-tty need a tty; prefer $GPG_TTY, else the controlling /dev/tty —
-	// but only one we can actually open. Both can name a tty that exists yet isn't
-	// usable ($GPG_TTY may be stale; /dev/tty exists even with no controlling terminal),
-	// so a stat would mislead — opening it is the real test, and a stale $GPG_TTY falls
-	// through to /dev/tty rather than pinning pinentry to an unusable tty.
 	if tty := os.Getenv("GPG_TTY"); tty != "" && ttyOpenable(tty) {
 		base = append(base, pinentry.WithCommandf("OPTION ttyname=%s", tty))
-	} else if ttyOpenable("/dev/tty") {
-		base = append(base, pinentry.WithCommand("OPTION ttyname=/dev/tty"))
+	} else if ttyOpenable(devTTY) {
+		base = append(base, pinentry.WithCommand("OPTION ttyname="+devTTY))
 	}
 	return pinentry.NewClient(append(base, opts...)...)
 }
 
-// ttyOpenable reports whether path can be opened read-write — the real test of whether
-// a tty is usable, since a tty device node can exist without being usable.
-func ttyOpenable(path string) bool {
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
+// readTerminal reads a PIN from the controlling terminal with echo off. It is the
+// fallback when no pinentry program is installed.
+func readTerminal(desc, prompt string) (string, error) {
+	tty, err := os.OpenFile(devTTY, os.O_RDWR, 0)
 	if err != nil {
-		return false
+		return "", fmt.Errorf("pinentry: cannot open a terminal to read a PIN: %w", err)
 	}
-	_ = f.Close()
-	return true
+	defer tty.Close()
+
+	if desc != "" {
+		fmt.Fprintln(tty, desc)
+	}
+	fmt.Fprintf(tty, "%s ", prompt)
+	pin, err := term.ReadPassword(int(tty.Fd()))
+	fmt.Fprintln(tty)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return "", ErrCancelled
+		}
+		return "", fmt.Errorf("pinentry: reading PIN from terminal: %w", err)
+	}
+	if len(pin) == 0 {
+		return "", errors.New("pinentry: empty PIN")
+	}
+	return string(pin), nil
 }
 
-// pinentryBinary chooses the pinentry program: an explicit gpg-agent.conf
-// pinentry-program if the user configured one, else the first desktop-appropriate
-// candidate found on PATH. It does NOT require gpg to be installed — it only reads a
-// config file and probes PATH. Returns a clear error when no program is installed.
-func pinentryBinary() (string, error) {
-	if p := gpgAgentPinentryProgram(); p != "" {
-		return p, nil
+// hasDisplay reports whether a graphical session is present.
+func hasDisplay() bool {
+	return os.Getenv("WAYLAND_DISPLAY") != "" || os.Getenv("DISPLAY") != ""
+}
+
+// configuredPinentry returns the gpg-agent.conf pinentry-program when it is set AND
+// runnable; an unset or stale/uninstalled value returns "" so selection falls through
+// to the matrix rather than failing later with an opaque exec error.
+func configuredPinentry() string {
+	p := gpgAgentPinentryProgram()
+	if p == "" {
+		return ""
 	}
-	cands := pinentryCandidates()
-	for _, name := range cands {
+	if path, err := exec.LookPath(p); err == nil {
+		return path
+	}
+	return ""
+}
+
+// graphicalPinentry returns the first graphical pinentry flavour on PATH, preferring
+// the one matching the current desktop, or "" if none is installed.
+func graphicalPinentry() string {
+	cands := []string{"pinentry-gnome3", "pinentry-qt", "pinentry-gtk-2"}
+	if strings.Contains(strings.ToUpper(os.Getenv("XDG_CURRENT_DESKTOP")), "KDE") {
+		cands = []string{"pinentry-qt", "pinentry-gnome3", "pinentry-gtk-2"}
+	}
+	return firstOnPath(cands)
+}
+
+// textPinentry returns the first text-mode pinentry on PATH (curses, then tty, then
+// the generic name), or "" if none is installed.
+func textPinentry() string {
+	return firstOnPath([]string{"pinentry-curses", "pinentry-tty", "pinentry"})
+}
+
+// firstOnPath returns the absolute path of the first name found on PATH, or "".
+func firstOnPath(names []string) string {
+	for _, name := range names {
 		if path, err := exec.LookPath(name); err == nil {
-			return path, nil
+			return path
 		}
 	}
-	return "", fmt.Errorf("pinentry: no pinentry program found on PATH (tried %s) — install one, e.g. pinentry-curses or pinentry-gnome3", strings.Join(cands, ", "))
+	return ""
 }
 
-// pinentryCandidates lists pinentry program names in preference order: a graphical
-// flavour for the current desktop when a display is present, then the terminal
-// flavours and the generic name (which work without a display).
-func pinentryCandidates() []string {
-	var c []string
-	if os.Getenv("WAYLAND_DISPLAY") != "" || os.Getenv("DISPLAY") != "" {
-		if strings.Contains(strings.ToUpper(os.Getenv("XDG_CURRENT_DESKTOP")), "KDE") {
-			c = append(c, "pinentry-qt", "pinentry-gnome3")
-		} else {
-			c = append(c, "pinentry-gnome3", "pinentry-qt")
-		}
-		c = append(c, "pinentry-gtk-2")
+// showGraphicalError best-effort displays a modal error box using whatever common
+// dialog tool is installed (zenity/kdialog/xmessage). It is a no-op when none is.
+func showGraphicalError(msg string) {
+	cmds := [][]string{
+		{"zenity", "--error", "--title=sinete", "--text=" + msg},
+		{"kdialog", "--title", "sinete", "--error", msg},
+		{"xmessage", "-center", msg},
 	}
-	return append(c, "pinentry-curses", "pinentry-tty", "pinentry")
+	for _, c := range cmds {
+		if path, err := exec.LookPath(c[0]); err == nil {
+			_ = exec.Command(path, c[1:]...).Run()
+			return
+		}
+	}
 }
 
 // gpgAgentPinentryProgram returns the pinentry-program set in the user's
@@ -126,45 +271,13 @@ func gnupgHome() string {
 	return filepath.Join(home, ".gnupg")
 }
 
-// Get prompts for an existing PIN. title is the window title, desc the explanatory
-// text, prompt the field label. A dismissed dialog returns ErrCancelled.
-func Get(title, desc, prompt string) (string, error) {
-	c, err := client(
-		pinentry.WithTitle(title),
-		pinentry.WithDesc(desc),
-		pinentry.WithPrompt(prompt),
-	)
+// ttyOpenable reports whether path can be opened read-write — the real test of whether
+// a tty is usable, since a tty device node can exist without being usable.
+func ttyOpenable(path string) bool {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
-		return "", err
+		return false
 	}
-	defer c.Close()
-
-	pin, _, err := c.GetPIN()
-	if err != nil {
-		if pinentry.IsCancelled(err) {
-			return "", ErrCancelled
-		}
-		return "", err
-	}
-	if pin == "" {
-		return "", errors.New("pinentry: empty PIN")
-	}
-	return pin, nil
-}
-
-// Set prompts to choose a new PIN, asking for it twice and returning it only when
-// both entries match. A dismissed dialog returns ErrCancelled.
-func Set(title, desc string) (string, error) {
-	first, err := Get(title, desc, "New PIN:")
-	if err != nil {
-		return "", err
-	}
-	second, err := Get(title, "Confirm the PIN.", "Confirm PIN:")
-	if err != nil {
-		return "", err
-	}
-	if first != second {
-		return "", fmt.Errorf("pinentry: the PINs did not match")
-	}
-	return first, nil
+	_ = f.Close()
+	return true
 }
