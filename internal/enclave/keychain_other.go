@@ -1,19 +1,21 @@
 // SPDX-FileCopyrightText: 2026 Paulo Duarte
 // SPDX-License-Identifier: Apache-2.0
 
-//go:build !darwin
+//go:build !darwin && !linux
 
 package enclave
 
 import "errors"
 
-// errUnsupported is returned off macOS, where the Security-framework layer (key
-// enumeration, the presence-enforced master key, the epoch item) has no backend
-// yet. Linux/TPM support is planned (see .claude/SIGNED-REGISTRY.md).
-var errUnsupported = errors.New("enclave: secure-element keychain ops are not implemented on this platform")
+// errUnsupported is returned on platforms with no secure-element backend yet (the
+// key enumeration, presence-enforced master key, and replay epoch). macOS is cgo +
+// Security.framework (keychain_darwin.go); Linux is go-tpm (keychain_linux.go).
+var errUnsupported = errors.New("enclave: secure-element backend is not implemented on this platform")
 
-func enumerateKeys(string) ([]rawKey, error)      { return nil, errUnsupported }
-func createPresenceKey(_, _ string) error         { return errUnsupported }
-func keychainItemGet(_, _ string) ([]byte, error) { return nil, errUnsupported }
-func keychainItemSet(_, _ string, _ []byte) error { return errUnsupported }
-func keychainItemDelete(_, _ string) error        { return errUnsupported }
+func enumerateKeys(string) ([]rawKey, error) { return nil, errUnsupported }
+func createPresenceKey(_, _ string) error    { return errUnsupported }
+func ensureEpoch() error                     { return errUnsupported }
+func epochGet() (uint64, bool, error)        { return 0, false, errUnsupported }
+func epochSet(uint64) error                  { return errUnsupported }
+func epochIncrement() (uint64, error)        { return 0, errUnsupported }
+func epochDelete() error                     { return errUnsupported }

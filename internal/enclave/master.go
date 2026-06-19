@@ -7,9 +7,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"encoding/binary"
 	"fmt"
-	"math"
 	"math/big"
 	"sort"
 	"strings"
@@ -111,12 +109,20 @@ func Find(name string) (Listed, bool, error) {
 // be gone); the epoch item delete tolerates absence.
 func RemoveMaster() error {
 	_ = masterKey().Remove()
-	return keychainItemDelete(EpochService, EpochAccount)
+	return epochDelete()
 }
 
-// EnsureMaster creates the presence-enforced master key if it does not yet
-// exist; it is idempotent. Creating it needs no presence; *signing* with it does.
+// EnsureMaster provisions the config-signing prerequisites; it is idempotent.
+// Creating them needs no presence; *signing* with the master key does (on macOS).
+// It provisions the replay epoch, then creates the master key if absent — both are
+// ordinary one-time setup. Provisioning the epoch is a no-op on macOS (the keychain
+// item is created lazily on first write); on Linux it defines the TPM NV counter and
+// makes it readable (a counter must be incremented once before it can be read), just
+// like provisioning any key — see ensureEpoch.
 func EnsureMaster() error {
+	if err := ensureEpoch(); err != nil {
+		return fmt.Errorf("provision epoch: %w", err)
+	}
 	if _, err := masterKey().PublicKey(); err == nil {
 		return nil // already present
 	}
@@ -156,33 +162,19 @@ func MasterSign(data []byte) (*ssh.Signature, error) {
 	return signer.Sign(rand.Reader, data)
 }
 
-// Epoch returns the current registry epoch, and whether the item exists yet.
-func Epoch() (uint64, bool, error) {
-	b, err := keychainItemGet(EpochService, EpochAccount)
-	if err != nil {
-		return 0, false, err
-	}
-	if b == nil {
-		return 0, false, nil
-	}
-	if len(b) != 8 {
-		return 0, false, fmt.Errorf("enclave: epoch item is %d bytes, want 8", len(b))
-	}
-	return binary.BigEndian.Uint64(b), true, nil
-}
+// Epoch returns the current registry epoch, and whether it exists yet. The store
+// is platform-specific (macOS: a keychain item; Linux: a TPM NV counter).
+func Epoch() (uint64, bool, error) { return epochGet() }
 
-// SetEpoch stores the registry epoch (8-byte big-endian).
-func SetEpoch(v uint64) error {
-	var b [8]byte
-	binary.BigEndian.PutUint64(b[:], v)
-	return keychainItemSet(EpochService, EpochAccount, b[:])
-}
+// SetEpoch stores an arbitrary registry epoch value. It backs the macOS keychain
+// item and the `_enclave-check` diagnostic's restore; a TPM NV counter is
+// increment-only, so the Linux backend rejects it. Production code advances the
+// epoch via Increment (the registry.Crypto contract), never SetEpoch.
+func SetEpoch(v uint64) error { return epochSet(v) }
 
-// DeleteEpoch removes the epoch item. It tolerates absence and is used to restore
-// the original state after a diagnostic that touched the epoch.
-func DeleteEpoch() error {
-	return keychainItemDelete(EpochService, EpochAccount)
-}
+// DeleteEpoch removes the epoch (keychain delete / NV undefine). It tolerates
+// absence and is used to restore the original state after a diagnostic touched it.
+func DeleteEpoch() error { return epochDelete() }
 
 // ConfigCrypto adapts the master key and the epoch item to the registry's
 // signing needs: it signs and verifies the config envelope and tracks the replay
@@ -221,30 +213,13 @@ func (ConfigCrypto) Epoch() (uint64, error) {
 	return v, err
 }
 
-// Increment advances the registry epoch by one and returns the new value. macOS
-// has no app-accessible hardware counter, so this is read+1+store on the keychain
-// item; a TPM backend implements it as a hardware NV_Increment. No presence prompt.
-//
-// This read+1+store is NOT atomic and must be called with the config lock held (as
-// Config.Save does) — the keychain has no compare-and-swap, so concurrent unlocked
-// callers would lose updates. See registry.Crypto.
-func (ConfigCrypto) Increment() (uint64, error) {
-	v, _, err := Epoch()
-	if err != nil {
-		return 0, err
-	}
-	if v == math.MaxUint64 {
-		// Refuse rather than wrap to 0 and *persist* a reset counter (SetEpoch(0)),
-		// which would break replay protection — even though Config.Save would also
-		// reject the unexpected value, the damage (a stored epoch of 0) is done.
-		return 0, fmt.Errorf("config epoch exhausted")
-	}
-	next := v + 1
-	if err := SetEpoch(next); err != nil {
-		return 0, err
-	}
-	return next, nil
-}
+// Increment advances the registry epoch by one and returns the new value, with no
+// presence prompt. The mechanism is platform-specific (see epochIncrement): macOS
+// has no app-accessible hardware counter, so it is a non-atomic read+1+store on the
+// keychain item that must be called with the config lock held (as Config.Save does)
+// — the keychain has no compare-and-swap; Linux maps it to an atomic hardware TPM
+// NV_Increment. See registry.Crypto.
+func (ConfigCrypto) Increment() (uint64, error) { return epochIncrement() }
 
 // sshPubFromRaw parses an ANSI X9.63 uncompressed P-256 point (0x04‖X‖Y, 65
 // bytes) into an ssh.PublicKey.
