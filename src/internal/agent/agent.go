@@ -9,16 +9,16 @@
 // resets on every signature, and an absolute cap from the first signature. The
 // first signature with a key prompts for Touch ID; subsequent signatures are
 // silent until the window lapses, after which the next one prompts again. The
-// keys are presence-less in the secure element; the agent holds only enclave-
-// backed signer *handles*, never key material, and every signature is computed
-// in hardware.
+// keys are presence-less in the secure cryptoprocessor; the agent holds only
+// cryptoprocessor-backed signer *handles*, never key material, and every
+// signature is computed in hardware.
 //
 // Clients reach sinete by configuration — ssh_config IdentityAgent, or
 // SSH_AUTH_SOCK for git signing — not by taking over the session's agent. To
 // stay transparent, the agent delegates everything it doesn't own to the
 // upstream agent it inherited via SSH_AUTH_SOCK (normally the system
 // ssh-agent): List is the union, and Sign/Add/Remove/Lock/Unlock/Extension for
-// non-enclave keys forward upstream. With no upstream it is enclave-only.
+// non-cryptoprocessor keys forward upstream. With no upstream it is cryptoprocessor-only.
 package agent
 
 import (
@@ -43,7 +43,7 @@ var (
 
 	// ErrPresenceUnavailable is returned by the *DenyingPresence sign variants when
 	// a caller that cannot satisfy a presence prompt (a remote/headless connection)
-	// asks to sign one of this agent's presence-gated enclave keys. It is surfaced to
+	// asks to sign one of this agent's presence-gated cryptoprocessor keys. It is surfaced to
 	// the ssh-agent client in place of hanging on an invisible Touch ID prompt.
 	ErrPresenceUnavailable = errors.New("sinete: can't confirm user presence for this connection — it has no local interactive session (e.g. SSH); sign from the machine's console")
 )
@@ -57,7 +57,7 @@ type Store interface {
 	TTL(name string) (idle, max time.Duration)
 }
 
-// SignerSource resolves an enclave key (by its sks label and tag) to a signer.
+// SignerSource resolves a cryptoprocessor key (by its sks label and tag) to a signer.
 // Abstracted so the agent's presence/TTL logic is testable without hardware.
 type SignerSource interface {
 	Signer(label, tag string) (ssh.Signer, error)
@@ -214,7 +214,7 @@ func New(store Store, signers SignerSource, present func(reason string) error, u
 	}
 }
 
-// Run performs enclave signing — and its presence prompt — on the calling
+// Run performs cryptoprocessor signing — and its presence prompt — on the calling
 // goroutine, which must be the main OS thread (runtime.LockOSThread) so macOS
 // can draw the Touch ID prompt. It blocks for the process lifetime.
 func (a *Agent) Run() {
@@ -223,7 +223,7 @@ func (a *Agent) Run() {
 	}
 }
 
-// signNow gates presence then signs an enclave key. Runs on the main thread. The
+// signNow gates presence then signs a cryptoprocessor key. Runs on the main thread. The
 // presence window is keyed by keyID (the public key) rather than the name, so a
 // deleted-and-recreated key — different key material under the same name — does
 // not inherit the old key's window and must re-authenticate.
@@ -269,16 +269,16 @@ func (a *Agent) signNow(e registry.Entry, keyID string, data []byte) signResult 
 	return signResult{sig: sig}
 }
 
-// signEnclave dispatches an enclave signature to the main-thread Run. keyID is
+// signOwned dispatches a cryptoprocessor signature to the main-thread Run. keyID is
 // the key's wire blob, used to key the presence window.
-func (a *Agent) signEnclave(e registry.Entry, keyID string, data []byte) (*ssh.Signature, error) {
+func (a *Agent) signOwned(e registry.Entry, keyID string, data []byte) (*ssh.Signature, error) {
 	reply := make(chan signResult, 1)
 	a.jobs <- signJob{entry: e, keyID: keyID, data: data, reply: reply}
 	r := <-reply
 	return r.sig, r.err
 }
 
-// List advertises every enclave key plus, if delegating, the upstream agent's.
+// List advertises every cryptoprocessor key plus, if delegating, the upstream agent's.
 func (a *Agent) List() ([]*xagent.Key, error) {
 	entries, err := a.store.Keys()
 	if err != nil {
@@ -294,7 +294,7 @@ func (a *Agent) List() ([]*xagent.Key, error) {
 	}
 	if a.upstream != nil {
 		// List is the union; surface an upstream failure rather than silently
-		// returning a partial list (which would hide non-enclave keys from
+		// returning a partial list (which would hide non-cryptoprocessor keys from
 		// ssh-add -l with no error), consistent with how Sign forwards upstream.
 		up, err := a.upstream.List()
 		if err != nil {
@@ -305,20 +305,20 @@ func (a *Agent) List() ([]*xagent.Key, error) {
 	return keys, nil
 }
 
-// Sign signs with an enclave key (prompting for presence as needed) or forwards
+// Sign signs with a cryptoprocessor key (prompting for presence as needed) or forwards
 // to the upstream agent.
 func (a *Agent) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
 	return a.signRouted(key, data, 0, false, false)
 }
 
 // SignWithFlags is like Sign but honours the rsa-sha2 flags for upstream keys
-// (enclave keys are ECDSA, so the flags do not apply to them).
+// (cryptoprocessor keys are ECDSA, so the flags do not apply to them).
 func (a *Agent) SignWithFlags(key ssh.PublicKey, data []byte, flags xagent.SignatureFlags) (*ssh.Signature, error) {
 	return a.signRouted(key, data, flags, true, false)
 }
 
 // SignDenyingPresence is Sign for a caller that cannot satisfy a presence prompt
-// (a remote/headless connection): an enclave key it owns is refused with
+// (a remote/headless connection): a cryptoprocessor key it owns is refused with
 // ErrPresenceUnavailable instead of dispatching a Touch ID prompt that would hang,
 // while upstream-delegated keys forward unchanged. See signRouted — there is a
 // single, authoritative ownership lookup, so no second check can diverge and
@@ -333,13 +333,13 @@ func (a *Agent) SignWithFlagsDenyingPresence(key ssh.PublicKey, data []byte, fla
 	return a.signRouted(key, data, flags, true, true)
 }
 
-// signRouted resolves key once and routes it: an enclave key is either gated and
+// signRouted resolves key once and routes it: a cryptoprocessor key is either gated and
 // signed, or — when denyPresence is set for a caller that can't prompt — refused
 // with ErrPresenceUnavailable; any other key forwards to upstream (honouring flags
 // when useFlags is set). The single entryFor lookup is deliberate: a remote-refusal
 // wrapper must not run its own ownership check and then delegate here, since the two
 // checks could disagree (a transient store error, or a key added/removed in between)
-// and let an enclave key slip into a presence prompt. A lookup error is surfaced,
+// and let a cryptoprocessor key slip into a presence prompt. A lookup error is surfaced,
 // never treated as "not owned" — fail-closed, so an unreadable key index can't cause
 // an owned key to be delegated (and possibly prompted) instead of refused.
 func (a *Agent) signRouted(key ssh.PublicKey, data []byte, flags xagent.SignatureFlags, useFlags, denyPresence bool) (*ssh.Signature, error) {
@@ -351,7 +351,7 @@ func (a *Agent) signRouted(key ssh.PublicKey, data []byte, flags xagent.Signatur
 		if denyPresence {
 			return nil, ErrPresenceUnavailable
 		}
-		return a.signEnclave(e, string(key.Marshal()), data)
+		return a.signOwned(e, string(key.Marshal()), data)
 	}
 	if a.upstream == nil {
 		return nil, errNotFound
@@ -384,7 +384,7 @@ func (a *Agent) entryFor(key ssh.PublicKey) (registry.Entry, bool, error) {
 	return registry.Entry{}, false, nil
 }
 
-// Remove forgets an enclave key's presence window (ssh-add -d: the next use
+// Remove forgets a cryptoprocessor key's presence window (ssh-add -d: the next use
 // prompts again; it does not delete the key) or forwards to the upstream agent.
 func (a *Agent) Remove(key ssh.PublicKey) error {
 	_, ok, err := a.entryFor(key)
@@ -406,7 +406,7 @@ func (a *Agent) Remove(key ssh.PublicKey) error {
 	return errNotFound
 }
 
-// RemoveAll forgets every enclave presence window and clears the upstream agent
+// RemoveAll forgets every cryptoprocessor presence window and clears the upstream agent
 // (ssh-add -D).
 func (a *Agent) RemoveAll() error {
 	a.mu.Lock()
@@ -419,7 +419,7 @@ func (a *Agent) RemoveAll() error {
 	return nil
 }
 
-// Add, Lock, Unlock, Signers and Extension are not meaningful for enclave keys
+// Add, Lock, Unlock, Signers and Extension are not meaningful for cryptoprocessor keys
 // (managed by the sinete CLI); they forward to the upstream agent when present.
 func (a *Agent) Add(key xagent.AddedKey) error {
 	if a.upstream != nil {

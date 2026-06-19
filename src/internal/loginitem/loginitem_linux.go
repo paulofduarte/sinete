@@ -64,7 +64,7 @@ func selfPath() (string, error) {
 	return exe, nil
 }
 
-// unitContent renders the service unit. ExecStart runs the agent enclave-only (no
+// unitContent renders the service unit. ExecStart runs the agent cryptoprocessor-only (no
 // --launchd: that macOS flag captures the session's SSH_AUTH_SOCK as the delegation
 // upstream and redirects logs, neither of which applies under systemd — journald
 // handles logs). The exe path is quoted so a path with spaces still parses.

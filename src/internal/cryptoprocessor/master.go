@@ -28,7 +28,7 @@ const (
 	EpochAccount = "_epoch"
 )
 
-// Listed is a key discovered by enumerating the secure element — the source of
+// Listed is a key discovered by enumerating the secure cryptoprocessor — the source of
 // truth for which keys exist (the registry no longer stores them).
 type Listed struct {
 	Name      string
@@ -43,7 +43,7 @@ func reserved(label string) bool {
 	return label == MasterLabel
 }
 
-// List enumerates sinete's user keys from the secure element, skipping internal
+// List enumerates sinete's user keys from the secure cryptoprocessor, skipping internal
 // keys. It requires no user presence (public attributes only).
 func List() ([]Listed, error) {
 	keys, err := sks.Enumerate(Tag)

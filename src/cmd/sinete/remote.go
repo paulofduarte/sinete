@@ -34,7 +34,7 @@ import (
 // lockout.
 
 // presenceDenyingAgent is the agent capability the refusal flow needs: the full
-// ExtendedAgent, plus sign variants that refuse a presence-gated enclave key
+// ExtendedAgent, plus sign variants that refuse a presence-gated cryptoprocessor key
 // (rather than prompt) while still delegating upstream keys. *agent.Agent provides
 // these; the refusal decision is made there with a single authoritative ownership
 // lookup, so this wrapper holds no ownership logic of its own.
@@ -46,7 +46,7 @@ type presenceDenyingAgent interface {
 
 // remoteRefusingAgent wraps the agent for a connection whose peer can't satisfy a
 // presence prompt (presenceUnavailable). It routes signing through the agent's
-// *DenyingPresence variants — which refuse sinete's own enclave keys (those would
+// *DenyingPresence variants — which refuse sinete's own cryptoprocessor keys (those would
 // otherwise block on a prompt the peer can't see) and delegate everything else
 // unchanged — while the embedded interface serves List and the rest as normal.
 type remoteRefusingAgent struct {

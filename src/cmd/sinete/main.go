@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Command sinete is a hardware-backed SSH key manager and agent. Private keys
-// are generated in, and never leave, the platform secure element; only public
+// are generated in, and never leave, the platform secure cryptoprocessor; only public
 // keys are exported. The agent advertises every created key and signs with them
 // like a normal ssh-agent, gating user presence at sign time (Touch ID once,
 // then silent for a per-key TTL).
@@ -69,7 +69,7 @@ func main() {
 		"sign":      cmdSign,
 		"present":   cmdPresent,
 		"config":    cmdConfig,
-		// unlisted diagnostic for the signed-registry enclave layer
+		// unlisted diagnostic for the signed-registry cryptoprocessor layer
 		"_enclave-check": cmdEnclaveCheck,
 	}
 	cmd, ok := cmds[os.Args[1]]
@@ -86,13 +86,13 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: sinete <command> [args]
 
-sinete manages the secure-element key storage:
+sinete manages the secure-cryptoprocessor key storage:
 
-  generate <name>   create an enclave key and print its public key
+  generate <name>   create a cryptoprocessor key and print its public key
   list              list created keys (name, type, fingerprint)
   export <name>     print a key's public key
   ssh-setup <name>  write the .pub + print ssh/git config to use the key
-  delete <name>     delete a key from the secure element (requires presence)
+  delete <name>     delete a key from the secure cryptoprocessor (requires presence)
   config            presence config: show | get | set | unset | key <name> …
   status            show install + key state (--json for the app UI)
   agent             run the ssh-agent (foreground)
@@ -143,7 +143,7 @@ func cmdGenerate(args []string) error {
 		return err
 	}
 
-	// Keys are enumerated from the secure element, so a new key needs no registry
+	// Keys are enumerated from the secure cryptoprocessor, so a new key needs no registry
 	// write (and thus no presence prompt). Reject a name already in use.
 	if _, ok, err := cryptoprocessor.Find(name); err != nil {
 		return err
@@ -165,7 +165,7 @@ func cmdGenerate(args []string) error {
 }
 
 func cmdList(args []string) error {
-	// Keys are enumerated from the secure element, the source of truth for which
+	// Keys are enumerated from the secure cryptoprocessor, the source of truth for which
 	// keys exist (the registry no longer stores them).
 	keys, err := cryptoprocessor.List()
 	if err != nil {
@@ -265,7 +265,7 @@ echo '%[2]s %[3]s' >> ~/.config/git/allowed_signers
 	return nil
 }
 
-// cmdDelete destroys a key in the secure element. It requires user presence, and
+// cmdDelete destroys a key in the secure cryptoprocessor. It requires user presence, and
 // prunes the key's stored config. Unloading a key from the running agent is
 // `ssh-add -e`/`-d`, not this.
 func cmdDelete(args []string) error {
@@ -1114,10 +1114,10 @@ func promptDuration(label, suggestion string) string {
 // cmdUninstall reverses the install: login item, the link sinete created, the
 // PATH entry, the .pub files sinete wrote, and the state file. A kept (declined)
 // link or .pub is left alone. With --remove-keys it also deletes this user's
-// enclave keys (irreversible); other users' keys are untouched (their keychain).
+// cryptoprocessor keys (irreversible); other users' keys are untouched (their keychain).
 func cmdUninstall(args []string) error {
 	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
-	removeKeys := fs.Bool("remove-keys", false, "also delete this user's enclave keys (irreversible)")
+	removeKeys := fs.Bool("remove-keys", false, "also delete this user's cryptoprocessor keys (irreversible)")
 	_ = fs.Parse(args)
 
 	if err := install.Uninstall(); err != nil {
@@ -1225,7 +1225,7 @@ func cmdAgent(args []string) error {
 			fmt.Fprintf(os.Stderr, "sinete agent: no upstream agent at %s: %v\n", s, derr)
 		} else {
 			upstream = xagent.NewClient(conn)
-			fmt.Fprintf(os.Stderr, "delegating non-enclave keys to %s\n", s)
+			fmt.Fprintf(os.Stderr, "delegating non-cryptoprocessor keys to %s\n", s)
 		}
 	}
 
@@ -1249,7 +1249,7 @@ func cmdAgent(args []string) error {
 				defer conn.Close()
 				// A peer that can't satisfy a presence prompt (a remote/SSH or
 				// otherwise headless session) would make presence-gated signing hang
-				// on an invisible prompt, so refuse signing our enclave keys for it
+				// on an invisible prompt, so refuse signing our cryptoprocessor keys for it
 				// (List and upstream keys still work). This is a property of the
 				// connection's peer, computed once here; see remote.go.
 				served := xagent.ExtendedAgent(a)

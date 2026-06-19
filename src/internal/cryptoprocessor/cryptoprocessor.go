@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package cryptoprocessor wraps facebookincubator/sks to create, open, sign with and
-// remove sinete's secure-element keys.
+// remove sinete's secure-cryptoprocessor keys.
 //
 // It maps a human name to the (label, tag) that sks identifies a key by, and
 // exposes keys as ssh.Signer / ssh.PublicKey so the agent and CLI never touch
@@ -25,7 +25,7 @@ const (
 	Tag = "me.paulofduarte.sinete"
 )
 
-// Key is a secure-element key identified by a human name.
+// Key is a secure-cryptoprocessor key identified by a human name.
 type Key struct {
 	name  string
 	label string
@@ -77,16 +77,16 @@ func (k *Key) ident() string {
 }
 
 // PublicKey returns the SSH public key. It reads the public half from the
-// secure element but requires no user presence.
+// secure cryptoprocessor but requires no user presence.
 func (k *Key) PublicKey() (ssh.PublicKey, error) {
 	pub, ok := k.inner.Public().(*ecdsa.PublicKey)
 	if !ok {
-		return nil, fmt.Errorf("key %q: secure element returned no ECDSA public key", k.ident())
+		return nil, fmt.Errorf("key %q: secure cryptoprocessor returned no ECDSA public key", k.ident())
 	}
 	return ssh.NewPublicKey(pub)
 }
 
-// Signer returns an ssh.Signer backed by the secure element. It is a handle, not
+// Signer returns an ssh.Signer backed by the secure cryptoprocessor. It is a handle, not
 // key material: every signature is computed in-hardware. For sinete's v2
 // presence-less keys it produces no prompt of its own; the agent gates presence
 // separately (see internal/agent).
@@ -94,7 +94,7 @@ func (k *Key) Signer() (ssh.Signer, error) {
 	return ssh.NewSignerFromSigner(k.inner)
 }
 
-// Remove deletes the key from the secure element.
+// Remove deletes the key from the secure cryptoprocessor.
 func (k *Key) Remove() error {
 	return k.inner.Remove()
 }
