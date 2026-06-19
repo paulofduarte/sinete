@@ -88,7 +88,7 @@ type CryptoprocessorStore struct {
 // NewCryptoprocessorStore returns the production Store.
 func NewCryptoprocessorStore() *CryptoprocessorStore { return &CryptoprocessorStore{} }
 
-// Keys enumerates the secure element and presents each key as a registry.Entry
+// Keys enumerates the cryptoprocessor and presents each key as a registry.Entry
 // (the on-the-fly index the agent's matching/signing logic expects).
 func (s *CryptoprocessorStore) Keys() ([]registry.Entry, error) {
 	listed, err := cryptoprocessor.List()
