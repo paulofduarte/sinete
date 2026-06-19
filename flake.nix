@@ -246,7 +246,7 @@
           # paulofduarte/sks fork (the `integration` branch) via a `replace`, until the
           # upstream PRs (#9/#10/#11) land. Regenerate with `nix build` if go.mod/go.sum
           # change; it prints the new hash.
-          vendorHash = "sha256-m7dK7ieARfEk27VTwa4QnJPyJyGAVtr/oiUTbNDkgHw=";
+          vendorHash = "sha256-3R8ZBFyMZH03c6lHNy9jzVyYS3zG882FQ1n+9T7hcV4=";
 
           # sks talks to the platform secure element via cgo.
           env.CGO_ENABLED = "1";

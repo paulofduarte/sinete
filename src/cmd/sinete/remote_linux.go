@@ -125,9 +125,12 @@ func sessionIsLocal(pid uint32) (bool, error) {
 	return !r, nil
 }
 
-// logindUnavailable reports whether err means logind/elogind itself is not present
-// (so the operator should install it), as opposed to logind being present but the
-// peer simply having no session — which is a routine refusal, not a misconfiguration.
+// logindUnavailable reports whether err means local presence could not be detected
+// because logind/elogind — or the system bus itself — was unreachable: a missing or
+// stopped login1 service, no D-Bus at all, or a hung bus (timeout). It returns false
+// for the routine case of logind being present but the peer simply having no session,
+// which is a normal refusal, not a misconfiguration. It only gates the one-time
+// operator diagnostic, not the refusal itself (the caller always fails closed).
 func logindUnavailable(err error) bool {
 	var derr dbus.Error
 	if errors.As(err, &derr) {
@@ -151,6 +154,6 @@ var noLogindOnce sync.Once
 
 func warnNoLogind() {
 	noLogindOnce.Do(func() {
-		fmt.Fprintln(os.Stderr, "sinete: cannot confirm a local session — systemd-logind or elogind is required to detect local presence. Refusing presence-gated signatures until one is installed and running (remote sessions are always refused).")
+		fmt.Fprintln(os.Stderr, "sinete: cannot confirm a local session via logind/elogind — it is not installed/running, or the system bus is unavailable or unresponsive. Refusing presence-gated signatures until local presence can be detected (remote sessions are always refused).")
 	})
 }
