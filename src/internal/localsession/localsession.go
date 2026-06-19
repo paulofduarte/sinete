@@ -22,10 +22,30 @@ package localsession
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"time"
 
 	"github.com/godbus/dbus/v5"
 )
+
+// RequireLocalSelf refuses unless THIS process's logind/elogind session is positively
+// local — the own-process counterpart of the agent's peer check, on the same
+// unspoofable signal, fail-closed. It is the Linux half of the cross-platform
+// local-session gate (see the darwin and other-platform files for the same API).
+func RequireLocalSelf() error {
+	local, err := IsLocalPID(uint32(os.Getpid()))
+	if err != nil {
+		if Unavailable(err) {
+			return fmt.Errorf("sinete needs systemd-logind or elogind to confirm this is a local session before a presence-gated operation — install/start one and run sinete at the machine (remote sessions are refused): %w", err)
+		}
+		return fmt.Errorf("cannot confirm a local session for a presence-gated operation; refusing: %w", err)
+	}
+	if !local {
+		return errors.New("refusing a presence-gated operation from a remote session — change sinete's presence config at the machine (as on macOS, where this needs Touch ID)")
+	}
+	return nil
+}
 
 // dbusTimeout bounds the logind lookups so a slow or hung system bus can't stall the
 // caller. On timeout the lookup errors and the caller fails closed (refuse), like any

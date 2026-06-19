@@ -25,9 +25,6 @@ var justSetPIN []byte
 // same PIN is then required to sign — this is the Linux analogue of the Secure
 // Enclave's user-presence ACL on macOS.
 func masterCreateAuth() ([]byte, error) {
-	if err := requireLocalSession(); err != nil {
-		return nil, err
-	}
 	pin, err := pinentry.Set("sinete", "Set a PIN to protect sinete's config-signing key. You will need it to change presence settings.")
 	if err != nil {
 		return nil, err
@@ -51,9 +48,6 @@ func masterSignError(err error) error {
 // masterSignAuth returns the master-key PIN to authorise a config signature, reusing
 // a just-set PIN when present, otherwise prompting for it.
 func masterSignAuth() ([]byte, error) {
-	if err := requireLocalSession(); err != nil {
-		return nil, err
-	}
 	if justSetPIN != nil {
 		pin := justSetPIN
 		justSetPIN = nil

@@ -111,6 +111,14 @@ func RemoveMaster() error {
 // makes it readable (a counter must be incremented once before it can be read), just
 // like provisioning any key — see ensureEpoch.
 func EnsureMaster() error {
+	// Refuse a remote session FIRST, before touching any hardware. On Linux this
+	// confirms via logind/elogind that we run in a local session (fail-closed), so a
+	// remote user is turned away before the TPM epoch is provisioned or the key is
+	// created. No-op on macOS (the Secure Enclave's Touch ID ACL enforces local
+	// presence at sign time) and on platforms without a presence backend.
+	if err := requireLocalSession(); err != nil {
+		return err
+	}
 	if err := ensureEpoch(); err != nil {
 		return fmt.Errorf("provision epoch: %w", err)
 	}
@@ -174,6 +182,10 @@ func MasterPublicKey() (ssh.PublicKey, error) {
 // run on the main OS thread); on Linux masterSignAuth prompts for the key's PIN,
 // supplied as the TPM authValue. Verify with MasterPublicKey().Verify(data, sig).
 func MasterSign(data []byte) (*ssh.Signature, error) {
+	// Refuse a remote session up front, before opening the key or prompting for a PIN.
+	if err := requireLocalSession(); err != nil {
+		return nil, err
+	}
 	pin, err := masterSignAuth()
 	if err != nil {
 		return nil, err
