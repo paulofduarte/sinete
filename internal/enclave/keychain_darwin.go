@@ -33,7 +33,9 @@ static SecKeyRef   sinete_dict_keyref(CFDictionaryRef d)  { return (SecKeyRef)CF
 import "C"
 
 import (
+	"encoding/binary"
 	"fmt"
+	"math"
 	"unsafe"
 )
 
@@ -409,3 +411,64 @@ func keychainItemDelete(service, account string) error {
 	}
 	return osError(status, "SecItemDelete(epoch)")
 }
+
+// --- epoch seam (macOS: an 8-byte big-endian keychain item) ---
+//
+// Parameterized by keychain account so the production epoch (EpochAccount) and the
+// diagnostic's scratch epoch (scratchEpochAccount) share one implementation.
+
+// scratchEpochAccount holds the _enclave-check diagnostic's throwaway epoch, kept
+// separate from production so the check never disturbs a real registry.json.
+const scratchEpochAccount = EpochAccount + "_selfcheck"
+
+// epochGetAt reads an epoch keychain item; (0, false, nil) when absent.
+func epochGetAt(account string) (uint64, bool, error) {
+	b, err := keychainItemGet(EpochService, account)
+	if err != nil {
+		return 0, false, err
+	}
+	if b == nil {
+		return 0, false, nil
+	}
+	if len(b) != 8 {
+		return 0, false, fmt.Errorf("enclave: epoch item is %d bytes, want 8", len(b))
+	}
+	return binary.BigEndian.Uint64(b), true, nil
+}
+
+// epochIncrementAt advances an epoch item by one (read+1+store). Non-atomic — the
+// keychain has no compare-and-swap — so it must run under the config lock (see
+// ConfigCrypto.Increment). Refuses at the max rather than wrap to 0 and *persist* a
+// reset counter, which would break replay protection.
+func epochIncrementAt(account string) (uint64, error) {
+	v, _, err := epochGetAt(account)
+	if err != nil {
+		return 0, err
+	}
+	if v == math.MaxUint64 {
+		return 0, fmt.Errorf("config epoch exhausted")
+	}
+	next := v + 1
+	var b [8]byte
+	binary.BigEndian.PutUint64(b[:], next)
+	if err := keychainItemSet(EpochService, account, b[:]); err != nil {
+		return 0, err
+	}
+	return next, nil
+}
+
+func epochGet() (uint64, bool, error) { return epochGetAt(EpochAccount) }
+func epochIncrement() (uint64, error) { return epochIncrementAt(EpochAccount) }
+func epochDelete() error              { return keychainItemDelete(EpochService, EpochAccount) }
+
+// ensureEpoch is a no-op on macOS: the keychain epoch item is created lazily on the
+// first Increment (read-absent ⇒ 0, then store 1), so there is nothing to provision
+// up front. Only the TPM counter needs explicit provisioning. See the Linux ensureEpoch.
+func ensureEpoch() error { return nil }
+
+// Scratch-epoch seam (diagnostic only): a separate keychain account, so the
+// _enclave-check round-trip exercises Epoch/Increment without touching production.
+func scratchEpochEnsure() error              { return nil }
+func scratchEpochGet() (uint64, bool, error) { return epochGetAt(scratchEpochAccount) }
+func scratchEpochIncrement() (uint64, error) { return epochIncrementAt(scratchEpochAccount) }
+func scratchEpochDelete() error              { return keychainItemDelete(EpochService, scratchEpochAccount) }

@@ -193,7 +193,7 @@
           # Vendor hash of the Go module set (sks is upstream facebookincubator/sks;
           # the paulofduarte/sks fork was dropped in v2, so there's no replace).
           # Regenerate with `nix build` if go.mod/go.sum change; it prints the new hash.
-          vendorHash = "sha256-giOz1di8xBXD3NUM22Uog9ldN3Ux3ZSwkz6S+IfKPOc=";
+          vendorHash = "sha256-1t0H3IEj5FUFS9+hjbfzSDQqt5ERGxBStBbKWTSwL54=";
 
           # sks talks to the platform secure element via cgo.
           env.CGO_ENABLED = "1";
@@ -231,6 +231,11 @@
 
         devShells.default = pkgs.mkShell {
           inherit (pre-commit-local) shellHook;
+          # OpenSSL is needed by the go-tpm simulator (cgo, the MS-TPM 2.0 reference)
+          # that backs the `tpmsim`-tagged NV-counter test. As a buildInput it puts
+          # the headers/libs on cgo's search path, so `go test -tags tpmsim` builds
+          # without manual CGO_CFLAGS. (Normal, untagged builds don't pull it in.)
+          buildInputs = [ pkgs.openssl ];
           packages = [
             pkgs.go
             pkgs.gopls
