@@ -6,75 +6,151 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"net"
+	"os"
+	"sync"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"golang.org/x/sys/unix"
 )
 
-// presenceUnavailable reports whether conn's peer is a remote (e.g. SSH) login
-// session, which cannot answer a local user-presence prompt — so the agent refuses
-// to sign its cryptoprocessor keys for it rather than block on a pinentry/fprintd
-// prompt the remote user can never reach. See the contract in remote.go.
+// dbusTimeout bounds the logind lookups so a slow or hung system bus can't stall
+// accepting a new agent connection. On timeout we fail closed (refuse), like any
+// other failure to confirm a local session.
+const dbusTimeout = 2 * time.Second
+
+// presenceUnavailable reports whether conn's peer cannot answer a *local* presence
+// prompt, so the agent should refuse to sign its cryptoprocessor keys for it (List
+// and upstream keys still work). See the contract in remote.go.
 //
-// Unlike macOS, a local *text console* is fine here: pinentry can prompt on a tty,
-// so only sessions logind marks as remote are refused. The signal is the peer's
-// logind session Remote property, resolved from its SO_PEERCRED pid — set by the
-// system at login, so it can't be spoofed via the client's environment the way an
-// SSH_CONNECTION scan can.
+// Unlike the macOS detector — which fails OPEN (uncertainty ⇒ treat as local)
+// because Touch ID is console-only by construction — the Linux detector fails
+// CLOSED: it refuses unless it can POSITIVELY confirm the peer's session is local.
+// On Linux pinentry will happily prompt on an SSH pty, so a remote user who knows
+// the PIN could answer it; treating an unconfirmed session as local would let a
+// remote session sign. So here the remote check is the security boundary, and it
+// must be unspoofable.
 //
-// Conservative: any failure to read the peer's session (not a unix socket, the
-// syscall fails, no logind session, D-Bus unavailable) is treated as local, so we
-// never wrongly block a legitimate local user.
+// "Local" is the peer's logind/elogind session Remote property being false
+// (org.freedesktop.login1), resolved from its SO_PEERCRED pid — a value the system
+// sets at login from the session class, which the client can't forge via its
+// environment. If logind/elogind is unavailable, presence is refused and a one-time
+// diagnostic is logged: sinete needs systemd-logind or elogind for local-presence
+// detection.
+//
+// TODO(presence-gap): close the no-logind gap on seatd-based systems (e.g. Chimera
+// Linux, minimal Wayland setups) by also accepting a seatd seat session as
+// positive-local — a seatd session is only ever local. ConsoleKit2 / turnstile are
+// other candidates. See .claude/LINUX-PRESENCE.md.
 func presenceUnavailable(conn net.Conn) bool {
+	pid, ok := peerPID(conn)
+	if !ok {
+		return true // can't read peer credentials ⇒ can't confirm local ⇒ refuse
+	}
+	local, err := sessionIsLocal(pid)
+	if err != nil {
+		if logindUnavailable(err) {
+			warnNoLogind()
+		}
+		return true // can't confirm a local session ⇒ refuse (fail closed)
+	}
+	return !local
+}
+
+// peerPID returns the connecting peer's pid via SO_PEERCRED. ok is false when conn
+// is not a unix socket, the credentials can't be read, or the pid is not positive
+// (a guard against a 0/-1 pid being widened to a bogus uint32 and matched to an
+// unrelated session).
+func peerPID(conn net.Conn) (uint32, bool) {
 	uc, ok := conn.(*net.UnixConn)
 	if !ok {
-		return false
+		return 0, false
 	}
 	raw, err := uc.SyscallConn()
 	if err != nil {
-		return false
+		return 0, false
 	}
-
 	var (
-		ucred   *unix.Ucred
+		cred    *unix.Ucred
 		credErr error
 	)
 	if err := raw.Control(func(fd uintptr) {
-		ucred, credErr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
-	}); err != nil || credErr != nil || ucred == nil {
-		return false
+		cred, credErr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
+	}); err != nil || credErr != nil || cred == nil || cred.Pid <= 0 {
+		return 0, false
 	}
-
-	return sessionIsRemote(uint32(ucred.Pid))
+	return uint32(cred.Pid), true
 }
 
-// sessionIsRemote reports whether the logind session owning pid is a remote login.
-// It returns false on any error (no session, logind/D-Bus unavailable), per the
-// conservative-local contract in remote.go.
-func sessionIsRemote(pid uint32) bool {
+// sessionIsLocal reports whether the logind/elogind session owning pid is local (its
+// Remote property is false). It returns an error when localness cannot be confirmed
+// — logind/elogind unavailable, the system bus is hung (timeout), or pid has no
+// session — and the caller fails closed on any such error.
+func sessionIsLocal(pid uint32) (bool, error) {
 	const (
-		dest    = "org.freedesktop.login1"
-		mgrPath = "/org/freedesktop/login1"
-		mgrIf   = "org.freedesktop.login1.Manager"
-		sessIf  = "org.freedesktop.login1.Session"
+		dest     = "org.freedesktop.login1"
+		mgrPath  = "/org/freedesktop/login1"
+		mgrIf    = "org.freedesktop.login1.Manager"
+		sessIf   = "org.freedesktop.login1.Session"
+		propsGet = "org.freedesktop.DBus.Properties.Get"
 	)
 
 	bus, err := dbus.SystemBus()
 	if err != nil {
-		return false
+		return false, err
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), dbusTimeout)
+	defer cancel()
 
 	var session dbus.ObjectPath
 	if err := bus.Object(dest, mgrPath).
-		Call(mgrIf+".GetSessionByPID", 0, pid).Store(&session); err != nil {
-		return false
+		CallWithContext(ctx, mgrIf+".GetSessionByPID", 0, pid).Store(&session); err != nil {
+		return false, err
 	}
 
-	v, err := bus.Object(dest, session).GetProperty(sessIf + ".Remote")
-	if err != nil {
-		return false
+	var remote dbus.Variant
+	if err := bus.Object(dest, session).
+		CallWithContext(ctx, propsGet, 0, sessIf, "Remote").Store(&remote); err != nil {
+		return false, err
 	}
-	remote, ok := v.Value().(bool)
-	return ok && remote
+	r, ok := remote.Value().(bool)
+	if !ok {
+		return false, fmt.Errorf("login1 Session.Remote is not a bool")
+	}
+	return !r, nil
+}
+
+// logindUnavailable reports whether err means logind/elogind itself is not present
+// (so the operator should install it), as opposed to logind being present but the
+// peer simply having no session — which is a routine refusal, not a misconfiguration.
+func logindUnavailable(err error) bool {
+	var derr dbus.Error
+	if errors.As(err, &derr) {
+		switch derr.Name {
+		case "org.freedesktop.DBus.Error.ServiceUnknown",
+			"org.freedesktop.DBus.Error.NameHasNoOwner":
+			return true // org.freedesktop.login1 has no owner: no logind/elogind
+		default:
+			return false // a login1 error (e.g. no session for pid): logind IS present
+		}
+	}
+	// Not a D-Bus error: a SystemBus() connect failure (no D-Bus at all) or a context
+	// timeout (bus hung) — either way local presence can't be detected.
+	return true
+}
+
+// noLogindOnce keeps the missing-logind diagnostic to a single line: it's an
+// environment condition, not a per-connection event, so logging it once is enough
+// to tell the operator why presence is being refused.
+var noLogindOnce sync.Once
+
+func warnNoLogind() {
+	noLogindOnce.Do(func() {
+		fmt.Fprintln(os.Stderr, "sinete: cannot confirm a local session — systemd-logind or elogind is required to detect local presence. Refusing presence-gated signatures until one is installed and running (remote sessions are always refused).")
+	})
 }

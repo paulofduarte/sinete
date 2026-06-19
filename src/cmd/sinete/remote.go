@@ -23,16 +23,22 @@ import (
 //     access (it is remote/SSH, or otherwise headless), so the LocalAuthentication
 //     Touch ID sheet cannot be drawn. Signal: SessionGetInfo on the peer's audit
 //     session id.
-//   - linux (remote_linux.go): the peer's logind session is remote (its Session
-//     Remote property, resolved from the SO_PEERCRED pid). A local text console is
-//     NOT unavailable there — pinentry can prompt on a tty, so only genuinely remote
-//     sessions are refused.
+//   - linux (remote_linux.go): the peer's logind/elogind session is NOT confirmed
+//     local — i.e. its Session Remote property (resolved from the SO_PEERCRED pid)
+//     is true, or no local session can be confirmed at all. A local text console is
+//     fine (pinentry can prompt on a tty), so a confirmed-local session — graphical
+//     or console — is allowed; only remote (or unconfirmable) ones are refused.
 //   - other (remote_other.go): always false until a platform implements it.
 //
-// Detectors are conservative: on any uncertainty they return false (treat the peer
-// as local), so we never wrongly block a legitimate local user — the cost of a
-// false negative is at worst today's behaviour (a prompt that may not show), not a
-// lockout.
+// Fail direction differs by platform, and deliberately so:
+//   - macOS fails OPEN (uncertainty ⇒ treat as local). Touch ID is console-only by
+//     construction, so even a misclassified remote peer can't satisfy presence — the
+//     worst case of a false negative is a prompt that may not show, not a bypass.
+//   - Linux fails CLOSED (uncertainty ⇒ refuse). pinentry will prompt on an SSH pty,
+//     so an unconfirmed session could be a remote one that answers it; the remote
+//     check is therefore the security boundary and must be positively confirmed. The
+//     cost is that a host without logind/elogind refuses presence-gated signing (with
+//     a one-time diagnostic) until one is installed.
 
 // presenceDenyingAgent is the agent capability the refusal flow needs: the full
 // ExtendedAgent, plus sign variants that refuse a presence-gated cryptoprocessor key
