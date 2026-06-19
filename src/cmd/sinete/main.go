@@ -331,11 +331,12 @@ func cmdSign(args []string) error {
 	return nil
 }
 
-// cmdEnclaveCheck is an unlisted diagnostic for the signed-registry enclave layer
-// (phase 1): it enumerates user keys, ensures+exercises the presence-enforced
-// master key, and round-trips the epoch item. Run it from the signed bundle. The
+// cmdEnclaveCheck is an unlisted diagnostic for the signed-registry cryptoprocessor
+// layer (phase 1): it enumerates user keys, ensures+exercises the master key, and
+// round-trips the epoch counter. Run it from the signed bundle. On macOS the
 // master-key signature is meant to prompt for Touch ID — that prompt confirms the
-// ACL is enforced; pubkey and epoch reads must NOT prompt.
+// presence ACL is enforced (the Linux master key is presence-less for now); pubkey
+// and epoch reads must NOT prompt on either platform.
 func cmdEnclaveCheck(args []string) error {
 	fmt.Println("== enumerate user keys ==")
 	keys, err := cryptoprocessor.List()

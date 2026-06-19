@@ -17,8 +17,9 @@ import (
 // Crypto signs and verifies the config envelope and tracks the replay epoch. The
 // production implementation is cryptoprocessor.ConfigCrypto (the presence-enforced master
 // key + the platform replay epoch — a keychain item on macOS, a TPM NV counter on
-// Linux); tests use a fake. Sign requires user presence;
-// Verify, Epoch and Increment do not.
+// Linux); tests use a fake. Sign requires user presence on macOS (the master key's
+// Touch ID ACL); the Linux master key is presence-less for now. Verify, Epoch and
+// Increment never prompt.
 //
 // The epoch is advanced via Increment (returning the new value) rather than a
 // SetEpoch(v): a TPM-backed backend can only bump a hardware NV monotonic counter,
