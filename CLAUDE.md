@@ -61,15 +61,17 @@ nix flake check               # formatting + golangci-lint(*) + reuse + shellche
 **Secure-Enclave ops require a signed `.app` bundle.** An unsigned/unentitled binary is rejected by the SE (`-34018`) or SIGKILLed by AMFI, so the agent (and `generate`/`sign`/`delete`) must run from the bundle:
 
 ```sh
-nix run .#bundle -- /path/to/<dev>.provisionprofile   # builds + signs sinete.app
-./sinete.app/Contents/MacOS/sinete install            # link + SMAppService login item + state
+nix run .#bundle -- /path/to/<dev>.provisionprofile   # builds + signs dist/sinete.app
+./dist/sinete.app/Contents/MacOS/sinete install       # link + SMAppService login item + state
 ```
 
-(Or just double-click `sinete.app` and use the setup wizard — both call the same `sinete install`.)
+(Or just double-click `dist/sinete.app` and use the setup wizard — both call the same `sinete install`.)
 
-`nix run .#bundle` (macOS only) folds in the former `bundle-and-sign.sh`: it takes the nix-built `sinete`, compiles `ui/SineteUI.swift` to `sinete-ui` with `xcrun swiftc` (nixpkgs swift is too old for the macOS-26 SwiftUI module), runs `actool`, assembles the `.app`, and signs — the unentitled `sinete-ui` first, then the bundle (which signs `sinete` with the SE entitlements). Or double-click `sinete.app`: the SwiftUI panel runs the setup wizard / shows the ready screen.
+Build artifacts go under `dist/` (gitignored) to keep the root clean; `nix build` writes a `result` symlink as usual (use `nix build -o dist/sinete` to keep that under `dist/` too).
 
-For quick **non-SE** checks (`list`, `config`, `present`), `nix run -- <args>` is the default app: it signs the bare nix-built binary (same dev identity + `sinete.entitlements` as the bundle) and execs it. SE ops still need the `.app` — a bare binary can't carry the provisioning profile.
+`nix run .#bundle` (macOS only) folds in the former `bundle-and-sign.sh`: it takes the nix-built `sinete`, compiles `ui/SineteUI.swift` to `sinete-ui` with `xcrun swiftc` (nixpkgs swift is too old for the macOS-26 SwiftUI module), runs `actool`, assembles the `.app`, and signs — the unentitled `sinete-ui` first, then the bundle (which signs `sinete` with the SE entitlements). Or double-click `dist/sinete.app`: the SwiftUI panel runs the setup wizard / shows the ready screen.
+
+**`nix build` / `nix run` are cross-platform** (binary-only, no bundle). `nix build` produces just the `sinete` binary on macOS and Linux. `nix run -- <args>` runs it: on Linux directly (no signing); on macOS via the default app, which signs the bare binary (same dev identity + `sinete.entitlements` as the bundle) and execs it — good for quick **non-SE** checks (`list`, `config`, `present`). SE ops still need the `.app` (a bare binary can't carry the provisioning profile).
 
 Prereqs: an Apple Development identity, the WWDR **G3** intermediate, and a dev provisioning profile for this device + App ID `me.paulofduarte.*`. Note the presence prompt (LocalAuthentication) works even from a bare binary; only SE ops need the bundle.
 

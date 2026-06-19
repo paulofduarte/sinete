@@ -99,7 +99,8 @@
             identity="''${SINETE_SIGN_IDENTITY:-Apple Development: Paulo Duarte (P6K8K4X996)}"
             src="${self}"
             goBin="${self.packages.${system}.default}/bin/sinete"
-            app="$PWD/sinete.app"
+            # Build artifacts live under dist/ to keep the project root clean (#13).
+            app="$PWD/dist/sinete.app"
             bundle_id="me.paulofduarte.sinete"
 
             if [ ! -f "$profile" ]; then
@@ -199,7 +200,7 @@
               exit 1
             fi
             ${bundleApp}/bin/sinete-bundle "$@"
-            exec ./sinete.app/Contents/MacOS/sinete _enclave-check
+            exec ./dist/sinete.app/Contents/MacOS/sinete _enclave-check
           '';
         };
 
@@ -250,21 +251,29 @@
 
         formatter = treefmtEval.config.build.wrapper;
 
-        # `nix run .#e2e-linux` is the Linux TPM backend acceptance test (all systems).
-        # The signing-dependent apps are macOS only (the Apple toolchain): `nix run`
-        # signs + runs the bare binary, `nix run .#bundle -- <profile>` builds the
-        # signed .app, and `nix run .#e2e-macos` runs the on-device SE acceptance test.
+        # `nix run` works on every system: on Linux it runs the nix-built binary
+        # directly (no wrapper — Linux needs no signing); on macOS it goes through
+        # signRunApp, which signs the binary with the SE entitlements first (a bare
+        # binary is rejected by the Secure Enclave otherwise). `nix build` produces just
+        # the binary on both. `nix run .#e2e-linux` is the Linux acceptance test (all
+        # systems). The remaining apps are macOS-only (the Apple toolchain):
+        # `nix run .#bundle -- <profile>` builds the signed .app, `nix run .#e2e-macos`
+        # the on-device SE acceptance test.
         apps = {
+          default = {
+            type = "app";
+            program =
+              if pkgs.stdenv.isDarwin then
+                "${signRunApp}/bin/sinete-sign-run"
+              else
+                "${self.packages.${system}.default}/bin/sinete";
+          };
           e2e-linux = {
             type = "app";
             program = "${e2eLinuxApp}/bin/sinete-e2e-linux";
           };
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
-          default = {
-            type = "app";
-            program = "${signRunApp}/bin/sinete-sign-run";
-          };
           bundle = {
             type = "app";
             program = "${bundleApp}/bin/sinete-bundle";
