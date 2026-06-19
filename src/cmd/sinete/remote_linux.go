@@ -132,19 +132,33 @@ func sessionIsLocal(pid uint32) (bool, error) {
 // which is a normal refusal, not a misconfiguration. It only gates the one-time
 // operator diagnostic, not the refusal itself (the caller always fails closed).
 func logindUnavailable(err error) bool {
-	var derr dbus.Error
-	if errors.As(err, &derr) {
-		switch derr.Name {
-		case "org.freedesktop.DBus.Error.ServiceUnknown",
-			"org.freedesktop.DBus.Error.NameHasNoOwner":
-			return true // org.freedesktop.login1 has no owner: no logind/elogind
-		default:
-			return false // a login1 error (e.g. no session for pid): logind IS present
-		}
+	name, ok := dbusErrorName(err)
+	if !ok {
+		// Not a D-Bus method error: a SystemBus() connect failure (no D-Bus at all)
+		// or a context timeout (bus hung) — either way presence can't be detected.
+		return true
 	}
-	// Not a D-Bus error: a SystemBus() connect failure (no D-Bus at all) or a context
-	// timeout (bus hung) — either way local presence can't be detected.
-	return true
+	switch name {
+	case "org.freedesktop.DBus.Error.ServiceUnknown",
+		"org.freedesktop.DBus.Error.NameHasNoOwner":
+		return true // org.freedesktop.login1 has no owner: no logind/elogind running
+	default:
+		return false // a login1 error (e.g. no session for pid): logind IS present
+	}
+}
+
+// dbusErrorName extracts a D-Bus error name from err. godbus returns *dbus.Error for
+// failed method calls; the value form is handled too, defensively.
+func dbusErrorName(err error) (string, bool) {
+	var ep *dbus.Error
+	if errors.As(err, &ep) && ep != nil {
+		return ep.Name, true
+	}
+	var ev dbus.Error
+	if errors.As(err, &ev) {
+		return ev.Name, true
+	}
+	return "", false
 }
 
 // noLogindOnce keeps the missing-logind diagnostic to a single line: it's an
