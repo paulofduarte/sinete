@@ -163,18 +163,10 @@ func MasterSign(data []byte) (*ssh.Signature, error) {
 }
 
 // Epoch returns the current registry epoch, and whether it exists yet. The store
-// is platform-specific (macOS: a keychain item; Linux: a TPM NV counter).
+// is platform-specific (macOS: a keychain item; Linux: a TPM NV counter). There is
+// no public SetEpoch: the epoch is increment-only (a TPM NV counter cannot be set to
+// an arbitrary value), so it is only ever advanced via the registry.Crypto contract.
 func Epoch() (uint64, bool, error) { return epochGet() }
-
-// SetEpoch stores an arbitrary registry epoch value. It backs the macOS keychain
-// item and the `_enclave-check` diagnostic's restore; a TPM NV counter is
-// increment-only, so the Linux backend rejects it. Production code advances the
-// epoch via Increment (the registry.Crypto contract), never SetEpoch.
-func SetEpoch(v uint64) error { return epochSet(v) }
-
-// DeleteEpoch removes the epoch (keychain delete / NV undefine). It tolerates
-// absence and is used to restore the original state after a diagnostic touched it.
-func DeleteEpoch() error { return epochDelete() }
 
 // ConfigCrypto adapts the master key and the epoch item to the registry's
 // signing needs: it signs and verifies the config envelope and tracks the replay

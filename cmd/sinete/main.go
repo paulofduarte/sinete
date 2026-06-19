@@ -14,7 +14,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"math"
 	"net"
 	"os"
 	"os/signal"
@@ -373,57 +372,27 @@ func cmdEnclaveCheck(args []string) error {
 	}
 	fmt.Println("  signature verified")
 
-	// The epoch + config-round-trip tests below advance the global epoch item.
-	// Snapshot it and restore it on return, so running this diagnostic never
-	// invalidates a real signed registry.json (a higher epoch would make it stale
-	// -> fail-safe defaults until the user re-runs `sinete config`).
-	origEpoch, epochExisted, err := enclave.Epoch()
+	// The config round-trip below reads and advances an epoch. The production epoch
+	// on Linux is a TPM NV counter that can't be rolled back, so the round-trip runs
+	// against a *scratch* epoch (a separate NV index / keychain item) that is removed
+	// afterwards — the real registry.json's replay counter is never touched.
+	fmt.Println("== signed config round-trip (real master key, scratch epoch, throwaway file) ==")
+	crypto, cleanupEpoch, err := enclave.NewScratchConfigCrypto()
 	if err != nil {
-		return fmt.Errorf("epoch snapshot: %w", err)
+		return fmt.Errorf("scratch epoch: %w", err)
 	}
 	defer func() {
-		// Restore the original state exactly: the prior value if the item existed,
-		// or its absence (delete) if it did not — so the diagnostic leaves no trace.
-		var restoreErr error
-		if epochExisted {
-			restoreErr = enclave.SetEpoch(origEpoch)
-		} else {
-			restoreErr = enclave.DeleteEpoch()
-		}
-		if restoreErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not restore the epoch after the check (%v); an existing signed registry.json may be stale until you re-run `sinete config`.\n", restoreErr)
+		if err := cleanupEpoch(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not remove the scratch epoch after the check: %v\n", err)
 		}
 	}()
 
-	fmt.Println("== epoch item (no prompt expected) ==")
-	cur, ok, err := enclave.Epoch()
-	if err != nil {
-		return fmt.Errorf("epoch get: %w", err)
-	}
-	fmt.Printf("  current: %d (exists=%v)\n", cur, ok)
-	if cur == math.MaxUint64 {
-		return fmt.Errorf("epoch at max; refusing to increment (matches Config.Save)")
-	}
-	if err := enclave.SetEpoch(cur + 1); err != nil {
-		return fmt.Errorf("epoch set: %w", err)
-	}
-	next, _, err := enclave.Epoch()
-	if err != nil {
-		return fmt.Errorf("epoch get after set: %w", err)
-	}
-	if next != cur+1 {
-		return fmt.Errorf("epoch did not persist: got %d, want %d", next, cur+1)
-	}
-	fmt.Printf("  after increment: %d\n", next)
-
-	fmt.Println("== signed config round-trip (real master key, throwaway file) ==")
 	tmp, err := os.MkdirTemp("", "sinete-cfgcheck")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(tmp)
 	cfgPath := filepath.Join(tmp, "registry.json")
-	crypto := enclave.ConfigCrypto{}
 
 	cfg, trusted, err := registry.OpenConfig(cfgPath, crypto)
 	if err != nil {

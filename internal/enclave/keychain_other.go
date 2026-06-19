@@ -16,6 +16,10 @@ func enumerateKeys(string) ([]rawKey, error) { return nil, errUnsupported }
 func createPresenceKey(_, _ string) error    { return errUnsupported }
 func ensureEpoch() error                     { return errUnsupported }
 func epochGet() (uint64, bool, error)        { return 0, false, errUnsupported }
-func epochSet(uint64) error                  { return errUnsupported }
 func epochIncrement() (uint64, error)        { return 0, errUnsupported }
 func epochDelete() error                     { return errUnsupported }
+
+func scratchEpochEnsure() error              { return errUnsupported }
+func scratchEpochGet() (uint64, bool, error) { return 0, false, errUnsupported }
+func scratchEpochIncrement() (uint64, error) { return 0, errUnsupported }
+func scratchEpochDelete() error              { return errUnsupported }

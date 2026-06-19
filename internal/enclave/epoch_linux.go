@@ -20,7 +20,6 @@
 package enclave
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/google/go-tpm/tpm2"
@@ -31,9 +30,12 @@ const (
 	// tpmDevice is the TPM 2.0 resource-manager device (kernel-arbitrated access, so
 	// concurrent users don't clobber each other's transient handles).
 	tpmDevice = "/dev/tpmrm0"
-	// epochNVIndex is the owner-defined NV index holding the epoch counter. In the
-	// owner range (0x018xxxxx); "7E7E" ≈ sinete.
+	// epochNVIndex is the owner-defined NV index holding the production epoch counter.
+	// In the owner range (0x018xxxxx); "7E7E" ≈ sinete.
 	epochNVIndex tpm2.TPMHandle = 0x018E7E7E
+	// scratchNVIndex is a separate counter the _enclave-check diagnostic uses, so the
+	// check never advances the production counter (which can't be rolled back).
+	scratchNVIndex tpm2.TPMHandle = 0x018E7E6F
 )
 
 // openTPM opens the resource-manager device.
@@ -45,50 +47,62 @@ func openTPM() (transport.TPMCloser, error) {
 	return t, nil
 }
 
-// ensureEpoch provisions the epoch counter: a TPM NV counter must be defined and
-// incremented once before it can be read, so this is a first-class one-time setup
-// step (run from EnsureMaster), exactly like provisioning a key — not a workaround.
-// Idempotent. Once provisioned, Epoch() reads the counter and Increment() advances
-// it; provisioning is simply what makes that first read meaningful. (The macOS
-// keychain item is created lazily on first write, so its ensureEpoch is a no-op.)
-func ensureEpoch() error {
+// The epoch seam, parameterized by NV index so the production counter (epochNVIndex)
+// and the diagnostic's scratch counter (scratchNVIndex) share one implementation.
+// Each opens the resource-manager device and delegates to the neutral algorithm in
+// epoch_tpm.go.
+
+func ensureEpochAt(index tpm2.TPMHandle) error {
 	t, err := openTPM()
 	if err != nil {
 		return err
 	}
 	defer t.Close()
-	return tpmEnsureCounter(t, epochNVIndex)
+	return tpmEnsureCounter(t, index)
 }
 
-func epochGet() (uint64, bool, error) {
+func epochGetAt(index tpm2.TPMHandle) (uint64, bool, error) {
 	t, err := openTPM()
 	if err != nil {
 		return 0, false, err
 	}
 	defer t.Close()
-	return tpmCounterGet(t, epochNVIndex)
+	return tpmCounterGet(t, index)
 }
 
-func epochIncrement() (uint64, error) {
+func epochIncrementAt(index tpm2.TPMHandle) (uint64, error) {
 	t, err := openTPM()
 	if err != nil {
 		return 0, err
 	}
 	defer t.Close()
-	return tpmCounterIncrement(t, epochNVIndex)
+	return tpmCounterIncrement(t, index)
 }
 
-func epochDelete() error {
+func epochDeleteAt(index tpm2.TPMHandle) error {
 	t, err := openTPM()
 	if err != nil {
 		return err
 	}
 	defer t.Close()
-	return tpmCounterDelete(t, epochNVIndex)
+	return tpmCounterDelete(t, index)
 }
 
-// epochSet is unsupported on Linux: a TPM NV counter is increment-only. Production
-// never calls it (the registry advances the epoch via Increment).
-func epochSet(uint64) error {
-	return errors.New("enclave: the TPM NV epoch counter is increment-only; SetEpoch is unsupported on Linux")
-}
+// ensureEpoch provisions the production epoch counter: a TPM NV counter must be
+// defined and incremented once before it can be read, so this is a first-class
+// one-time setup step (run from EnsureMaster), exactly like provisioning a key — not
+// a workaround. Idempotent. Once provisioned, Epoch() reads the counter and
+// Increment() advances it; provisioning is simply what makes that first read
+// meaningful. (The macOS keychain item is created lazily on first write, so its
+// ensureEpoch is a no-op.)
+func ensureEpoch() error              { return ensureEpochAt(epochNVIndex) }
+func epochGet() (uint64, bool, error) { return epochGetAt(epochNVIndex) }
+func epochIncrement() (uint64, error) { return epochIncrementAt(epochNVIndex) }
+func epochDelete() error              { return epochDeleteAt(epochNVIndex) }
+
+// Scratch-epoch seam (diagnostic only): a separate NV counter, so the _enclave-check
+// round-trip exercises Epoch/Increment without advancing the production counter.
+func scratchEpochEnsure() error              { return ensureEpochAt(scratchNVIndex) }
+func scratchEpochGet() (uint64, bool, error) { return epochGetAt(scratchNVIndex) }
+func scratchEpochIncrement() (uint64, error) { return epochIncrementAt(scratchNVIndex) }
+func scratchEpochDelete() error              { return epochDeleteAt(scratchNVIndex) }
