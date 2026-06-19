@@ -18,7 +18,7 @@ import (
 	xagent "golang.org/x/crypto/ssh/agent"
 )
 
-// Keys come from secure-element enumeration (which needs the entitled bundle), so
+// Keys come from secure-cryptoprocessor enumeration (which needs the entitled bundle), so
 // the success path is exercised on-device via `sinete _enclave-check` and manual
 // `ssh-setup`. Here we cover the error paths: an invalid name is rejected before
 // any keychain access, and a valid name with no usable key — enumeration errors

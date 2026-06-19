@@ -14,7 +14,7 @@ import (
 func TestUnitContent(t *testing.T) {
 	u := unitContent("/opt/sinete/bin/sinete")
 	for _, want := range []string{
-		`ExecStart="/opt/sinete/bin/sinete" agent`, // quoted path + enclave-only (no --launchd)
+		`ExecStart="/opt/sinete/bin/sinete" agent`, // quoted path, no --launchd
 		"Restart=on-failure",
 		"WantedBy=default.target",
 		"[Service]",

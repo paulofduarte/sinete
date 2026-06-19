@@ -3,9 +3,9 @@
 
 // Package registry holds sinete's per-key presence config.
 //
-// Which keys exist is determined by enumerating the secure element, not by this
+// Which keys exist is determined by enumerating the secure cryptoprocessor, not by this
 // package. Config lives in a single signed file (see Config / config.go):
-// registry.json, whose payload is signed by the enclave master key and bound to a
+// registry.json, whose payload is signed by the master key and bound to a
 // replay epoch. Verification is fail-CLOSED: any missing, tampered, forged or
 // stale config makes every setting resolve to 0 — authenticate on every signature
 // (the strictest possible value), so losing config can only ever tighten, never
@@ -74,8 +74,8 @@ func ValidName(name string) error {
 	return nil
 }
 
-// Entry describes one enclave key: its human name, the sks label and tag that
-// identify it, and its public key. The agent builds these from secure-element
+// Entry describes one cryptoprocessor key: its human name, the sks label and tag that
+// identify it, and its public key. The agent builds these from secure-cryptoprocessor
 // enumeration — the registry no longer stores keys.
 type Entry struct {
 	Name      string

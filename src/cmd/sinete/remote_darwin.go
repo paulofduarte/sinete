@@ -57,7 +57,7 @@ const (
 // presenceUnavailable reports whether conn's peer is a session that cannot display
 // the macOS LocalAuthentication (Touch ID) prompt: a remote (SSH) login, or any
 // session without window-server access. Such a peer can't satisfy presence, so the
-// agent refuses to sign its enclave keys for it rather than hang on an invisible
+// agent refuses to sign its cryptoprocessor keys for it rather than hang on an invisible
 // prompt. See the contract in remote.go.
 //
 // Conservative: any failure to read the peer's session (not a unix socket, the

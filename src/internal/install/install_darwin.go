@@ -132,7 +132,7 @@ func rollbackLink(st *State) {
 }
 
 // Uninstall reverses an install: unregister the login item, remove the link,
-// drop the PATH entry, and delete the state file. It does NOT touch enclave keys
+// drop the PATH entry, and delete the state file. It does NOT touch cryptoprocessor keys
 // — those are removed separately, with explicit confirmation.
 func Uninstall() error {
 	st, err := LoadState()

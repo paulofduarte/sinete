@@ -19,9 +19,9 @@ configs (.golangci.yml, .swiftlint.yml) live in src/ next to the code they lint.
 ```
 src/                    # all sources + resources; the Go module's go.mod is here
   cmd/sinete/           # CLI entrypoint
-  internal/enclave/     # thin sks wrapper: create/open/sign/remove, pubkey export, name <-> (label,tag)
+  internal/cryptoprocessor/ # thin sks wrapper (SE/TPM): create/open/sign/remove, enumerate, master key, epoch
   internal/agent/       # the ssh-agent (served via x/crypto ServeAgent)
-  internal/registry/    # signed presence config at $XDG_CONFIG_HOME/sinete/registry.json (keys are enumerated from the SE)
+  internal/registry/    # signed presence config at $XDG_CONFIG_HOME/sinete/registry.json (keys are enumerated from the secure cryptoprocessor)
   internal/presence/    # user-presence check (macOS LocalAuthentication, cgo); stub elsewhere
   internal/loginitem/   # register the launchd/systemd agent as a login item; stub on unsupported platforms
   internal/install/     # app-driven setup/teardown: link + login item + install.json state; stub elsewhere
@@ -48,9 +48,9 @@ This is the core design; get it right:
 ## Architecture notes that aren't obvious from the code
 
 - **The main thread matters.** macOS only draws the presence (LocalAuthentication) prompt from the main OS thread. `main` calls `runtime.LockOSThread`; the agent serves connections on goroutines but dispatches signing (and its prompt) to a main-thread `Run` loop.
-- **Keys are enumerated from the secure element; config is a signed file.** sinete no longer keeps an on-disk key index — `list`/`export`/the agent enumerate the SE (the source of truth; the in-repo cgo in `internal/enclave` does what stock `sks` can't). `internal/registry` holds only the per-key presence config in a single signed `registry.json` (`$XDG_CONFIG_HOME/sinete/`), whose payload is signed by an internal enclave **master key** and bound to a replay **epoch** (a keychain item); tampering or replay is detected and falls back to built-in defaults. It holds no secret material.
+- **Keys are enumerated from the secure cryptoprocessor; config is a signed file.** sinete no longer keeps an on-disk key index — `list`/`export`/the agent enumerate via `sks.Enumerate` (the source of truth). `internal/registry` holds only the per-key presence config in a single signed `registry.json` (`$XDG_CONFIG_HOME/sinete/`), whose payload is signed by an internal **master key** (created via `sks.NewKey` with user presence) and bound to a replay **epoch** (a keychain item on macOS, a TPM NV counter on Linux); tampering or replay is detected and falls back to built-in defaults. It holds no secret material. `internal/cryptoprocessor` wraps `sks` and now keeps only the platform-specific epoch (enumeration and the presence master key moved into the sks fork).
 - **`sks.Key` is a `crypto.Signer`** wrapped with `ssh.NewSignerFromSigner`. It's a handle — `Sign` computes in the SE; for presence-less keys it does *not* prompt (the agent gates presence separately).
-- **`sks.NewKey(label, tag, useBiometrics, accessibleWhenUnlockedOnly, hash)`**: `hash == nil` generates, non-nil looks up. Algorithm is always ECDSA **P-256** (SE constraint). Upstream sks ignores `useBiometrics` on macOS — exactly what we want (presence-less keys), which is why the fork was dropped.
+- **`sks.NewKey(label, tag, useBiometrics, accessibleWhenUnlockedOnly, hash, opts...)`**: `hash == nil` generates, non-nil looks up. Algorithm is always ECDSA **P-256** (SE constraint). sinete pins the `paulofduarte/sks` fork (see flake.nix), where `useBiometrics` *is* honored on macOS (a user-presence ACL) and `WithAuthValue` carries a TPM auth value on Linux: data keys pass `false` (presence-less, gated in software by the agent's TTL), the **master key** passes `true` so every config write needs hardware presence.
 - **The entitlement wall.** SE keys are bound to sinete's keychain access group, so only the signed sinete bundle can use them. `ssh`/`ssh-add`/any in-process library cannot reach the key — the agent is the only channel (this is why a PKCS#11 / SecurityKeyProvider can't give agentless access).
 - **Diagnostics & hooks.** `sinete sign` (direct sign) and `sinete present[-n]` (presence prompt) are unlisted diagnostics; `sinete service <register|unregister|status>` exposes the `SMAppService` registration directly (the `install`/`uninstall` flow registers via `internal/loginitem`).
 

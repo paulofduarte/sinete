@@ -15,9 +15,11 @@ import (
 )
 
 // Crypto signs and verifies the config envelope and tracks the replay epoch. The
-// production implementation is enclave.ConfigCrypto (the presence-enforced master
-// key + the keychain epoch item); tests use a fake. Sign requires user presence;
-// Verify, Epoch and Increment do not.
+// production implementation is cryptoprocessor.ConfigCrypto (the presence-enforced master
+// key + the platform replay epoch — a keychain item on macOS, a TPM NV counter on
+// Linux); tests use a fake. Sign requires user presence on macOS (the master key's
+// Touch ID ACL); the Linux master key is presence-less for now. Verify, Epoch and
+// Increment never prompt.
 //
 // The epoch is advanced via Increment (returning the new value) rather than a
 // SetEpoch(v): a TPM-backed backend can only bump a hardware NV monotonic counter,
@@ -76,7 +78,7 @@ const (
 
 // Config is the signed config store: global defaults + per-key overrides. It is
 // keyed by key name and holds no key material — which keys exist is determined by
-// enumerating the secure element, not by this file.
+// enumerating the secure cryptoprocessor, not by this file.
 type Config struct {
 	path     string
 	crypto   Crypto
@@ -322,7 +324,7 @@ func (c *Config) Save() error {
 	// payloads at N+1, letting one be replayed later (it would still match the
 	// keychain epoch). The lock is held across the signing prompt. lockConfig is a
 	// real flock on unix; the no-op stub elsewhere only keeps the package compiling,
-	// where Save can't succeed anyway (no secure-element backend), so nothing relies
+	// where Save can't succeed anyway (no secure-cryptoprocessor backend), so nothing relies
 	// on the lock there.
 	unlock, err := lockConfig(c.path)
 	if err != nil {

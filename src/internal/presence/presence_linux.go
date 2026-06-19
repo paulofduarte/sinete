@@ -7,7 +7,7 @@ package presence
 
 // Authenticate is presence-less on Linux in v1: there is no built-in prompt
 // mechanism yet (fprintd / pinentry land with the presence work — step 2), so the
-// agent signs enclave keys without a presence gate. It returns nil ("assume
+// agent signs cryptoprocessor keys without a presence gate. It returns nil ("assume
 // present"), which makes the agent's per-key presence window a silent no-op.
 //
 // SECURITY DELTA vs macOS: the TPM keys are still hardware-backed and every

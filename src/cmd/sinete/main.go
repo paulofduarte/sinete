@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Command sinete is a hardware-backed SSH key manager and agent. Private keys
-// are generated in, and never leave, the platform secure element; only public
+// are generated in, and never leave, the platform secure cryptoprocessor; only public
 // keys are exported. The agent advertises every created key and signs with them
 // like a normal ssh-agent, gating user presence at sign time (Touch ID once,
 // then silent for a per-key TTL).
@@ -24,7 +24,7 @@ import (
 	"time"
 
 	"github.com/paulofduarte/sinete/internal/agent"
-	"github.com/paulofduarte/sinete/internal/enclave"
+	"github.com/paulofduarte/sinete/internal/cryptoprocessor"
 	"github.com/paulofduarte/sinete/internal/install"
 	"github.com/paulofduarte/sinete/internal/loginitem"
 	"github.com/paulofduarte/sinete/internal/presence"
@@ -69,7 +69,7 @@ func main() {
 		"sign":      cmdSign,
 		"present":   cmdPresent,
 		"config":    cmdConfig,
-		// unlisted diagnostic for the signed-registry enclave layer
+		// unlisted diagnostic for the signed-registry cryptoprocessor layer
 		"_enclave-check": cmdEnclaveCheck,
 	}
 	cmd, ok := cmds[os.Args[1]]
@@ -86,13 +86,13 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: sinete <command> [args]
 
-sinete manages the secure-element key storage:
+sinete manages the secure-cryptoprocessor key storage:
 
-  generate <name>   create an enclave key and print its public key
+  generate <name>   create a cryptoprocessor key and print its public key
   list              list created keys (name, type, fingerprint)
   export <name>     print a key's public key
   ssh-setup <name>  write the .pub + print ssh/git config to use the key
-  delete <name>     delete a key from the secure element (requires presence)
+  delete <name>     delete a key from the secure cryptoprocessor (requires presence)
   config            presence config: show | get | set | unset | key <name> …
   status            show install + key state (--json for the app UI)
   agent             run the ssh-agent (foreground)
@@ -111,7 +111,7 @@ func openConfig() (*registry.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg, trusted, err := registry.OpenConfig(path, enclave.ConfigCrypto{})
+	cfg, trusted, err := registry.OpenConfig(path, cryptoprocessor.ConfigCrypto{})
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +126,7 @@ func openConfig() (*registry.Config, error) {
 func saveConfig(cfg *registry.Config) error {
 	// Creating the master key needs no presence; signing with it does — so the
 	// first `sinete config` on a fresh install creates it, then signs.
-	if err := enclave.EnsureMaster(); err != nil {
+	if err := cryptoprocessor.EnsureMaster(); err != nil {
 		return fmt.Errorf("ensure master key: %w", err)
 	}
 	return cfg.Save()
@@ -143,15 +143,15 @@ func cmdGenerate(args []string) error {
 		return err
 	}
 
-	// Keys are enumerated from the secure element, so a new key needs no registry
+	// Keys are enumerated from the secure cryptoprocessor, so a new key needs no registry
 	// write (and thus no presence prompt). Reject a name already in use.
-	if _, ok, err := enclave.Find(name); err != nil {
+	if _, ok, err := cryptoprocessor.Find(name); err != nil {
 		return err
 	} else if ok {
 		return fmt.Errorf("key %q already exists", name)
 	}
 
-	key, err := enclave.Create(enclave.DefaultLabelPrefix, name)
+	key, err := cryptoprocessor.Create(cryptoprocessor.DefaultLabelPrefix, name)
 	if err != nil {
 		return err
 	}
@@ -165,9 +165,9 @@ func cmdGenerate(args []string) error {
 }
 
 func cmdList(args []string) error {
-	// Keys are enumerated from the secure element, the source of truth for which
+	// Keys are enumerated from the secure cryptoprocessor, the source of truth for which
 	// keys exist (the registry no longer stores them).
-	keys, err := enclave.List()
+	keys, err := cryptoprocessor.List()
 	if err != nil {
 		return err
 	}
@@ -182,7 +182,7 @@ func cmdExport(args []string) error {
 		return errors.New("usage: sinete export <name>")
 	}
 	name := args[0]
-	keys, err := enclave.List()
+	keys, err := cryptoprocessor.List()
 	if err != nil {
 		return err
 	}
@@ -212,7 +212,7 @@ func cmdSshSetup(args []string) error {
 		return err
 	}
 
-	listed, ok, err := enclave.Find(name)
+	listed, ok, err := cryptoprocessor.Find(name)
 	if err != nil {
 		return err
 	}
@@ -265,7 +265,7 @@ echo '%[2]s %[3]s' >> ~/.config/git/allowed_signers
 	return nil
 }
 
-// cmdDelete destroys a key in the secure element. It requires user presence, and
+// cmdDelete destroys a key in the secure cryptoprocessor. It requires user presence, and
 // prunes the key's stored config. Unloading a key from the running agent is
 // `ssh-add -e`/`-d`, not this.
 func cmdDelete(args []string) error {
@@ -273,7 +273,7 @@ func cmdDelete(args []string) error {
 		return errors.New("usage: sinete delete <name>")
 	}
 	name := args[0]
-	listed, ok, err := enclave.Find(name)
+	listed, ok, err := cryptoprocessor.Find(name)
 	if err != nil {
 		return err
 	}
@@ -297,7 +297,7 @@ func cmdDelete(args []string) error {
 		return err
 	}
 
-	if err := enclave.OpenLabelTag(listed.Label, enclave.Tag).Remove(); err != nil {
+	if err := cryptoprocessor.OpenLabelTag(listed.Label, cryptoprocessor.Tag).Remove(); err != nil {
 		return err
 	}
 	fmt.Printf("deleted %s\n", name)
@@ -312,14 +312,14 @@ func cmdSign(args []string) error {
 		return errors.New("usage: sinete sign <name>")
 	}
 	name := args[0]
-	listed, ok, err := enclave.Find(name)
+	listed, ok, err := cryptoprocessor.Find(name)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return fmt.Errorf("no key named %q", name)
 	}
-	signer, err := enclave.OpenLabelTag(listed.Label, enclave.Tag).Signer()
+	signer, err := cryptoprocessor.OpenLabelTag(listed.Label, cryptoprocessor.Tag).Signer()
 	if err != nil {
 		return err
 	}
@@ -331,14 +331,15 @@ func cmdSign(args []string) error {
 	return nil
 }
 
-// cmdEnclaveCheck is an unlisted diagnostic for the signed-registry enclave layer
-// (phase 1): it enumerates user keys, ensures+exercises the presence-enforced
-// master key, and round-trips the epoch item. Run it from the signed bundle. The
+// cmdEnclaveCheck is an unlisted diagnostic for the signed-registry cryptoprocessor
+// layer (phase 1): it enumerates user keys, ensures+exercises the master key, and
+// round-trips the epoch counter. Run it from the signed bundle. On macOS the
 // master-key signature is meant to prompt for Touch ID — that prompt confirms the
-// ACL is enforced; pubkey and epoch reads must NOT prompt.
+// presence ACL is enforced (the Linux master key is presence-less for now); pubkey
+// and epoch reads must NOT prompt on either platform.
 func cmdEnclaveCheck(args []string) error {
 	fmt.Println("== enumerate user keys ==")
-	keys, err := enclave.List()
+	keys, err := cryptoprocessor.List()
 	if err != nil {
 		return fmt.Errorf("enumerate: %w", err)
 	}
@@ -352,10 +353,10 @@ func cmdEnclaveCheck(args []string) error {
 	fmt.Printf("  (%d key(s))\n", len(keys))
 
 	fmt.Println("== master key ==")
-	if err := enclave.EnsureMaster(); err != nil {
+	if err := cryptoprocessor.EnsureMaster(); err != nil {
 		return fmt.Errorf("ensure master: %w", err)
 	}
-	mpub, err := enclave.MasterPublicKey()
+	mpub, err := cryptoprocessor.MasterPublicKey()
 	if err != nil {
 		return err
 	}
@@ -363,7 +364,7 @@ func cmdEnclaveCheck(args []string) error {
 
 	fmt.Println("== master sign (a presence prompt may appear: Touch ID on macOS; presence-less on Linux v1) ==")
 	msg := []byte("sinete enclave-check")
-	sig, err := enclave.MasterSign(msg)
+	sig, err := cryptoprocessor.MasterSign(msg)
 	if err != nil {
 		return fmt.Errorf("master sign: %w", err)
 	}
@@ -377,7 +378,7 @@ func cmdEnclaveCheck(args []string) error {
 	// against a *scratch* epoch (a separate NV index / keychain item) that is removed
 	// afterwards — the real registry.json's replay counter is never touched.
 	fmt.Println("== signed config round-trip (real master key, scratch epoch, throwaway file) ==")
-	crypto, cleanupEpoch, err := enclave.NewScratchConfigCrypto()
+	crypto, cleanupEpoch, err := cryptoprocessor.NewScratchConfigCrypto()
 	if err != nil {
 		return fmt.Errorf("scratch epoch: %w", err)
 	}
@@ -581,7 +582,7 @@ func configKey(cfg *registry.Config, rest []string) error {
 	}
 	name := rest[0]
 	rest = rest[1:]
-	if _, ok, err := enclave.Find(name); err != nil {
+	if _, ok, err := cryptoprocessor.Find(name); err != nil {
 		return err
 	} else if !ok {
 		return fmt.Errorf("no key named %q", name)
@@ -823,7 +824,7 @@ func cmdStatus(args []string) error {
 		Fingerprint string `json:"fingerprint"`
 	}
 	keys := make([]keyInfo, 0)
-	listed, err := enclave.List()
+	listed, err := cryptoprocessor.List()
 	if err != nil {
 		return err
 	}
@@ -1113,10 +1114,10 @@ func promptDuration(label, suggestion string) string {
 // cmdUninstall reverses the install: login item, the link sinete created, the
 // PATH entry, the .pub files sinete wrote, and the state file. A kept (declined)
 // link or .pub is left alone. With --remove-keys it also deletes this user's
-// enclave keys (irreversible); other users' keys are untouched (their keychain).
+// cryptoprocessor keys (irreversible); other users' keys are untouched (their keychain).
 func cmdUninstall(args []string) error {
 	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
-	removeKeys := fs.Bool("remove-keys", false, "also delete this user's enclave keys (irreversible)")
+	removeKeys := fs.Bool("remove-keys", false, "also delete this user's cryptoprocessor keys (irreversible)")
 	_ = fs.Parse(args)
 
 	if err := install.Uninstall(); err != nil {
@@ -1126,19 +1127,19 @@ func cmdUninstall(args []string) error {
 		fmt.Println("uninstalled: login item, link, PATH, and generated .pub files removed (keys kept)")
 		return nil
 	}
-	listed, err := enclave.List()
+	listed, err := cryptoprocessor.List()
 	if err != nil {
 		return err
 	}
 	removed := 0
 	for _, k := range listed {
-		if err := enclave.OpenLabelTag(k.Label, enclave.Tag).Remove(); err != nil {
+		if err := cryptoprocessor.OpenLabelTag(k.Label, cryptoprocessor.Tag).Remove(); err != nil {
 			return fmt.Errorf("remove key %q: %w", k.Name, err)
 		}
 		removed++
 	}
 	// Also remove the internal master key + epoch item, and the config files.
-	if err := enclave.RemoveMaster(); err != nil {
+	if err := cryptoprocessor.RemoveMaster(); err != nil {
 		return fmt.Errorf("remove master key: %w", err)
 	}
 	if p, perr := registry.ConfigPath(); perr == nil {
@@ -1224,11 +1225,11 @@ func cmdAgent(args []string) error {
 			fmt.Fprintf(os.Stderr, "sinete agent: no upstream agent at %s: %v\n", s, derr)
 		} else {
 			upstream = xagent.NewClient(conn)
-			fmt.Fprintf(os.Stderr, "delegating non-enclave keys to %s\n", s)
+			fmt.Fprintf(os.Stderr, "delegating non-cryptoprocessor keys to %s\n", s)
 		}
 	}
 
-	a := agent.New(agent.NewEnclaveStore(), agent.EnclaveSource{}, presence.Authenticate, upstream)
+	a := agent.New(agent.NewCryptoprocessorStore(), agent.CryptoprocessorSource{}, presence.Authenticate, upstream)
 	fmt.Printf("export SSH_AUTH_SOCK=%s\n", path)
 
 	// Accept and serve connections off the main thread; signing (and its Touch ID
@@ -1248,7 +1249,7 @@ func cmdAgent(args []string) error {
 				defer conn.Close()
 				// A peer that can't satisfy a presence prompt (a remote/SSH or
 				// otherwise headless session) would make presence-gated signing hang
-				// on an invisible prompt, so refuse signing our enclave keys for it
+				// on an invisible prompt, so refuse signing our cryptoprocessor keys for it
 				// (List and upstream keys still work). This is a property of the
 				// connection's peer, computed once here; see remote.go.
 				served := xagent.ExtendedAgent(a)

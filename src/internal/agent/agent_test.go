@@ -49,7 +49,7 @@ func (s *mutableStore) set(entries ...registry.Entry) {
 	s.entries = entries
 }
 
-// fakeSource resolves labels to in-memory signers, standing in for the enclave.
+// fakeSource resolves labels to in-memory signers, standing in for the cryptoprocessor.
 type fakeSource struct{ signers map[string]ssh.Signer }
 
 func (f fakeSource) Signer(label, _ string) (ssh.Signer, error) {
@@ -295,13 +295,13 @@ func TestDelegatesToUpstream(t *testing.T) {
 	a := New(store, fakeSource{map[string]ssh.Signer{e.Label: signer}}, c.present, up.(xagent.ExtendedAgent))
 	go a.Run()
 
-	// List is the union: enclave key + upstream key.
+	// List is the union: cryptoprocessor key + upstream key.
 	keys, err := a.List()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(keys) != 2 {
-		t.Fatalf("List = %d keys, want 2 (enclave + upstream)", len(keys))
+		t.Fatalf("List = %d keys, want 2 (cryptoprocessor + upstream)", len(keys))
 	}
 
 	// Signing an upstream key forwards (no presence prompt) and verifies.
@@ -324,7 +324,7 @@ func (errStore) Keys() ([]registry.Entry, error)      { return nil, errors.New("
 func (errStore) TTL(string) (idle, max time.Duration) { return 0, 0 }
 
 func TestSignDenyingPresence(t *testing.T) {
-	// An owned (enclave) key is refused with ErrPresenceUnavailable and never
+	// An owned (cryptoprocessor) key is refused with ErrPresenceUnavailable and never
 	// prompts or signs — the prompt is exactly what a remote/headless peer can't
 	// satisfy.
 	e, pub, signer := testEntry(t, "work")
