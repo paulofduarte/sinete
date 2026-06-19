@@ -97,8 +97,8 @@ func Register() error {
 	if err := os.WriteFile(path, []byte(unitContent(exe)), 0o600); err != nil {
 		return err
 	}
-	if _, err := systemctl("daemon-reload"); err != nil {
-		return fmt.Errorf("systemctl daemon-reload: %w", err)
+	if out, err := systemctl("daemon-reload"); err != nil {
+		return fmt.Errorf("systemctl daemon-reload: %w: %s", err, out)
 	}
 	if out, err := systemctl("enable", "--now", unitName); err != nil {
 		return fmt.Errorf("enable %s: %w: %s", unitName, err, out)

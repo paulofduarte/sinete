@@ -78,5 +78,7 @@ if grep -q "SINETE_VM_PASS" "$WORK/boot.log"; then
 fi
 echo "FAIL: SINETE_VM_PASS marker not found"
 echo "--- last 40 lines of guest output ---"
-grep -vE '^\[' "$WORK/boot.log" | tail -40
+# `|| true`: grep exits non-zero if nothing matches (e.g. empty log), which under
+# `set -euo pipefail` would abort before the intended `exit 1`.
+grep -vE '^\[' "$WORK/boot.log" | tail -40 || true
 exit 1
