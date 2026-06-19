@@ -1228,7 +1228,7 @@ func cmdAgent(args []string) error {
 		}
 	}
 
-	a := agent.New(agent.NewEnclaveStore(), agent.EnclaveSource{}, presence.Authenticate, upstream)
+	a := agent.New(agent.NewCryptoprocessorStore(), agent.CryptoprocessorSource{}, presence.Authenticate, upstream)
 	fmt.Printf("export SSH_AUTH_SOCK=%s\n", path)
 
 	// Accept and serve connections off the main thread; signing (and its Touch ID

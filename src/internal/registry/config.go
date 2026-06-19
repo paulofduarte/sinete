@@ -16,7 +16,8 @@ import (
 
 // Crypto signs and verifies the config envelope and tracks the replay epoch. The
 // production implementation is cryptoprocessor.ConfigCrypto (the presence-enforced master
-// key + the keychain epoch item); tests use a fake. Sign requires user presence;
+// key + the platform replay epoch — a keychain item on macOS, a TPM NV counter on
+// Linux); tests use a fake. Sign requires user presence;
 // Verify, Epoch and Increment do not.
 //
 // The epoch is advanced via Increment (returning the new value) rather than a

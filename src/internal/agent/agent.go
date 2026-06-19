@@ -63,34 +63,34 @@ type SignerSource interface {
 	Signer(label, tag string) (ssh.Signer, error)
 }
 
-// EnclaveSource is the production SignerSource, backed by the secure element.
-type EnclaveSource struct{}
+// CryptoprocessorSource is the production SignerSource, backed by the secure cryptoprocessor (Secure Enclave or TPM).
+type CryptoprocessorSource struct{}
 
-// Signer returns an enclave-backed ssh.Signer for the given label and tag.
-func (EnclaveSource) Signer(label, tag string) (ssh.Signer, error) {
+// Signer returns a cryptoprocessor-backed ssh.Signer for the given label and tag.
+func (CryptoprocessorSource) Signer(label, tag string) (ssh.Signer, error) {
 	return cryptoprocessor.OpenLabelTag(label, tag).Signer()
 }
 
-// EnclaveStore is the production Store. Keys are enumerated from the secure
-// element — the source of truth for which keys exist — and TTLs come from the
+// CryptoprocessorStore is the production Store. Keys are enumerated from the cryptoprocessor
+// — the source of truth for which keys exist — and TTLs come from the
 // signed config registry. The config is re-verified only when registry.json
 // changes (see config), so a `sinete config` write is picked up promptly without
 // re-reading and re-verifying on every signature. A config that fails
 // verification (for any reason) yields strict TTLs (0/0 — authenticate every
 // signature): Effective returns "" when the store is untrusted, so this is the
 // fail-CLOSED path — tampering can only tighten, never relax.
-type EnclaveStore struct {
+type CryptoprocessorStore struct {
 	mu    sync.Mutex
 	cfg   *registry.Config
 	stamp string // mtime:size of registry.json at last load ("absent" if missing)
 }
 
-// NewEnclaveStore returns the production Store.
-func NewEnclaveStore() *EnclaveStore { return &EnclaveStore{} }
+// NewCryptoprocessorStore returns the production Store.
+func NewCryptoprocessorStore() *CryptoprocessorStore { return &CryptoprocessorStore{} }
 
 // Keys enumerates the secure element and presents each key as a registry.Entry
 // (the on-the-fly index the agent's matching/signing logic expects).
-func (s *EnclaveStore) Keys() ([]registry.Entry, error) {
+func (s *CryptoprocessorStore) Keys() ([]registry.Entry, error) {
 	listed, err := cryptoprocessor.List()
 	if err != nil {
 		return nil, err
@@ -109,7 +109,7 @@ func (s *EnclaveStore) Keys() ([]registry.Entry, error) {
 // untrusted; only a configured, verified value relaxes from strict. (max == 0 or
 // idle == 0 both force a prompt every signature, so an unset presence-max-ttl
 // keeps a configured presence-ttl strict — the ceiling is enforced structurally.)
-func (s *EnclaveStore) TTL(name string) (idle, max time.Duration) {
+func (s *CryptoprocessorStore) TTL(name string) (idle, max time.Duration) {
 	cfg := s.config()
 	if cfg == nil {
 		return 0, 0
@@ -129,7 +129,7 @@ func (s *EnclaveStore) TTL(name string) (idle, max time.Duration) {
 // `sinete config` write promptly — a write atomically replaces the file, changing
 // its stamp. Tamper/replay is still caught: any on-disk change reloads and
 // re-verifies (and the verify itself checks signature + keychain epoch).
-func (s *EnclaveStore) config() *registry.Config {
+func (s *CryptoprocessorStore) config() *registry.Config {
 	path, err := registry.ConfigPath()
 	if err != nil {
 		return nil
