@@ -42,7 +42,7 @@ func RequireLocalSelf() error {
 		return fmt.Errorf("cannot confirm a local session for a presence-gated operation; refusing: %w", err)
 	}
 	if !local {
-		return errors.New("refusing a presence-gated operation from a remote session — change sinete's presence config at the machine (as on macOS, where this needs Touch ID)")
+		return errors.New("refusing a presence-gated operation from a remote session — run sinete from a local session at the machine, where the master-key PIN is entered")
 	}
 	return nil
 }
