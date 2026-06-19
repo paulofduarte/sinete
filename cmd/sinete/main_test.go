@@ -4,6 +4,9 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"net"
 	"os"
 	"path/filepath"
@@ -11,6 +14,8 @@ import (
 	"time"
 
 	"github.com/paulofduarte/sinete/internal/registry"
+	"golang.org/x/crypto/ssh"
+	xagent "golang.org/x/crypto/ssh/agent"
 )
 
 // Keys come from secure-element enumeration (which needs the entitled bundle), so
@@ -67,6 +72,59 @@ func TestSameSocket(t *testing.T) {
 	}
 	if sameSocket(sock, filepath.Join(dir, "nope.sock")) {
 		t.Error("a nonexistent path should not match")
+	}
+}
+
+// recordingAgent is a stub presenceDenyingAgent that records which presence-denying
+// sign variant the wrapper routed to. The nil embedded interface supplies the other
+// methods (unused by the test). The refuse-vs-delegate decision itself is tested
+// authoritatively in internal/agent (TestSignDenyingPresence); here we only assert
+// the wrapper routes signing through the *DenyingPresence path rather than the
+// prompting one.
+type recordingAgent struct {
+	xagent.ExtendedAgent
+	denied, deniedFlags bool
+}
+
+func (r *recordingAgent) SignDenyingPresence(ssh.PublicKey, []byte) (*ssh.Signature, error) {
+	r.denied = true
+	return &ssh.Signature{}, nil
+}
+
+func (r *recordingAgent) SignWithFlagsDenyingPresence(ssh.PublicKey, []byte, xagent.SignatureFlags) (*ssh.Signature, error) {
+	r.deniedFlags = true
+	return &ssh.Signature{}, nil
+}
+
+func testPub(t *testing.T) ssh.PublicKey {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := ssh.NewPublicKey(&priv.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pub
+}
+
+func TestRemoteRefusingAgent(t *testing.T) {
+	stub := &recordingAgent{}
+	r := remoteRefusingAgent{stub}
+
+	if _, err := r.Sign(testPub(t), []byte("x")); err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	if !stub.denied {
+		t.Error("Sign should route through SignDenyingPresence")
+	}
+
+	if _, err := r.SignWithFlags(testPub(t), []byte("x"), 0); err != nil {
+		t.Fatalf("SignWithFlags: %v", err)
+	}
+	if !stub.deniedFlags {
+		t.Error("SignWithFlags should route through SignWithFlagsDenyingPresence")
 	}
 }
 

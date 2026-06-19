@@ -1268,7 +1268,16 @@ func cmdAgent(args []string) error {
 			}
 			go func() {
 				defer conn.Close()
-				_ = xagent.ServeAgent(a, conn)
+				// A peer that can't satisfy a presence prompt (a remote/SSH or
+				// otherwise headless session) would make presence-gated signing hang
+				// on an invisible prompt, so refuse signing our enclave keys for it
+				// (List and upstream keys still work). This is a property of the
+				// connection's peer, computed once here; see remote.go.
+				served := xagent.ExtendedAgent(a)
+				if presenceUnavailable(conn) {
+					served = remoteRefusingAgent{a}
+				}
+				_ = xagent.ServeAgent(served, conn)
 			}()
 		}
 	}()
