@@ -31,7 +31,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/paulofduarte/sinete/internal/enclave"
+	"github.com/paulofduarte/sinete/internal/cryptoprocessor"
 	"github.com/paulofduarte/sinete/internal/registry"
 	"golang.org/x/crypto/ssh"
 	xagent "golang.org/x/crypto/ssh/agent"
@@ -68,7 +68,7 @@ type EnclaveSource struct{}
 
 // Signer returns an enclave-backed ssh.Signer for the given label and tag.
 func (EnclaveSource) Signer(label, tag string) (ssh.Signer, error) {
-	return enclave.OpenLabelTag(label, tag).Signer()
+	return cryptoprocessor.OpenLabelTag(label, tag).Signer()
 }
 
 // EnclaveStore is the production Store. Keys are enumerated from the secure
@@ -91,14 +91,14 @@ func NewEnclaveStore() *EnclaveStore { return &EnclaveStore{} }
 // Keys enumerates the secure element and presents each key as a registry.Entry
 // (the on-the-fly index the agent's matching/signing logic expects).
 func (s *EnclaveStore) Keys() ([]registry.Entry, error) {
-	listed, err := enclave.List()
+	listed, err := cryptoprocessor.List()
 	if err != nil {
 		return nil, err
 	}
 	out := make([]registry.Entry, 0, len(listed))
 	for _, k := range listed {
 		line := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(k.PublicKey))) + " " + k.Name
-		out = append(out, registry.Entry{Name: k.Name, Label: k.Label, Tag: enclave.Tag, PublicKey: line})
+		out = append(out, registry.Entry{Name: k.Name, Label: k.Label, Tag: cryptoprocessor.Tag, PublicKey: line})
 	}
 	return out, nil
 }
@@ -145,7 +145,7 @@ func (s *EnclaveStore) config() *registry.Config {
 	if s.cfg != nil && s.stamp == stamp {
 		return s.cfg
 	}
-	cfg, _, err := registry.OpenConfig(path, enclave.ConfigCrypto{})
+	cfg, _, err := registry.OpenConfig(path, cryptoprocessor.ConfigCrypto{})
 	if err != nil {
 		return nil
 	}

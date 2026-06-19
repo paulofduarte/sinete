@@ -24,7 +24,7 @@ import (
 	"time"
 
 	"github.com/paulofduarte/sinete/internal/agent"
-	"github.com/paulofduarte/sinete/internal/enclave"
+	"github.com/paulofduarte/sinete/internal/cryptoprocessor"
 	"github.com/paulofduarte/sinete/internal/install"
 	"github.com/paulofduarte/sinete/internal/loginitem"
 	"github.com/paulofduarte/sinete/internal/presence"
@@ -111,7 +111,7 @@ func openConfig() (*registry.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg, trusted, err := registry.OpenConfig(path, enclave.ConfigCrypto{})
+	cfg, trusted, err := registry.OpenConfig(path, cryptoprocessor.ConfigCrypto{})
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +126,7 @@ func openConfig() (*registry.Config, error) {
 func saveConfig(cfg *registry.Config) error {
 	// Creating the master key needs no presence; signing with it does — so the
 	// first `sinete config` on a fresh install creates it, then signs.
-	if err := enclave.EnsureMaster(); err != nil {
+	if err := cryptoprocessor.EnsureMaster(); err != nil {
 		return fmt.Errorf("ensure master key: %w", err)
 	}
 	return cfg.Save()
@@ -145,13 +145,13 @@ func cmdGenerate(args []string) error {
 
 	// Keys are enumerated from the secure element, so a new key needs no registry
 	// write (and thus no presence prompt). Reject a name already in use.
-	if _, ok, err := enclave.Find(name); err != nil {
+	if _, ok, err := cryptoprocessor.Find(name); err != nil {
 		return err
 	} else if ok {
 		return fmt.Errorf("key %q already exists", name)
 	}
 
-	key, err := enclave.Create(enclave.DefaultLabelPrefix, name)
+	key, err := cryptoprocessor.Create(cryptoprocessor.DefaultLabelPrefix, name)
 	if err != nil {
 		return err
 	}
@@ -167,7 +167,7 @@ func cmdGenerate(args []string) error {
 func cmdList(args []string) error {
 	// Keys are enumerated from the secure element, the source of truth for which
 	// keys exist (the registry no longer stores them).
-	keys, err := enclave.List()
+	keys, err := cryptoprocessor.List()
 	if err != nil {
 		return err
 	}
@@ -182,7 +182,7 @@ func cmdExport(args []string) error {
 		return errors.New("usage: sinete export <name>")
 	}
 	name := args[0]
-	keys, err := enclave.List()
+	keys, err := cryptoprocessor.List()
 	if err != nil {
 		return err
 	}
@@ -212,7 +212,7 @@ func cmdSshSetup(args []string) error {
 		return err
 	}
 
-	listed, ok, err := enclave.Find(name)
+	listed, ok, err := cryptoprocessor.Find(name)
 	if err != nil {
 		return err
 	}
@@ -273,7 +273,7 @@ func cmdDelete(args []string) error {
 		return errors.New("usage: sinete delete <name>")
 	}
 	name := args[0]
-	listed, ok, err := enclave.Find(name)
+	listed, ok, err := cryptoprocessor.Find(name)
 	if err != nil {
 		return err
 	}
@@ -297,7 +297,7 @@ func cmdDelete(args []string) error {
 		return err
 	}
 
-	if err := enclave.OpenLabelTag(listed.Label, enclave.Tag).Remove(); err != nil {
+	if err := cryptoprocessor.OpenLabelTag(listed.Label, cryptoprocessor.Tag).Remove(); err != nil {
 		return err
 	}
 	fmt.Printf("deleted %s\n", name)
@@ -312,14 +312,14 @@ func cmdSign(args []string) error {
 		return errors.New("usage: sinete sign <name>")
 	}
 	name := args[0]
-	listed, ok, err := enclave.Find(name)
+	listed, ok, err := cryptoprocessor.Find(name)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return fmt.Errorf("no key named %q", name)
 	}
-	signer, err := enclave.OpenLabelTag(listed.Label, enclave.Tag).Signer()
+	signer, err := cryptoprocessor.OpenLabelTag(listed.Label, cryptoprocessor.Tag).Signer()
 	if err != nil {
 		return err
 	}
@@ -338,7 +338,7 @@ func cmdSign(args []string) error {
 // ACL is enforced; pubkey and epoch reads must NOT prompt.
 func cmdEnclaveCheck(args []string) error {
 	fmt.Println("== enumerate user keys ==")
-	keys, err := enclave.List()
+	keys, err := cryptoprocessor.List()
 	if err != nil {
 		return fmt.Errorf("enumerate: %w", err)
 	}
@@ -352,10 +352,10 @@ func cmdEnclaveCheck(args []string) error {
 	fmt.Printf("  (%d key(s))\n", len(keys))
 
 	fmt.Println("== master key ==")
-	if err := enclave.EnsureMaster(); err != nil {
+	if err := cryptoprocessor.EnsureMaster(); err != nil {
 		return fmt.Errorf("ensure master: %w", err)
 	}
-	mpub, err := enclave.MasterPublicKey()
+	mpub, err := cryptoprocessor.MasterPublicKey()
 	if err != nil {
 		return err
 	}
@@ -363,7 +363,7 @@ func cmdEnclaveCheck(args []string) error {
 
 	fmt.Println("== master sign (a presence prompt may appear: Touch ID on macOS; presence-less on Linux v1) ==")
 	msg := []byte("sinete enclave-check")
-	sig, err := enclave.MasterSign(msg)
+	sig, err := cryptoprocessor.MasterSign(msg)
 	if err != nil {
 		return fmt.Errorf("master sign: %w", err)
 	}
@@ -377,7 +377,7 @@ func cmdEnclaveCheck(args []string) error {
 	// against a *scratch* epoch (a separate NV index / keychain item) that is removed
 	// afterwards — the real registry.json's replay counter is never touched.
 	fmt.Println("== signed config round-trip (real master key, scratch epoch, throwaway file) ==")
-	crypto, cleanupEpoch, err := enclave.NewScratchConfigCrypto()
+	crypto, cleanupEpoch, err := cryptoprocessor.NewScratchConfigCrypto()
 	if err != nil {
 		return fmt.Errorf("scratch epoch: %w", err)
 	}
@@ -581,7 +581,7 @@ func configKey(cfg *registry.Config, rest []string) error {
 	}
 	name := rest[0]
 	rest = rest[1:]
-	if _, ok, err := enclave.Find(name); err != nil {
+	if _, ok, err := cryptoprocessor.Find(name); err != nil {
 		return err
 	} else if !ok {
 		return fmt.Errorf("no key named %q", name)
@@ -823,7 +823,7 @@ func cmdStatus(args []string) error {
 		Fingerprint string `json:"fingerprint"`
 	}
 	keys := make([]keyInfo, 0)
-	listed, err := enclave.List()
+	listed, err := cryptoprocessor.List()
 	if err != nil {
 		return err
 	}
@@ -1126,19 +1126,19 @@ func cmdUninstall(args []string) error {
 		fmt.Println("uninstalled: login item, link, PATH, and generated .pub files removed (keys kept)")
 		return nil
 	}
-	listed, err := enclave.List()
+	listed, err := cryptoprocessor.List()
 	if err != nil {
 		return err
 	}
 	removed := 0
 	for _, k := range listed {
-		if err := enclave.OpenLabelTag(k.Label, enclave.Tag).Remove(); err != nil {
+		if err := cryptoprocessor.OpenLabelTag(k.Label, cryptoprocessor.Tag).Remove(); err != nil {
 			return fmt.Errorf("remove key %q: %w", k.Name, err)
 		}
 		removed++
 	}
 	// Also remove the internal master key + epoch item, and the config files.
-	if err := enclave.RemoveMaster(); err != nil {
+	if err := cryptoprocessor.RemoveMaster(); err != nil {
 		return fmt.Errorf("remove master key: %w", err)
 	}
 	if p, perr := registry.ConfigPath(); perr == nil {

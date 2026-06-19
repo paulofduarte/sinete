@@ -10,7 +10,7 @@
 //
 // Key enumeration and the presence-enforced master key now go through sks (see
 // master.go); only the epoch item remains here.
-package enclave
+package cryptoprocessor
 
 /*
 #cgo LDFLAGS: -framework CoreFoundation -framework Security
@@ -43,7 +43,7 @@ func cfString(s string) (C.CFStringRef, error) {
 	}
 	ref := C.CFStringCreateWithBytes(C.kCFAllocatorDefault, p, C.CFIndex(len(b)), C.kCFStringEncodingUTF8, C.false)
 	if ref == nilCFString {
-		return nilCFString, fmt.Errorf("enclave: CFStringCreateWithBytes failed")
+		return nilCFString, fmt.Errorf("cryptoprocessor: CFStringCreateWithBytes failed")
 	}
 	return ref, nil
 }
@@ -55,7 +55,7 @@ func cfData(b []byte) (C.CFDataRef, error) {
 	}
 	ref := C.CFDataCreate(C.kCFAllocatorDefault, p, C.CFIndex(len(b)))
 	if ref == nilCFData {
-		return nilCFData, fmt.Errorf("enclave: CFDataCreate failed")
+		return nilCFData, fmt.Errorf("cryptoprocessor: CFDataCreate failed")
 	}
 	return ref, nil
 }
@@ -75,7 +75,7 @@ func cfDictionary(m map[C.CFTypeRef]C.CFTypeRef) (C.CFDictionaryRef, error) {
 	ref := C.CFDictionaryCreate(C.kCFAllocatorDefault, kp, vp, C.CFIndex(len(m)),
 		&C.kCFTypeDictionaryKeyCallBacks, &C.kCFTypeDictionaryValueCallBacks)
 	if ref == nilCFDictionary {
-		return nilCFDictionary, fmt.Errorf("enclave: CFDictionaryCreate failed")
+		return nilCFDictionary, fmt.Errorf("cryptoprocessor: CFDictionaryCreate failed")
 	}
 	return ref, nil
 }
@@ -91,7 +91,7 @@ func osError(status C.OSStatus, op string) error {
 	if status == C.errSecSuccess {
 		return nil
 	}
-	return fmt.Errorf("enclave: %s: OSStatus %d", op, int(status))
+	return fmt.Errorf("cryptoprocessor: %s: OSStatus %d", op, int(status))
 }
 
 // --- epoch generic-password item (presence-less) ---
@@ -243,7 +243,7 @@ func epochGetAt(account string) (uint64, bool, error) {
 		return 0, false, nil
 	}
 	if len(b) != 8 {
-		return 0, false, fmt.Errorf("enclave: epoch item is %d bytes, want 8", len(b))
+		return 0, false, fmt.Errorf("cryptoprocessor: epoch item is %d bytes, want 8", len(b))
 	}
 	return binary.BigEndian.Uint64(b), true, nil
 }

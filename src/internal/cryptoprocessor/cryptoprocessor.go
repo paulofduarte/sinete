@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Paulo Duarte
 // SPDX-License-Identifier: Apache-2.0
 
-// Package enclave wraps facebookincubator/sks to create, open, sign with and
+// Package cryptoprocessor wraps facebookincubator/sks to create, open, sign with and
 // remove sinete's secure-element keys.
 //
 // It maps a human name to the (label, tag) that sks identifies a key by, and
 // exposes keys as ssh.Signer / ssh.PublicKey so the agent and CLI never touch
 // platform crypto directly. Algorithm is always ECDSA P-256 (a Secure Enclave
 // constraint).
-package enclave
+package cryptoprocessor
 
 import (
 	"crypto/ecdsa"

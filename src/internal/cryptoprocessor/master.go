@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Paulo Duarte
 // SPDX-License-Identifier: Apache-2.0
 
-package enclave
+package cryptoprocessor
 
 import (
 	"crypto/ecdsa"
@@ -71,7 +71,7 @@ func List() ([]Listed, error) {
 		}
 		pub, err := ssh.NewPublicKey(ecPub)
 		if err != nil {
-			return nil, fmt.Errorf("enclave: key %q: %w", label, err)
+			return nil, fmt.Errorf("cryptoprocessor: key %q: %w", label, err)
 		}
 		out = append(out, Listed{Name: name, Label: label, PublicKey: pub, Created: k.Created})
 	}
@@ -126,7 +126,7 @@ func EnsureMaster() error {
 		if _, perr := masterKey().PublicKey(); perr == nil {
 			return nil
 		}
-		return fmt.Errorf("enclave: create master key: %w", err)
+		return fmt.Errorf("cryptoprocessor: create master key: %w", err)
 	}
 	return nil
 }
@@ -140,7 +140,7 @@ func masterKey() *Key { return OpenLabelTag(MasterLabel, Tag) }
 func MasterPublicKey() (ssh.PublicKey, error) {
 	pub, err := masterKey().PublicKey()
 	if err != nil {
-		return nil, fmt.Errorf("enclave: master key not available (run a config write to create it): %w", err)
+		return nil, fmt.Errorf("cryptoprocessor: master key not available (run a config write to create it): %w", err)
 	}
 	return pub, nil
 }

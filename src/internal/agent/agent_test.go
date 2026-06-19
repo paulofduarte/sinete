@@ -49,7 +49,7 @@ func (s *mutableStore) set(entries ...registry.Entry) {
 	s.entries = entries
 }
 
-// fakeSource resolves labels to in-memory signers, standing in for the enclave.
+// fakeSource resolves labels to in-memory signers, standing in for the cryptoprocessor.
 type fakeSource struct{ signers map[string]ssh.Signer }
 
 func (f fakeSource) Signer(label, _ string) (ssh.Signer, error) {

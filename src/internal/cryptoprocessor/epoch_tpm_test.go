@@ -6,8 +6,8 @@
 // Exercises the platform-neutral NV monotonic-counter algorithm (epoch_tpm.go)
 // against the in-process go-tpm simulator, so the tricky TPM interactions are
 // verified without a real device or QEMU. Build/run with: go test -tags tpmsim
-// ./internal/enclave (needs OpenSSL headers for the cgo simulator).
-package enclave
+// ./internal/cryptoprocessor (needs OpenSSL headers for the cgo simulator).
+package cryptoprocessor
 
 import (
 	"testing"

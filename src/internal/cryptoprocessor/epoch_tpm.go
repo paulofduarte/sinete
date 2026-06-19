@@ -11,7 +11,7 @@
 // from a plain darwin build, where nothing would use it. The epoch design
 // (anti-rollback, increment-only, owner auth) is documented in epoch_linux.go and
 // PLATFORM-AUDIT.md §4.3.
-package enclave
+package cryptoprocessor
 
 import (
 	"encoding/binary"
@@ -25,7 +25,7 @@ import (
 // errCounterUndefined is returned when an increment is attempted on an NV index that
 // has not been defined — production never hits this (EnsureMaster defines it first),
 // so it surfaces as a fail-closed epoch mismatch rather than silent trust.
-var errCounterUndefined = errors.New("enclave: epoch counter is not defined (run sinete install / a config write first)")
+var errCounterUndefined = errors.New("cryptoprocessor: epoch counter is not defined (run sinete install / a config write first)")
 
 // Owner-hierarchy NV ops are authorized with a plain password session (an empty
 // owner auth), passed as the bare tpm2.TPMRHOwner handle. NOT an HMAC session: an
@@ -65,11 +65,11 @@ func nvReadPublic(t transport.TPM, index tpm2.TPMHandle) (name tpm2.TPM2BName, w
 		if errors.Is(e, tpm2.TPMRCHandle) {
 			return tpm2.TPM2BName{}, false, false, nil
 		}
-		return tpm2.TPM2BName{}, false, false, fmt.Errorf("enclave: NV read public: %w", e)
+		return tpm2.TPM2BName{}, false, false, fmt.Errorf("cryptoprocessor: NV read public: %w", e)
 	}
 	pub, e := rsp.NVPublic.Contents()
 	if e != nil {
-		return tpm2.TPM2BName{}, false, false, fmt.Errorf("enclave: NV public contents: %w", e)
+		return tpm2.TPM2BName{}, false, false, fmt.Errorf("cryptoprocessor: NV public contents: %w", e)
 	}
 	return rsp.NVName, pub.Attributes.Written, true, nil
 }
@@ -82,10 +82,10 @@ func nvReadValue(t transport.TPM, index tpm2.TPMHandle, name tpm2.TPM2BName) (ui
 		Size:       8,
 	}).Execute(t)
 	if err != nil {
-		return 0, fmt.Errorf("enclave: NV read epoch: %w", err)
+		return 0, fmt.Errorf("cryptoprocessor: NV read epoch: %w", err)
 	}
 	if len(rsp.Data.Buffer) != 8 {
-		return 0, fmt.Errorf("enclave: epoch counter is %d bytes, want 8", len(rsp.Data.Buffer))
+		return 0, fmt.Errorf("cryptoprocessor: epoch counter is %d bytes, want 8", len(rsp.Data.Buffer))
 	}
 	return binary.BigEndian.Uint64(rsp.Data.Buffer), nil
 }
@@ -96,7 +96,7 @@ func nvIncrement(t transport.TPM, index tpm2.TPMHandle, name tpm2.TPM2BName) err
 		AuthHandle: tpm2.TPMRHOwner,
 		NVIndex:    tpm2.NamedHandle{Handle: index, Name: name},
 	}).Execute(t); err != nil {
-		return fmt.Errorf("enclave: NV increment epoch: %w", err)
+		return fmt.Errorf("cryptoprocessor: NV increment epoch: %w", err)
 	}
 	return nil
 }
@@ -114,7 +114,7 @@ func tpmEnsureCounter(t transport.TPM, index tpm2.TPMHandle) error {
 			AuthHandle: tpm2.TPMRHOwner,
 			PublicInfo: tpm2.New2B(nvCounterPublic(index)),
 		}).Execute(t); err != nil {
-			return fmt.Errorf("enclave: NV define epoch counter: %w", err)
+			return fmt.Errorf("cryptoprocessor: NV define epoch counter: %w", err)
 		}
 		written = false
 	}
@@ -124,7 +124,7 @@ func tpmEnsureCounter(t transport.TPM, index tpm2.TPMHandle) error {
 			return err
 		}
 		if err := nvIncrement(t, index, name); err != nil {
-			return fmt.Errorf("enclave: initialize epoch counter: %w", err)
+			return fmt.Errorf("cryptoprocessor: initialize epoch counter: %w", err)
 		}
 	}
 	return nil
@@ -188,7 +188,7 @@ func tpmCounterDelete(t transport.TPM, index tpm2.TPMHandle) error {
 		AuthHandle: tpm2.TPMRHOwner,
 		NVIndex:    tpm2.NamedHandle{Handle: index, Name: name},
 	}).Execute(t); err != nil {
-		return fmt.Errorf("enclave: NV undefine epoch: %w", err)
+		return fmt.Errorf("cryptoprocessor: NV undefine epoch: %w", err)
 	}
 	return nil
 }

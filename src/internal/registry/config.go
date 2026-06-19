@@ -15,7 +15,7 @@ import (
 )
 
 // Crypto signs and verifies the config envelope and tracks the replay epoch. The
-// production implementation is enclave.ConfigCrypto (the presence-enforced master
+// production implementation is cryptoprocessor.ConfigCrypto (the presence-enforced master
 // key + the keychain epoch item); tests use a fake. Sign requires user presence;
 // Verify, Epoch and Increment do not.
 //

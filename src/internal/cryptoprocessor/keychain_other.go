@@ -3,7 +3,7 @@
 
 //go:build !darwin && !linux
 
-package enclave
+package cryptoprocessor
 
 import "errors"
 
@@ -11,7 +11,7 @@ import "errors"
 // enumeration and the master key now go through sks directly (see master.go); only
 // the epoch remains platform-specific — macOS is a keychain item (keychain_darwin.go),
 // Linux a TPM NV counter (epoch_linux.go).
-var errUnsupported = errors.New("enclave: replay-epoch backend is not implemented on this platform")
+var errUnsupported = errors.New("cryptoprocessor: replay-epoch backend is not implemented on this platform")
 
 func ensureEpoch() error              { return errUnsupported }
 func epochGet() (uint64, bool, error) { return 0, false, errUnsupported }

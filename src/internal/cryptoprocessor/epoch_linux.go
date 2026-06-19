@@ -17,7 +17,7 @@
 // non-empty owner auth the define/increment calls fail with a clear TPM error — a
 // documented v1 limitation. Anti-rollback holds regardless of who can reach the
 // device, because monotonicity is enforced by the TPM, so no custom policy is needed.
-package enclave
+package cryptoprocessor
 
 import (
 	"fmt"
@@ -42,7 +42,7 @@ const (
 func openTPM() (transport.TPMCloser, error) {
 	t, err := transport.OpenTPM(tpmDevice)
 	if err != nil {
-		return nil, fmt.Errorf("enclave: open %s: %w", tpmDevice, err)
+		return nil, fmt.Errorf("cryptoprocessor: open %s: %w", tpmDevice, err)
 	}
 	return t, nil
 }
