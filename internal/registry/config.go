@@ -363,11 +363,14 @@ func (c *Config) Save() error {
 	// Advance the epoch so the next save signs a higher value and this one becomes
 	// the latest. Freshness is *enforced* on load by OpenConfig (trust iff the
 	// signed epoch equals the live counter); the got==next check here is only a
-	// sanity assertion that the advance behaved (under the config lock the read
-	// above is stable, and the counter is sinete-private, so Increment lands on
-	// next). If it errors or lands elsewhere, the on-disk epoch no longer matches
-	// the counter, so a reload distrusts the file anyway — mark this instance
-	// untrusted too to stay fail-safe and consistent with OpenConfig.
+	// sanity assertion that the advance behaved. Under the config lock the read
+	// above is stable and nothing else should be advancing sinete's epoch, so
+	// Increment normally lands on next — but that is an assumption, not a guarantee:
+	// the Linux backend is a fixed NV index with empty owner-auth in v1, so another
+	// process with TPM access could increment it. If Increment errors or lands
+	// elsewhere, the on-disk epoch no longer matches the counter, so a reload
+	// distrusts the file anyway — mark this instance untrusted too to stay fail-safe
+	// and consistent with OpenConfig.
 	got, err := c.crypto.Increment()
 	if err != nil {
 		c.trusted = false

@@ -22,8 +22,10 @@ func (scratchConfigCrypto) Increment() (uint64, error) { return scratchEpochIncr
 
 // NewScratchConfigCrypto returns a registry.Crypto for diagnostics — master-key
 // Sign/Verify over a throwaway epoch — plus a cleanup that removes the scratch epoch.
-// It provisions the scratch slot up front (the parity EnsureMaster gives production),
-// so the first Save reads a real value and its Increment lands on Epoch()+1.
+// It provisions the scratch slot up front (the parity EnsureMaster gives production):
+// on Linux this defines+initializes the TPM counter so Epoch() reads a real value; on
+// macOS it is a no-op (the keychain item is lazy, so the first read is 0/absent).
+// Either way the scratch backend is usable and Increment lands on Epoch()+1.
 func NewScratchConfigCrypto() (crypto registry.Crypto, cleanup func() error, err error) {
 	if err := scratchEpochEnsure(); err != nil {
 		return nil, nil, err
