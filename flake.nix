@@ -193,7 +193,7 @@
           # Vendor hash of the Go module set (sks is upstream facebookincubator/sks;
           # the paulofduarte/sks fork was dropped in v2, so there's no replace).
           # Regenerate with `nix build` if go.mod/go.sum change; it prints the new hash.
-          vendorHash = "sha256-FeGf4tFVs4S0lgKXGYJfpR0rU2v4lOUmiSf8pcYXbTk=";
+          vendorHash = "sha256-1t0H3IEj5FUFS9+hjbfzSDQqt5ERGxBStBbKWTSwL54=";
 
           # sks talks to the platform secure element via cgo.
           env.CGO_ENABLED = "1";
