@@ -23,9 +23,10 @@ import (
 //     access (it is remote/SSH, or otherwise headless), so the LocalAuthentication
 //     Touch ID sheet cannot be drawn. Signal: SessionGetInfo on the peer's audit
 //     session id.
-//   - linux (future): the peer's logind session is remote (sd_session_is_remote).
-//     A local text console is NOT unavailable there — pinentry can prompt on a tty,
-//     so only genuinely remote sessions are refused.
+//   - linux (remote_linux.go): the peer's logind session is remote (its Session
+//     Remote property, resolved from the SO_PEERCRED pid). A local text console is
+//     NOT unavailable there — pinentry can prompt on a tty, so only genuinely remote
+//     sessions are refused.
 //   - other (remote_other.go): always false until a platform implements it.
 //
 // Detectors are conservative: on any uncertainty they return false (treat the peer

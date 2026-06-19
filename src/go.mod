@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/facebookincubator/sks v0.0.0-20260414012743-2ba33de48bd7
+	github.com/godbus/dbus/v5 v5.2.2
 	github.com/google/go-tpm v0.9.0
 	golang.org/x/crypto v0.53.0
 	golang.org/x/sys v0.46.0
