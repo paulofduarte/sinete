@@ -106,7 +106,7 @@ func tpmEnsureCounter(t transport.TPM, index tpm2.TPMHandle) error {
 	}
 	if !exists {
 		if _, err := (tpm2.NVDefineSpace{
-			AuthHandle: tpm2.TPMRHOwner,
+			AuthHandle: tpm2.AuthHandle{Handle: tpm2.TPMRHOwner, Auth: ownerAuth()},
 			PublicInfo: tpm2.New2B(nvCounterPublic(index)),
 		}).Execute(t); err != nil {
 			return fmt.Errorf("enclave: NV define epoch counter: %w", err)
@@ -176,10 +176,11 @@ func tpmCounterDelete(t transport.TPM, index tpm2.TPMHandle) error {
 	if !exists {
 		return nil
 	}
-	// NVUndefineSpace is owner-authorized with an HMAC session, so the NV index must
-	// be a NamedHandle (its Name feeds the session's command hash).
+	// Owner-authorized via the same empty-password HMAC session as the other NV ops;
+	// the NV index is a NamedHandle carrying its current Name, which go-tpm needs to
+	// identify and authorize the indexed object (its Name feeds the session's hash).
 	if _, err := (tpm2.NVUndefineSpace{
-		AuthHandle: tpm2.TPMRHOwner,
+		AuthHandle: tpm2.AuthHandle{Handle: tpm2.TPMRHOwner, Auth: ownerAuth()},
 		NVIndex:    tpm2.NamedHandle{Handle: index, Name: name},
 	}).Execute(t); err != nil {
 		return fmt.Errorf("enclave: NV undefine epoch: %w", err)
