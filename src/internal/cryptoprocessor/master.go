@@ -130,7 +130,9 @@ func EnsureMaster() error {
 		// Tolerate a concurrent creator: if the key now exists, another process
 		// won the race and that is success, not a duplicate-item failure. We do NOT
 		// cache our pin here — the key was created by the other process, possibly with
-		// a different PIN, so the next sign must prompt rather than reuse ours.
+		// a different PIN, so the next sign must prompt rather than reuse ours. Our pin
+		// is therefore unused: erase it now rather than leave it for the GC.
+		wipe(pin)
 		if _, perr := masterKey().PublicKey(); perr == nil {
 			return nil
 		}
@@ -145,6 +147,17 @@ func EnsureMaster() error {
 // masterKey opens the master key via sks (by label+tag). Signing through it
 // triggers the user-presence prompt the key's ACL requires.
 func masterKey() *Key { return OpenLabelTag(MasterLabel, Tag) }
+
+// wipe zeroes a PIN buffer once it is no longer needed, shrinking the window the
+// secret sits in memory. It is best-effort: a PIN that originates as a Go string
+// (pinentry's return) leaves an immutable copy the GC owns and we cannot clear, and
+// sks may keep its own copy as the key handle's authValue. wipe(nil) is a no-op, so
+// the macOS/stub path (nil pin) is fine.
+func wipe(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
+}
 
 // MasterPublicKey returns the master key's public key (for verifying signed
 // config). Reading a public key requires no presence.
@@ -165,6 +178,9 @@ func MasterSign(data []byte) (*ssh.Signature, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Erase the PIN buffer as soon as the signature is done (success or failure), so
+	// the secret does not linger in memory until the GC runs.
+	defer wipe(pin)
 	// Open the master key with the authValue (nil on macOS, the PIN on Linux).
 	k := &Key{label: MasterLabel, inner: sks.FromLabelTag(MasterLabel+":"+Tag, sks.WithAuthValue(pin))}
 	signer, err := k.Signer()
