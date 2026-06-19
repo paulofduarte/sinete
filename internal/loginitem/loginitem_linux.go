@@ -6,7 +6,7 @@
 // On Linux the agent runs as a systemd *user* service — the per-user analogue of
 // the macOS launchd login item — managed with `systemctl --user`. The unit file
 // lives at $XDG_CONFIG_HOME/systemd/user/<AgentLabel>.service and runs the same
-// binary that performed the install. No cgo. See .claude/LINUX-INSTALL.md.
+// binary that performed the install. No cgo.
 //
 // To keep the agent running across logout / on a headless box, the user runs
 // `loginctl enable-linger`; that is documented, not done here.
@@ -130,17 +130,27 @@ func Status() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		return "not found", nil
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "not found", nil
+		}
+		return "", err
 	}
-	// is-enabled prints the state on stdout and exits non-zero for disabled/static;
-	// the printed word is what we want, so read it regardless of exit status.
-	out, _ := systemctl("is-enabled", unitName)
+	// The unit file exists, so it is at least registered — never "not found" here.
+	// is-enabled prints the state on stdout and exits non-zero for disabled/static, so
+	// the printed word is what we want regardless of exit status. But if systemctl
+	// itself fails (no systemd, not on PATH) it prints nothing; surface that error so
+	// Uninstall falls back to a best-effort Unregister rather than skipping it and
+	// leaving the unit file behind.
+	out, serr := systemctl("is-enabled", unitName)
 	switch out {
 	case "enabled", "enabled-runtime":
 		return "enabled", nil
 	case "":
-		return "not found", nil
+		if serr != nil {
+			return "", fmt.Errorf("systemctl is-enabled %s: %w", unitName, serr)
+		}
+		return "disabled", nil
 	default:
 		return "disabled", nil
 	}

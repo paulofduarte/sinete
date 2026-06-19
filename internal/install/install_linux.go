@@ -8,7 +8,7 @@
 // package / a manual copy and is invoked directly, so the macOS /usr/local/bin vs
 // ~/.local/bin link + launchctl PATH dance has no clean equivalent worth doing for
 // v1. Presence is presence-less on Linux v1, so `sinete install` skips presence
-// configuration (see cmd/sinete). See .claude/LINUX-INSTALL.md.
+// configuration (see cmd/sinete).
 package install
 
 import (

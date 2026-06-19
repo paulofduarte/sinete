@@ -8,8 +8,10 @@ package install
 import "testing"
 
 // PlanInstall on Linux describes a per-user service for the running binary, with no
-// PATH link in v1. (Install/Uninstall drive systemctl --user and are exercised
-// end-to-end in the QEMU integration test, which has a real user session bus.)
+// PATH link in v1. (Install/Uninstall drive systemctl --user, which needs a user
+// session bus; the QEMU integration test's minimal initramfs has none, so the service
+// path is not yet exercised end-to-end — only this plan + the loginitem unit-rendering
+// tests cover it. A fuller-userland VM is needed for the service e2e.)
 func TestPlanInstall(t *testing.T) {
 	p, err := PlanInstall()
 	if err != nil {

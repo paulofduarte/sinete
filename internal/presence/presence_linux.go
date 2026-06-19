@@ -13,6 +13,5 @@ package presence
 // SECURITY DELTA vs macOS: the TPM keys are still hardware-backed and every
 // signature is computed in-hardware, but there is no Secure-Enclave-style entitlement
 // wall and no presence confirmation, so any same-user process that can reach the
-// agent socket (mode 0600, in a 0700 dir) can use the keys. See
-// .claude/LINUX-PRESENCE.md and .claude/LINUX-INSTALL.md.
+// agent socket (mode 0600, in a 0700 dir) can use the keys.
 func Authenticate(string) error { return nil }

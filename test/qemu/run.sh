@@ -18,7 +18,9 @@ set -euo pipefail
 NIXPKGS="github:NixOS/nixpkgs/nixos-26.05" # match flake.nix
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-WORK="$(mktemp -d)"
+# Template form works on both GNU and BSD/macOS mktemp (GNU `mktemp -d` with no
+# template is not portable).
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/sinete-vm.XXXXXX")"
 export WORK
 # shellcheck disable=SC2329  # invoked indirectly by the EXIT trap
 cleanup() { rm -rf "$WORK"; }
@@ -49,13 +51,16 @@ fi
 export ACCEL CPU
 echo "== boot (accel=$ACCEL cpu=$CPU) =="
 
+# coreutils provides `timeout` (absent on a bare macOS). The inner script avoids
+# `set -e` and traps EXIT so swtpm is always stopped — even if qemu fails or `timeout`
+# kills it; the trailing `|| true` lets run.sh reach the verdict on a failed boot.
 # shellcheck disable=SC2016  # $WORK/$KERNEL/$ACCEL/$CPU are expanded by the inner bash (exported above), not here
-nix shell "$NIXPKGS#qemu" "$NIXPKGS#swtpm" -c bash -c '
-	set -e
+nix shell "$NIXPKGS#qemu" "$NIXPKGS#swtpm" "$NIXPKGS#coreutils" -c bash -c '
 	mkdir -p "$WORK/tpmstate"
 	swtpm socket --tpm2 --tpmstate dir="$WORK/tpmstate" \
 		--ctrl type=unixio,path="$WORK/swtpm-sock" --flags startup-clear &
 	SWTPM_PID=$!
+	trap "kill $SWTPM_PID 2>/dev/null || true" EXIT
 	sleep 1
 	timeout 600 qemu-system-x86_64 \
 		-machine q35 -accel "$ACCEL" -cpu "$CPU" -smp 2 -m 1024 -nographic \
@@ -64,8 +69,7 @@ nix shell "$NIXPKGS#qemu" "$NIXPKGS#swtpm" -c bash -c '
 		-chardev socket,id=chrtpm,path="$WORK/swtpm-sock" \
 		-tpmdev emulator,id=tpm0,chardev=chrtpm \
 		-device tpm-crb,tpmdev=tpm0
-	kill "$SWTPM_PID" 2>/dev/null || true
-' | tee "$WORK/boot.log"
+' | tee "$WORK/boot.log" || true
 
 echo "== verdict =="
 if grep -q "SINETE_VM_PASS" "$WORK/boot.log"; then
