@@ -80,15 +80,15 @@ func pinentryCandidates() []string {
 	return append(c, "pinentry-curses", "pinentry-tty", "pinentry")
 }
 
-// gpgAgentPinentryProgram returns the pinentry-program set in
-// $HOME/.gnupg/gpg-agent.conf, or "" if unset/absent. Reading the file does not
-// require gpg to be installed.
+// gpgAgentPinentryProgram returns the pinentry-program set in the user's
+// gpg-agent.conf, or "" if unset/absent. Reading the file does not require gpg to be
+// installed.
 func gpgAgentPinentryProgram() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	dir := gnupgHome()
+	if dir == "" {
 		return ""
 	}
-	data, err := os.ReadFile(filepath.Join(home, ".gnupg", "gpg-agent.conf"))
+	data, err := os.ReadFile(filepath.Join(dir, "gpg-agent.conf"))
 	if err != nil {
 		return ""
 	}
@@ -98,6 +98,19 @@ func gpgAgentPinentryProgram() string {
 		}
 	}
 	return ""
+}
+
+// gnupgHome returns GnuPG's home directory: $GNUPGHOME when set (GnuPG honours it to
+// relocate the whole config), else $HOME/.gnupg. Returns "" if neither resolves.
+func gnupgHome() string {
+	if h := os.Getenv("GNUPGHOME"); h != "" {
+		return h
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".gnupg")
 }
 
 // Get prompts for an existing PIN. title is the window title, desc the explanatory

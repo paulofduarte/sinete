@@ -22,9 +22,9 @@ func fakePinentry(t *testing.T, body string) {
 	if err := os.WriteFile(prog, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// go-pinentry resolves the program from $HOME/.gnupg/gpg-agent.conf, so point HOME
-	// at the throwaway dir to keep the selection deterministic (independent of the
-	// developer's / CI runner's real gnupg config).
+	// We resolve the program from gpg-agent.conf under $GNUPGHOME, so point GNUPGHOME at
+	// the throwaway dir to keep the selection deterministic (independent of the
+	// developer's / CI runner's real gnupg config) and to exercise the $GNUPGHOME path.
 	gnupg := filepath.Join(dir, ".gnupg")
 	if err := os.MkdirAll(gnupg, 0o700); err != nil {
 		t.Fatal(err)
@@ -32,7 +32,7 @@ func fakePinentry(t *testing.T, body string) {
 	if err := os.WriteFile(filepath.Join(gnupg, "gpg-agent.conf"), []byte("pinentry-program "+prog+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HOME", dir)
+	t.Setenv("GNUPGHOME", gnupg)
 	t.Setenv("GPG_TTY", "")
 }
 
@@ -82,6 +82,7 @@ func TestSetMatching(t *testing.T) {
 
 func TestNoPinentryFound(t *testing.T) {
 	// No gpg-agent.conf and an empty PATH ⇒ no pinentry program ⇒ a clear error.
+	t.Setenv("GNUPGHOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("PATH", "")
 	_, err := Get("title", "desc", "PIN:")
