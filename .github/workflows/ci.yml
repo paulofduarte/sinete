@@ -25,10 +25,10 @@ jobs:
       - name: lint + format
         run: nix flake check --accept-flake-config
       - name: golangci-lint
-        run: nix develop --accept-flake-config -c golangci-lint run ./...
+        run: nix develop --accept-flake-config -c bash -c 'cd src && golangci-lint run ./...'
       - name: swiftlint
         if: runner.os == 'macOS'
-        run: nix develop --accept-flake-config -c swiftlint lint --strict
+        run: nix develop --accept-flake-config -c bash -c 'cd src && swiftlint lint --strict'
 
   build:
     needs: lint
@@ -44,13 +44,13 @@ jobs:
       - name: build
         run: nix build --accept-flake-config
       - name: test
-        run: nix develop --accept-flake-config -c go test ./...
+        run: nix develop --accept-flake-config -c go -C src test ./...
       # The Linux TPM epoch backend's NV-counter algorithm (epoch_tpm.go) is verified
       # against the in-process go-tpm simulator. It's behind the `tpmsim` build tag so
       # the normal build stays cgo-light; the devshell provides the OpenSSL the
       # simulator's cgo needs. Runs on both OSes — the algorithm is platform-neutral.
       - name: tpmsim test (NV counter vs go-tpm simulator)
-        run: nix develop --accept-flake-config -c go test -tags tpmsim ./internal/enclave
+        run: nix develop --accept-flake-config -c go -C src test -tags tpmsim ./internal/enclave
 
   # Boot a real Linux kernel with a software TPM (swtpm) and run the Linux enclave
   # backend end-to-end against /dev/tpmrm0 — the kernel resource-manager path the
@@ -72,4 +72,4 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm || true
       - name: qemu + swtpm integration test
-        run: nix develop --accept-flake-config -c bash test/qemu/run.sh
+        run: nix develop --accept-flake-config -c bash src/test/qemu/run.sh

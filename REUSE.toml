@@ -11,17 +11,17 @@ path = [
   "CLAUDE.md",
   "LICENSE.md",
   "flake.lock",
-  "go.mod",
-  "go.sum",
-  "launchd/me.paulofduarte.sinete.agent.plist",
+  "src/go.mod",
+  "src/go.sum",
+  "src/launchd/me.paulofduarte.sinete.agent.plist",
   "sinete.entitlements",
-  "assets/AppIcon.icon/icon.json",
+  "src/assets/AppIcon.icon/icon.json",
 ]
 SPDX-FileCopyrightText = "2026 Paulo Duarte"
 SPDX-License-Identifier = "Apache-2.0"
 
 # Logo + app-icon artwork: CC-BY-4.0, like the logo's embedded SPDX tags.
 [[annotations]]
-path = ["logo.webp", "assets/AppIcon.icon/Assets/*.png"]
+path = ["logo.webp", "src/assets/AppIcon.icon/Assets/*.png"]
 SPDX-FileCopyrightText = "2026 Paulo Duarte"
 SPDX-License-Identifier = "CC-BY-4.0"
