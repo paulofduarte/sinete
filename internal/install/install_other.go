@@ -1,14 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Paulo Duarte
 // SPDX-License-Identifier: Apache-2.0
 
-//go:build !darwin
+//go:build !darwin && !linux
 
 package install
 
 import "errors"
 
-// errUnsupported is returned off macOS, where the app installer does not apply.
-var errUnsupported = errors.New("the app installer is only supported on macOS")
+// errUnsupported is returned on platforms with no installer backend (macOS bundle +
+// launchd; Linux systemd user service).
+var errUnsupported = errors.New("the installer is not supported on this platform")
 
 // PlanInstall is unsupported off macOS.
 func PlanInstall() (*Plan, error) { return nil, errUnsupported }

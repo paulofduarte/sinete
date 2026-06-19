@@ -11,4 +11,6 @@ package presence
 // must be called from the main OS thread so the prompt can draw.
 //
 // The implementation is platform-specific: macOS uses LocalAuthentication
-// (presence_darwin.go); other platforms return an error until TPM support lands.
+// (presence_darwin.go); Linux is presence-less in v1 and returns nil ("assume
+// present"), since there is no prompt mechanism yet (presence_linux.go); other
+// platforms return an error (presence_other.go).

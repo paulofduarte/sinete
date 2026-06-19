@@ -183,6 +183,45 @@
             exec "$out" "$@"
           '';
         };
+
+        # `nix run .#e2e-macos -- <profile>`: the on-device Secure-Enclave acceptance
+        # test. It builds + signs the bundle (via the bundle app) and then runs
+        # `sinete _enclave-check` from it (with a Touch ID prompt). The bundle build is
+        # impure (codesign / xcrun / your keychain identity), so this chains the bundle
+        # app at runtime rather than depending on a pure derivation — and it needs the
+        # same provisioning profile. Local-only: the SE can't be reached from a bare
+        # binary and can't be emulated, so there is no CI equivalent.
+        e2eMacosApp = pkgs.writeShellApplication {
+          name = "sinete-e2e-macos";
+          text = ''
+            if [ $# -lt 1 ]; then
+              echo "usage: nix run .#e2e-macos -- <path-to.provisionprofile>" >&2
+              exit 1
+            fi
+            ${bundleApp}/bin/sinete-bundle "$@"
+            exec ./sinete.app/Contents/MacOS/sinete _enclave-check
+          '';
+        };
+
+        # `nix run .#e2e-linux`: the Linux TPM backend acceptance test — boot a Linux
+        # kernel + software TPM (swtpm) in QEMU and run the enclave backend against
+        # /dev/tpmrm0. The same script the CI `integration` job runs; invoke from a repo
+        # checkout (its CWD). Available on every system (the x86_64 guest runs under TCG
+        # on an aarch64 macOS box, KVM on an x86_64 Linux host).
+        e2eLinuxApp = pkgs.writeShellApplication {
+          name = "sinete-e2e-linux";
+          runtimeInputs = [
+            pkgs.go
+            pkgs.nix
+            pkgs.bash
+            pkgs.coreutils
+            pkgs.findutils
+            pkgs.gnugrep
+            pkgs.gzip
+            pkgs.cpio
+          ];
+          text = "exec bash test/qemu/run.sh";
+        };
       in
       {
         packages.default = pkgs.buildGoModule {
@@ -211,9 +250,17 @@
 
         formatter = treefmtEval.config.build.wrapper;
 
-        # macOS only (signing needs the Apple toolchain). `nix run` signs + runs
-        # the bare binary; `nix run .#bundle -- <profile>` builds the signed .app.
-        apps = pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
+        # `nix run .#e2e-linux` is the Linux TPM backend acceptance test (all systems).
+        # The signing-dependent apps are macOS only (the Apple toolchain): `nix run`
+        # signs + runs the bare binary, `nix run .#bundle -- <profile>` builds the
+        # signed .app, and `nix run .#e2e-macos` runs the on-device SE acceptance test.
+        apps = {
+          e2e-linux = {
+            type = "app";
+            program = "${e2eLinuxApp}/bin/sinete-e2e-linux";
+          };
+        }
+        // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
           default = {
             type = "app";
             program = "${signRunApp}/bin/sinete-sign-run";
@@ -221,6 +268,10 @@
           bundle = {
             type = "app";
             program = "${bundleApp}/bin/sinete-bundle";
+          };
+          e2e-macos = {
+            type = "app";
+            program = "${e2eMacosApp}/bin/sinete-e2e-macos";
           };
         };
 

@@ -27,9 +27,14 @@ import (
 // so it surfaces as a fail-closed epoch mismatch rather than silent trust.
 var errCounterUndefined = errors.New("enclave: epoch counter is not defined (run sinete install / a config write first)")
 
-// ownerAuth is a fresh HMAC session authorizing owner-hierarchy NV ops with an empty
-// password. A new session per call — session nonces must not be reused.
-func ownerAuth() tpm2.Session { return tpm2.HMAC(tpm2.TPMAlgSHA256, 16, tpm2.Auth(nil)) }
+// Owner-hierarchy NV ops are authorized with a plain password session (an empty
+// owner auth), passed as the bare tpm2.TPMRHOwner handle. NOT an HMAC session: an
+// HMAC owner session *hangs* against the Linux kernel resource manager (/dev/tpmrm0)
+// — validated in the QEMU+swtpm integration test — though it works against the
+// in-process go-tpm simulator. There is no security loss: with an empty owner auth
+// neither session type restricts who may authorize, HMAC's value is bus-tamper
+// protection (moot for a local in-kernel device), and the epoch's anti-rollback is
+// enforced by the TPM's monotonic counter regardless of the session.
 
 // nvCounterPublic is the public template for a monotonic counter at index: an
 // owner-readable/writable SHA-256 counter holding 8 bytes, exempt from
@@ -72,7 +77,7 @@ func nvReadPublic(t transport.TPM, index tpm2.TPMHandle) (name tpm2.TPM2BName, w
 // nvReadValue reads the 8-byte counter at index whose current Name is name.
 func nvReadValue(t transport.TPM, index tpm2.TPMHandle, name tpm2.TPM2BName) (uint64, error) {
 	rsp, err := (tpm2.NVRead{
-		AuthHandle: tpm2.AuthHandle{Handle: tpm2.TPMRHOwner, Auth: ownerAuth()},
+		AuthHandle: tpm2.TPMRHOwner,
 		NVIndex:    tpm2.NamedHandle{Handle: index, Name: name},
 		Size:       8,
 	}).Execute(t)
@@ -88,7 +93,7 @@ func nvReadValue(t transport.TPM, index tpm2.TPMHandle, name tpm2.TPM2BName) (ui
 // nvIncrement increments the counter at index (current Name name) by one.
 func nvIncrement(t transport.TPM, index tpm2.TPMHandle, name tpm2.TPM2BName) error {
 	if _, err := (tpm2.NVIncrement{
-		AuthHandle: tpm2.AuthHandle{Handle: tpm2.TPMRHOwner, Auth: ownerAuth()},
+		AuthHandle: tpm2.TPMRHOwner,
 		NVIndex:    tpm2.NamedHandle{Handle: index, Name: name},
 	}).Execute(t); err != nil {
 		return fmt.Errorf("enclave: NV increment epoch: %w", err)
@@ -106,7 +111,7 @@ func tpmEnsureCounter(t transport.TPM, index tpm2.TPMHandle) error {
 	}
 	if !exists {
 		if _, err := (tpm2.NVDefineSpace{
-			AuthHandle: tpm2.AuthHandle{Handle: tpm2.TPMRHOwner, Auth: ownerAuth()},
+			AuthHandle: tpm2.TPMRHOwner,
 			PublicInfo: tpm2.New2B(nvCounterPublic(index)),
 		}).Execute(t); err != nil {
 			return fmt.Errorf("enclave: NV define epoch counter: %w", err)
@@ -176,11 +181,11 @@ func tpmCounterDelete(t transport.TPM, index tpm2.TPMHandle) error {
 	if !exists {
 		return nil
 	}
-	// Owner-authorized via the same empty-password HMAC session as the other NV ops;
-	// the NV index is a NamedHandle carrying its current Name, which go-tpm needs to
-	// identify and authorize the indexed object (its Name feeds the session's hash).
+	// Owner-authorized (bare TPMRHOwner password auth, like the other NV ops); the NV
+	// index is a NamedHandle carrying its current Name, which go-tpm needs to identify
+	// the indexed object being removed.
 	if _, err := (tpm2.NVUndefineSpace{
-		AuthHandle: tpm2.AuthHandle{Handle: tpm2.TPMRHOwner, Auth: ownerAuth()},
+		AuthHandle: tpm2.TPMRHOwner,
 		NVIndex:    tpm2.NamedHandle{Handle: index, Name: name},
 	}).Execute(t); err != nil {
 		return fmt.Errorf("enclave: NV undefine epoch: %w", err)
