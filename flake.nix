@@ -82,6 +82,10 @@
             };
         };
 
+        # Where `nix run .#bundle` writes the signed .app, relative to $PWD — kept out
+        # of the repo root (#13). Single source of truth for the bundle app + e2e-macos.
+        bundleRelPath = "dist/sinete.app";
+
         # `nix run .#bundle -- <profile>`: assemble + sign sinete.app. Folds the
         # old scripts/bundle-and-sign.sh into a flake step. swiftc (for sinete-ui),
         # actool, and codesign use Apple's toolchain (impure: nixpkgs swift is too
@@ -99,8 +103,7 @@
             identity="''${SINETE_SIGN_IDENTITY:-Apple Development: Paulo Duarte (P6K8K4X996)}"
             src="${self}"
             goBin="${self.packages.${system}.default}/bin/sinete"
-            # Build artifacts live under dist/ to keep the project root clean (#13).
-            app="$PWD/dist/sinete.app"
+            app="$PWD/${bundleRelPath}"
             bundle_id="me.paulofduarte.sinete"
 
             if [ ! -f "$profile" ]; then
@@ -200,7 +203,7 @@
               exit 1
             fi
             ${bundleApp}/bin/sinete-bundle "$@"
-            exec ./dist/sinete.app/Contents/MacOS/sinete _enclave-check
+            exec "./${bundleRelPath}/Contents/MacOS/sinete" _enclave-check
           '';
         };
 
