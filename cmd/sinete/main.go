@@ -939,10 +939,19 @@ func cmdInstall(args []string) error {
 	if err != nil {
 		return err
 	}
-	if st.LinkPath != "" {
+	switch {
+	case st.LinkPath != "":
 		fmt.Printf("installed: %s link at %s; login item registered\n", st.Method, st.LinkPath)
-	} else {
+	case runtime.GOOS == "darwin":
 		fmt.Println("installed: login item registered (existing link left untouched)")
+	default:
+		fmt.Println("installed: agent service registered to start at login")
+		fmt.Println("note: run `loginctl enable-linger` to keep the agent running after logout / on a headless box")
+	}
+	// Presence caching is a macOS-v1 concept (Touch ID windows). Linux is
+	// presence-less in v1, so presence TTLs are moot — skip configuring them.
+	if runtime.GOOS != "darwin" {
+		return nil
 	}
 	return configurePresenceOnInstall(*ttl, *maxTTL)
 }

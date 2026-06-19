@@ -1,14 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Paulo Duarte
 // SPDX-License-Identifier: Apache-2.0
 
-//go:build !darwin
+//go:build !darwin && !linux
 
 package loginitem
 
 import "errors"
 
-// errUnsupported is returned off macOS, where SMAppService does not exist.
-var errUnsupported = errors.New("login item management is only supported on macOS")
+// errUnsupported is returned on platforms with no service backend (macOS uses
+// SMAppService; Linux uses a systemd user service).
+var errUnsupported = errors.New("login item management is not supported on this platform")
 
 // Register is unsupported off macOS.
 func Register() error { return errUnsupported }
