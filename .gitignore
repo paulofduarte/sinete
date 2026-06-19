@@ -1,5 +1,4 @@
-# Go build output
-/sinete
+# Go test output (build binaries go under dist/ — `go build -o dist/sinete`)
 *.test
 *.out
 
