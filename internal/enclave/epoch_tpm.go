@@ -64,7 +64,7 @@ func nvReadPublic(t transport.TPM, index tpm2.TPMHandle) (name tpm2.TPM2BName, w
 	}
 	pub, e := rsp.NVPublic.Contents()
 	if e != nil {
-		return tpm2.TPM2BName{}, false, false, e
+		return tpm2.TPM2BName{}, false, false, fmt.Errorf("enclave: NV public contents: %w", e)
 	}
 	return rsp.NVName, pub.Attributes.Written, true, nil
 }

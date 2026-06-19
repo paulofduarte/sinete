@@ -361,7 +361,7 @@ func cmdEnclaveCheck(args []string) error {
 	}
 	fmt.Printf("  master pub (no prompt expected): %s\n", ssh.FingerprintSHA256(mpub))
 
-	fmt.Println("== master sign (expect a Touch ID prompt) ==")
+	fmt.Println("== master sign (a presence prompt may appear: Touch ID on macOS; presence-less on Linux v1) ==")
 	msg := []byte("sinete enclave-check")
 	sig, err := enclave.MasterSign(msg)
 	if err != nil {
@@ -402,7 +402,7 @@ func cmdEnclaveCheck(args []string) error {
 		return fmt.Errorf("an absent config should be trusted")
 	}
 	cfg.SetKeyConfig("enclave-check", registry.PresenceTTL, "7m")
-	fmt.Println("  saving config (expect a Touch ID prompt)...")
+	fmt.Println("  saving config (a presence prompt may appear: Touch ID on macOS; presence-less on Linux v1)...")
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
