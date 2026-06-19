@@ -15,9 +15,14 @@
 
 set -euo pipefail
 
-NIXPKGS="github:NixOS/nixpkgs/nixos-26.05" # match flake.nix
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
+
+# Pin nixpkgs to the repo's flake.lock revision, so the kernel/busybox/qemu/swtpm are
+# reproducible and match the rest of the flake — rather than tracking the moving
+# nixos-26.05 branch (which could break this test even with the repo unchanged).
+NIXPKGS_REV="$(nix eval --raw --impure --expr "(builtins.fromJSON (builtins.readFile \"$ROOT/flake.lock\")).nodes.nixpkgs.locked.rev")"
+NIXPKGS="github:NixOS/nixpkgs/$NIXPKGS_REV"
 # Template form works on both GNU and BSD/macOS mktemp (GNU `mktemp -d` with no
 # template is not portable).
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sinete-vm.XXXXXX")"

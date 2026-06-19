@@ -137,21 +137,22 @@ func Status() (string, error) {
 		return "", err
 	}
 	// The unit file exists, so it is at least registered — never "not found" here.
-	// is-enabled prints the state on stdout and exits non-zero for disabled/static, so
-	// the printed word is what we want regardless of exit status. But if systemctl
-	// itself fails (no systemd, not on PATH) it prints nothing; surface that error so
-	// Uninstall falls back to a best-effort Unregister rather than skipping it and
-	// leaving the unit file behind.
+	// is-enabled prints a state word on stdout and exits non-zero for disabled/static
+	// etc., so the printed word is authoritative when it is a recognized state. Any
+	// other output (empty, or an error like "Failed to connect to bus …" that
+	// CombinedOutput captures) means systemctl itself failed — surface that error so
+	// callers get an actionable diagnostic and Uninstall falls back to a best-effort
+	// Unregister rather than mistaking a failure for "disabled".
 	out, serr := systemctl("is-enabled", unitName)
 	switch out {
 	case "enabled", "enabled-runtime":
 		return "enabled", nil
-	case "":
-		if serr != nil {
-			return "", fmt.Errorf("systemctl is-enabled %s: %w", unitName, serr)
-		}
+	case "disabled", "static", "indirect", "linked", "linked-runtime", "masked", "masked-runtime", "generated", "transient":
 		return "disabled", nil
 	default:
+		if serr != nil {
+			return "", fmt.Errorf("systemctl is-enabled %s: %w: %s", unitName, serr, out)
+		}
 		return "disabled", nil
 	}
 }
