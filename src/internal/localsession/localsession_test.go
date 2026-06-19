@@ -29,6 +29,8 @@ func TestUnavailable(t *testing.T) {
 		{"dbus.Error value", dbus.Error{Name: "org.freedesktop.login1.NoSessionForPID"}, false},
 		{"context timeout", context.DeadlineExceeded, true},
 		{"generic non-dbus", errors.New("bus connect failed"), true},
+		// logind answered with an unexpected type: reachable, so NOT unavailable.
+		{"malformed reply", errMalformedReply, false},
 	}
 	for _, c := range cases {
 		if got := Unavailable(c.err); got != c.want {

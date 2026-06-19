@@ -22,7 +22,6 @@ package localsession
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/godbus/dbus/v5"
@@ -32,6 +31,11 @@ import (
 // caller. On timeout the lookup errors and the caller fails closed (refuse), like any
 // other failure to confirm a local session.
 const dbusTimeout = 2 * time.Second
+
+// errMalformedReply is returned when logind answers but its Session.Remote property
+// is not the expected bool. logind IS reachable in this case, so Unavailable reports
+// false for it (the caller still fails closed, but it is not a "no logind" condition).
+var errMalformedReply = errors.New("login1 Session.Remote is not a bool")
 
 // IsLocalPID reports whether the logind/elogind session owning pid is local (its
 // Remote property is false). It returns an error when localness cannot be confirmed —
@@ -67,7 +71,7 @@ func IsLocalPID(pid uint32) (bool, error) {
 	}
 	r, ok := remote.Value().(bool)
 	if !ok {
-		return false, fmt.Errorf("login1 Session.Remote is not a bool")
+		return false, errMalformedReply
 	}
 	return !r, nil
 }
@@ -79,6 +83,11 @@ func IsLocalPID(pid uint32) (bool, error) {
 // a normal refusal, not a misconfiguration. It only gates an operator diagnostic, not
 // the refusal itself (callers always fail closed).
 func Unavailable(err error) bool {
+	if errors.Is(err, errMalformedReply) {
+		// logind answered (it is reachable) but with an unexpected type — not a
+		// "logind unavailable" condition, so don't emit the no-logind diagnostic.
+		return false
+	}
 	name, ok := dbusErrorName(err)
 	if !ok {
 		// Not a D-Bus method error: a SystemBus() connect failure (no D-Bus at all)
