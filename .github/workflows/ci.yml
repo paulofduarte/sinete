@@ -52,10 +52,10 @@ jobs:
       - name: tpmsim test (NV counter vs go-tpm simulator)
         run: nix develop --accept-flake-config -c go -C src test -tags tpmsim ./internal/cryptoprocessor
 
-  # Boot a real Linux kernel with a software TPM (swtpm) and run the Linux enclave
-  # backend end-to-end against /dev/tpmrm0 — the kernel resource-manager path the
-  # simulator can't exercise (it's where the HMAC-session hang lived). x86_64 only;
-  # KVM makes it fast on the runner.
+  # Boot a real Linux kernel with a software TPM (swtpm) and run the Linux
+  # cryptoprocessor backend end-to-end against /dev/tpmrm0 — the kernel
+  # resource-manager path the simulator can't exercise (it's where the HMAC-session
+  # hang lived). x86_64 only; KVM makes it fast on the runner.
   integration:
     needs: lint
     runs-on: ubuntu-latest
