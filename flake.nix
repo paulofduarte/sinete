@@ -67,20 +67,32 @@
             // {
               golangci-lint = {
                 enable = true;
+                # The Go module lives under src/; run golangci-lint from there.
+                entry = "${pkgs.writeShellScript "golangci-lint-src" ''
+                  cd src && exec ${pkgs.golangci-lint}/bin/golangci-lint run
+                ''}";
+                pass_filenames = false;
                 extraPackages = [ pkgs.go ];
               };
             }
             // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
-              # swiftlint needs SourceKit; the .swift sources are macOS-only anyway.
+              # swiftlint needs SourceKit; the .swift sources are macOS-only anyway. Run
+              # from src/ (where ui/SineteUI.swift now lives), like golangci-lint.
               swiftlint = {
                 enable = true;
                 name = "swiftlint";
-                entry = "${pkgs.swiftlint}/bin/swiftlint lint --strict";
+                entry = "${pkgs.writeShellScript "swiftlint-src" ''
+                  cd src && exec ${pkgs.swiftlint}/bin/swiftlint lint --strict
+                ''}";
                 files = "\\.swift$";
                 pass_filenames = false;
               };
             };
         };
+
+        # Where `nix run .#bundle` writes the signed .app, relative to $PWD — kept out
+        # of the repo root (#13). Single source of truth for the bundle app + e2e-macos.
+        bundleRelPath = "dist/sinete.app";
 
         # `nix run .#bundle -- <profile>`: assemble + sign sinete.app. Folds the
         # old scripts/bundle-and-sign.sh into a flake step. swiftc (for sinete-ui),
@@ -97,9 +109,9 @@
             fi
             profile="$1"
             identity="''${SINETE_SIGN_IDENTITY:-Apple Development: Paulo Duarte (P6K8K4X996)}"
-            src="${self}"
+            repo="${self}" # flake source (repo root); the bundle inputs live under src/
             goBin="${self.packages.${system}.default}/bin/sinete"
-            app="$PWD/sinete.app"
+            app="$PWD/${bundleRelPath}"
             bundle_id="me.paulofduarte.sinete"
 
             if [ ! -f "$profile" ]; then
@@ -112,18 +124,18 @@
             cp -f "$goBin" "$app/Contents/MacOS/sinete"
             chmod u+w "$app/Contents/MacOS/sinete"
             cp -f "$profile" "$app/Contents/embedded.provisionprofile"
-            cp -f "$src/launchd/me.paulofduarte.sinete.agent.plist" \
+            cp -f "$repo/src/launchd/me.paulofduarte.sinete.agent.plist" \
               "$app/Contents/Library/LaunchAgents/me.paulofduarte.sinete.agent.plist"
 
             # SwiftUI helper, compiled with Apple's toolchain (impure).
-            /usr/bin/xcrun swiftc -parse-as-library -O "$src/ui/SineteUI.swift" \
+            /usr/bin/xcrun swiftc -parse-as-library -O "$repo/src/ui/SineteUI.swift" \
               -o "$app/Contents/MacOS/sinete-ui"
 
             # App icon (Liquid Glass) via actool, if available.
             icon_keys=""
             if actool="$(/usr/bin/xcrun --find actool 2>/dev/null)"; then
               mkdir -p "$app/Contents/Resources"
-              "$actool" "$src/assets/AppIcon.icon" --compile "$app/Contents/Resources" \
+              "$actool" "$repo/src/assets/AppIcon.icon" --compile "$app/Contents/Resources" \
                 --app-icon AppIcon --output-partial-info-plist "$(mktemp)" \
                 --platform macosx --minimum-deployment-target 26.0 >/dev/null 2>&1 || true
               if [ -f "$app/Contents/Resources/Assets.car" ]; then
@@ -151,7 +163,7 @@
             # signs the main `sinete` with the SE entitlements and seals all).
             /usr/bin/codesign --force --sign "$identity" "$app/Contents/MacOS/sinete-ui"
             /usr/bin/codesign --force --sign "$identity" \
-              --entitlements "$src/sinete.entitlements" "$app"
+              --entitlements "$repo/sinete.entitlements" "$app"
 
             echo "--- signature / profile ---"
             /usr/bin/codesign -dvvv "$app" 2>&1 | grep -iE "TeamIdentifier|provision" || true
@@ -199,7 +211,7 @@
               exit 1
             fi
             ${bundleApp}/bin/sinete-bundle "$@"
-            exec ./sinete.app/Contents/MacOS/sinete _enclave-check
+            exec "./${bundleRelPath}/Contents/MacOS/sinete" _enclave-check
           '';
         };
 
@@ -220,14 +232,15 @@
             pkgs.gzip
             pkgs.cpio
           ];
-          text = "exec bash test/qemu/run.sh";
+          text = "exec bash src/test/qemu/run.sh";
         };
       in
       {
         packages.default = pkgs.buildGoModule {
           pname = "sinete";
           version = "0.0.0-dev";
-          src = ./.;
+          # The Go module lives under src/ (the repo root holds flake/docs/ui/test).
+          src = ./src;
 
           # Vendor hash of the Go module set (sks is upstream facebookincubator/sks;
           # the paulofduarte/sks fork was dropped in v2, so there's no replace).
@@ -250,21 +263,29 @@
 
         formatter = treefmtEval.config.build.wrapper;
 
-        # `nix run .#e2e-linux` is the Linux TPM backend acceptance test (all systems).
-        # The signing-dependent apps are macOS only (the Apple toolchain): `nix run`
-        # signs + runs the bare binary, `nix run .#bundle -- <profile>` builds the
-        # signed .app, and `nix run .#e2e-macos` runs the on-device SE acceptance test.
+        # `nix run` works on every system: on Linux it runs the nix-built binary
+        # directly (no wrapper — Linux needs no signing); on macOS it goes through
+        # signRunApp, which signs the binary with the SE entitlements first (a bare
+        # binary is rejected by the Secure Enclave otherwise). `nix build` produces just
+        # the binary on both. `nix run .#e2e-linux` is the Linux acceptance test (all
+        # systems). The remaining apps are macOS-only (the Apple toolchain):
+        # `nix run .#bundle -- <profile>` builds the signed .app, `nix run .#e2e-macos`
+        # the on-device SE acceptance test.
         apps = {
+          default = {
+            type = "app";
+            program =
+              if pkgs.stdenv.isDarwin then
+                "${signRunApp}/bin/sinete-sign-run"
+              else
+                "${self.packages.${system}.default}/bin/sinete";
+          };
           e2e-linux = {
             type = "app";
             program = "${e2eLinuxApp}/bin/sinete-e2e-linux";
           };
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
-          default = {
-            type = "app";
-            program = "${signRunApp}/bin/sinete-sign-run";
-          };
           bundle = {
             type = "app";
             program = "${bundleApp}/bin/sinete-bundle";

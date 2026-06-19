@@ -12,17 +12,26 @@ The crypto/hardware core is [`facebookincubator/sks`](https://github.com/faceboo
 
 ## Layout
 
+Everything lives under `src/`; the repo root holds only config + docs (flake.nix,
+CLAUDE.md, .gitignore, REUSE.toml, treefmt.nix, sinete.entitlements, …). The lint
+configs (.golangci.yml, .swiftlint.yml) live in src/ next to the code they lint.
+
 ```
-cmd/sinete/         # CLI entrypoint
-internal/enclave/   # thin sks wrapper: create/open/sign/remove, pubkey export, name <-> (label,tag)
-internal/agent/     # the ssh-agent (served via x/crypto ServeAgent)
-internal/registry/  # signed presence config at $XDG_CONFIG_HOME/sinete/registry.json (keys are enumerated from the SE)
-internal/presence/  # user-presence check (macOS LocalAuthentication, cgo); stub elsewhere
-internal/loginitem/ # register the launchd agent as a login item (macOS SMAppService, cgo); stub elsewhere
-internal/install/   # app-driven setup/teardown: link + login item + install.json state; stub elsewhere
-ui/                 # SwiftUI control panel (sinete-ui), compiled by `nix run .#bundle`
-launchd/            # me.paulofduarte.sinete.agent.plist (bundled into the .app for SMAppService)
+src/                    # all sources + resources; the Go module's go.mod is here
+  cmd/sinete/           # CLI entrypoint
+  internal/enclave/     # thin sks wrapper: create/open/sign/remove, pubkey export, name <-> (label,tag)
+  internal/agent/       # the ssh-agent (served via x/crypto ServeAgent)
+  internal/registry/    # signed presence config at $XDG_CONFIG_HOME/sinete/registry.json (keys are enumerated from the SE)
+  internal/presence/    # user-presence check (macOS LocalAuthentication, cgo); stub elsewhere
+  internal/loginitem/   # register the launchd/systemd agent as a login item; stub on unsupported platforms
+  internal/install/     # app-driven setup/teardown: link + login item + install.json state; stub elsewhere
+  ui/                   # SwiftUI control panel (sinete-ui), compiled by `nix run .#bundle`
+  launchd/              # me.paulofduarte.sinete.agent.plist (bundled into the .app for SMAppService)
+  assets/               # AppIcon.icon (Liquid Glass), compiled by actool during the bundle
+  test/qemu/            # QEMU+swtpm Linux integration harness (`nix run .#e2e-linux`)
 ```
+
+Run Go from the module dir: `go -C src …` (or `cd src`).
 
 ## The agent model (v2 — "Model B")
 
@@ -50,8 +59,8 @@ This is the core design; get it right:
 cgo is **required** (`sks` + `internal/presence` call platform crypto APIs). Preferred (Nix, matches CI):
 
 ```sh
-nix build                     # → ./result/bin/sinete
-nix develop -c go test ./...
+nix build                     # → ./result/bin/sinete  (Go module is under src/)
+nix develop -c go -C src test ./...   # go.mod is in src/, so use `go -C src …`
 nix fmt                       # treefmt: gofumpt + nixfmt + shfmt
 nix flake check               # formatting + golangci-lint(*) + reuse + shellcheck
 ```
@@ -61,15 +70,17 @@ nix flake check               # formatting + golangci-lint(*) + reuse + shellche
 **Secure-Enclave ops require a signed `.app` bundle.** An unsigned/unentitled binary is rejected by the SE (`-34018`) or SIGKILLed by AMFI, so the agent (and `generate`/`sign`/`delete`) must run from the bundle:
 
 ```sh
-nix run .#bundle -- /path/to/<dev>.provisionprofile   # builds + signs sinete.app
-./sinete.app/Contents/MacOS/sinete install            # link + SMAppService login item + state
+nix run .#bundle -- /path/to/<dev>.provisionprofile   # builds + signs dist/sinete.app
+./dist/sinete.app/Contents/MacOS/sinete install       # link + SMAppService login item + state
 ```
 
-(Or just double-click `sinete.app` and use the setup wizard — both call the same `sinete install`.)
+(Or just double-click `dist/sinete.app` and use the setup wizard — both call the same `sinete install`.)
 
-`nix run .#bundle` (macOS only) folds in the former `bundle-and-sign.sh`: it takes the nix-built `sinete`, compiles `ui/SineteUI.swift` to `sinete-ui` with `xcrun swiftc` (nixpkgs swift is too old for the macOS-26 SwiftUI module), runs `actool`, assembles the `.app`, and signs — the unentitled `sinete-ui` first, then the bundle (which signs `sinete` with the SE entitlements). Or double-click `sinete.app`: the SwiftUI panel runs the setup wizard / shows the ready screen.
+Build artifacts go under `dist/` (gitignored) to keep the root clean; `nix build` writes a `result` symlink as usual (use `nix build -o dist/sinete` to keep that under `dist/` too).
 
-For quick **non-SE** checks (`list`, `config`, `present`), `nix run -- <args>` is the default app: it signs the bare nix-built binary (same dev identity + `sinete.entitlements` as the bundle) and execs it. SE ops still need the `.app` — a bare binary can't carry the provisioning profile.
+`nix run .#bundle` (macOS only) folds in the former `bundle-and-sign.sh`: it takes the nix-built `sinete`, compiles `src/ui/SineteUI.swift` to `sinete-ui` with `xcrun swiftc` (nixpkgs swift is too old for the macOS-26 SwiftUI module), runs `actool`, assembles the `.app`, and signs — the unentitled `sinete-ui` first, then the bundle (which signs `sinete` with the SE entitlements). Or double-click `dist/sinete.app`: the SwiftUI panel runs the setup wizard / shows the ready screen.
+
+**`nix build` / `nix run` are cross-platform** (binary-only, no bundle). `nix build` produces just the `sinete` binary on macOS and Linux. `nix run -- <args>` runs it: on Linux directly (no signing); on macOS via the default app, which signs the bare binary (same dev identity + `sinete.entitlements` as the bundle) and execs it — good for quick **non-SE** checks (`list`, `config`, `present`). SE ops still need the `.app` (a bare binary can't carry the provisioning profile).
 
 Prereqs: an Apple Development identity, the WWDR **G3** intermediate, and a dev provisioning profile for this device + App ID `me.paulofduarte.*`. Note the presence prompt (LocalAuthentication) works even from a bare binary; only SE ops need the bundle.
 

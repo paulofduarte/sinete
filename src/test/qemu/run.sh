@@ -15,13 +15,16 @@
 
 set -euo pipefail
 
+# This harness lives at src/test/qemu, so HERE/../.. is the Go module (src/) and one
+# more level up is the repo root (which holds flake.lock).
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$HERE/../.." && pwd)"
+GOMOD="$(cd "$HERE/../.." && pwd)"
+REPO="$(cd "$GOMOD/.." && pwd)"
 
 # Pin nixpkgs to the repo's flake.lock revision, so the kernel/busybox/qemu/swtpm are
 # reproducible and match the rest of the flake — rather than tracking the moving
 # nixos-26.05 branch (which could break this test even with the repo unchanged).
-NIXPKGS_REV="$(nix eval --raw --impure --expr "(builtins.fromJSON (builtins.readFile \"$ROOT/flake.lock\")).nodes.nixpkgs.locked.rev")"
+NIXPKGS_REV="$(nix eval --raw --impure --expr "(builtins.fromJSON (builtins.readFile \"$REPO/flake.lock\")).nodes.nixpkgs.locked.rev")"
 NIXPKGS="github:NixOS/nixpkgs/$NIXPKGS_REV"
 # Template form works on both GNU and BSD/macOS mktemp (GNU `mktemp -d` with no
 # template is not portable).
@@ -32,7 +35,7 @@ cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 
 echo "== build static linux/amd64 sinete =="
-(cd "$ROOT" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$WORK/sinete" ./cmd/sinete)
+(cd "$GOMOD" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$WORK/sinete" ./cmd/sinete)
 
 echo "== fetch prebuilt kernel + busybox (substituted from cache) =="
 KERNEL="$(nix build --no-link --print-out-paths --system x86_64-linux "$NIXPKGS#linux")/bzImage"
