@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -76,5 +77,18 @@ func TestSetMatching(t *testing.T) {
 	}
 	if pin != "1234" {
 		t.Errorf("Set = %q, want 1234", pin)
+	}
+}
+
+func TestNoPinentryFound(t *testing.T) {
+	// No gpg-agent.conf and an empty PATH ⇒ no pinentry program ⇒ a clear error.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", "")
+	_, err := Get("title", "desc", "PIN:")
+	if err == nil {
+		t.Fatal("Get with no pinentry installed returned nil error")
+	}
+	if !strings.Contains(err.Error(), "no pinentry program found") {
+		t.Errorf("error = %q, want it to mention no pinentry program found", err)
 	}
 }

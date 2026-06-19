@@ -36,12 +36,13 @@ func masterCreateAuth() ([]byte, error) {
 // EnsureMaster calls it only after the key was actually created with this PIN.
 func cacheMasterPIN(pin []byte) { justSetPIN = pin }
 
-// masterSignError adds a remediation hint to a failed master-key signature. A TPM
-// auth failure here is either a wrong PIN, or a master key created by an earlier
-// version with no PIN (empty authValue) that now rejects the PIN we supply — the
-// upgrade case. The two are indistinguishable, so the message covers both.
+// masterSignError adds a remediation hint to a failed master-key signature. The most
+// common causes are a wrong PIN or a master key created by an earlier version with no
+// PIN (empty authValue) that now rejects the PIN we supply — but a TPM/device error
+// is also possible, so the hint is phrased as a possibility and the underlying error
+// is wrapped so the real cause stays visible.
 func masterSignError(err error) error {
-	return fmt.Errorf("master sign failed: wrong PIN, or a master key created before PIN support — re-provision sinete to recreate it with a PIN: %w", err)
+	return fmt.Errorf("master sign failed (often a wrong PIN, or a master key created before PIN support that must be re-provisioned): %w", err)
 }
 
 // masterSignAuth returns the master-key PIN to authorise a config signature, reusing
