@@ -10,3 +10,5 @@ package cryptoprocessor
 // sks.NewKey sets the ACL and the SE prompts. Both return nil.
 func masterCreateAuth() ([]byte, error) { return nil, nil }
 func masterSignAuth() ([]byte, error)   { return nil, nil }
+func cacheMasterPIN([]byte)             {}
+func masterSignError(err error) error   { return err }

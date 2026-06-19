@@ -5,13 +5,19 @@
 
 package cryptoprocessor
 
-import "github.com/paulofduarte/sinete/internal/pinentry"
+import (
+	"fmt"
+
+	"github.com/paulofduarte/sinete/internal/pinentry"
+)
 
 // justSetPIN carries a freshly-set PIN to the immediately-following signature so a
 // `sinete install` / `config` write that creates the master key and then signs the
-// registry does not prompt twice. It is single-use (consumed by the next
-// masterSignAuth) and only set in the short-lived CLI process that runs EnsureMaster
-// — the agent never creates the master key, so there is no concurrent access.
+// registry does not prompt twice. It is set by cacheMasterPIN only AFTER a successful
+// creation (so a concurrent-creator race never caches a PIN that isn't the key's),
+// single-use (consumed by the next masterSignAuth), and only ever set in the
+// short-lived CLI process that runs EnsureMaster — the agent never creates the master
+// key, so there is no concurrent access.
 var justSetPIN []byte
 
 // masterCreateAuth prompts the user to SET a PIN for the config-signing master key.
@@ -23,8 +29,19 @@ func masterCreateAuth() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	justSetPIN = []byte(pin)
 	return []byte(pin), nil
+}
+
+// cacheMasterPIN records a just-set PIN for reuse by the immediately-following sign.
+// EnsureMaster calls it only after the key was actually created with this PIN.
+func cacheMasterPIN(pin []byte) { justSetPIN = pin }
+
+// masterSignError adds a remediation hint to a failed master-key signature. A TPM
+// auth failure here is either a wrong PIN, or a master key created by an earlier
+// version with no PIN (empty authValue) that now rejects the PIN we supply — the
+// upgrade case. The two are indistinguishable, so the message covers both.
+func masterSignError(err error) error {
+	return fmt.Errorf("master sign failed: wrong PIN, or a master key created before PIN support — re-provision sinete to recreate it with a PIN: %w", err)
 }
 
 // masterSignAuth returns the master-key PIN to authorise a config signature, reusing

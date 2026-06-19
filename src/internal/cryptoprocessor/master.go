@@ -128,12 +128,17 @@ func EnsureMaster() error {
 	}
 	if _, err := sks.NewKey(MasterLabel, Tag, true, false, nil, sks.WithAuthValue(pin)); err != nil {
 		// Tolerate a concurrent creator: if the key now exists, another process
-		// won the race and that is success, not a duplicate-item failure.
+		// won the race and that is success, not a duplicate-item failure. We do NOT
+		// cache our pin here — the key was created by the other process, possibly with
+		// a different PIN, so the next sign must prompt rather than reuse ours.
 		if _, perr := masterKey().PublicKey(); perr == nil {
 			return nil
 		}
 		return fmt.Errorf("cryptoprocessor: create master key: %w", err)
 	}
+	// We created the key with this PIN: reuse it for the immediately-following sign
+	// (e.g. the registry write in the same install) so the user isn't prompted twice.
+	cacheMasterPIN(pin)
 	return nil
 }
 
@@ -166,7 +171,11 @@ func MasterSign(data []byte) (*ssh.Signature, error) {
 	if err != nil {
 		return nil, err
 	}
-	return signer.Sign(rand.Reader, data)
+	sig, err := signer.Sign(rand.Reader, data)
+	if err != nil {
+		return nil, masterSignError(err)
+	}
+	return sig, nil
 }
 
 // Epoch returns the current registry epoch, and whether it exists yet. The store

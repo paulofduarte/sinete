@@ -9,3 +9,5 @@ package cryptoprocessor
 // ops aren't reachable here anyway — the epoch is unsupported; see keychain_other.go).
 func masterCreateAuth() ([]byte, error) { return nil, nil }
 func masterSignAuth() ([]byte, error)   { return nil, nil }
+func cacheMasterPIN([]byte)             {}
+func masterSignError(err error) error   { return err }
