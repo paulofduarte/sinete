@@ -234,6 +234,32 @@
           ];
           text = "exec bash src/test/qemu/run.sh";
         };
+
+        # `nix run .#e2e-linux-full`: the heavier 2-VM distro MATRIX — boots real cloud
+        # images (Debian glibc / systemd-logind + Alpine musl / elogind) and runs the
+        # full local-session + TPM matrix on each (fail-closed, remote-refused,
+        # _enclave-check, pinentry-curses/-tty/x-term, wrong-PIN). NOT a per-build CI
+        # gate (it needs network + is slow); run on demand or on releases. It downloads
+        # cloud images, so it needs curl + CA certs.
+        e2eLinuxFullApp = pkgs.writeShellApplication {
+          name = "sinete-e2e-linux-full";
+          runtimeInputs = [
+            pkgs.go
+            pkgs.nix
+            pkgs.bash
+            pkgs.coreutils
+            pkgs.curl
+            pkgs.cacert
+            pkgs.gnugrep
+            pkgs.gnused
+            pkgs.gawk
+            pkgs.findutils
+          ];
+          text = ''
+            export SSL_CERT_FILE="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+            exec bash src/test/qemu/full/run-full.sh
+          '';
+        };
       in
       {
         packages.default = pkgs.buildGoModule {
@@ -284,6 +310,10 @@
           e2e-linux = {
             type = "app";
             program = "${e2eLinuxApp}/bin/sinete-e2e-linux";
+          };
+          e2e-linux-full = {
+            type = "app";
+            program = "${e2eLinuxFullApp}/bin/sinete-e2e-linux-full";
           };
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {

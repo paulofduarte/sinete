@@ -53,3 +53,23 @@ jobs:
           files: dist/*
           draft: true
           generate_release_notes: true
+
+  # The heavier 2-VM distro matrix (Debian glibc / systemd-logind + Alpine musl /
+  # elogind): boots real cloud images under QEMU + swtpm and runs the full local-session
+  # + TPM matrix on each. Too slow/networked for the per-push CI gate, so it runs here on
+  # tagged releases. It does NOT gate `release` (a flaky image download must not block a
+  # publish) — it is a release-time signal you can inspect.
+  e2e-matrix:
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - name: enable KVM (best-effort)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+      - name: distro e2e matrix (Debian + Alpine)
+        run: nix run --accept-flake-config .#e2e-linux-full
