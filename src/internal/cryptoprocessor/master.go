@@ -117,10 +117,16 @@ func EnsureMaster() error {
 	if _, err := masterKey().PublicKey(); err == nil {
 		return nil // already present
 	}
-	// Create the master key requiring user presence to sign: on macOS useBiometrics
-	// maps to a Secure Enclave user-presence ACL (Touch ID); on Linux it is presence-
-	// less for now (no PIN machinery yet). sks.NewKey is idempotent.
-	if _, err := sks.NewKey(MasterLabel, Tag, true, false, nil); err != nil {
+	// Create the master key requiring user presence to sign. On macOS useBiometrics
+	// maps to a Secure Enclave user-presence ACL (Touch ID), no authValue. On Linux
+	// masterCreateAuth prompts the user to set a PIN, bound to the key as its TPM
+	// authValue so signing then requires it. A nil pin is the macOS case; sks.NewKey
+	// is idempotent.
+	pin, err := masterCreateAuth()
+	if err != nil {
+		return fmt.Errorf("cryptoprocessor: set master key PIN: %w", err)
+	}
+	if _, err := sks.NewKey(MasterLabel, Tag, true, false, nil, sks.WithAuthValue(pin)); err != nil {
 		// Tolerate a concurrent creator: if the key now exists, another process
 		// won the race and that is success, not a duplicate-item failure.
 		if _, perr := masterKey().PublicKey(); perr == nil {
@@ -145,11 +151,18 @@ func MasterPublicKey() (ssh.PublicKey, error) {
 	return pub, nil
 }
 
-// MasterSign signs data with the master key (the ssh signer hashes it
-// internally). This triggers Touch ID — the key's user-presence ACL — so it must
-// run on the main OS thread. Verify with MasterPublicKey().Verify(data, sig).
+// MasterSign signs data with the master key (the ssh signer hashes it internally).
+// It requires user presence: on macOS the key's ACL triggers Touch ID (so it must
+// run on the main OS thread); on Linux masterSignAuth prompts for the key's PIN,
+// supplied as the TPM authValue. Verify with MasterPublicKey().Verify(data, sig).
 func MasterSign(data []byte) (*ssh.Signature, error) {
-	signer, err := masterKey().Signer()
+	pin, err := masterSignAuth()
+	if err != nil {
+		return nil, err
+	}
+	// Open the master key with the authValue (nil on macOS, the PIN on Linux).
+	k := &Key{label: MasterLabel, inner: sks.FromLabelTag(MasterLabel+":"+Tag, sks.WithAuthValue(pin))}
+	signer, err := k.Signer()
 	if err != nil {
 		return nil, err
 	}

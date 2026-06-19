@@ -46,6 +46,7 @@ echo "== assemble initramfs =="
 mkdir -p "$WORK/irfs/bin"
 cp "$BBOX" "$WORK/irfs/bin/busybox"
 cp "$WORK/sinete" "$WORK/irfs/bin/sinete"
+cp "$HERE/fake-pinentry.sh" "$WORK/irfs/bin/fake-pinentry" # test-only PIN source for the headless guest
 cp "$HERE/init.sh" "$WORK/irfs/init"
 chmod +x "$WORK/irfs/bin/"* "$WORK/irfs/init"
 (cd "$WORK/irfs" && find . | LANG=C cpio -o -H newc 2>/dev/null | gzip) >"$WORK/initramfs.cpio.gz"
