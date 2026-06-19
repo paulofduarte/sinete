@@ -50,13 +50,17 @@ func nvCounterPublic(index tpm2.TPMHandle) tpm2.TPMSNVPublic {
 
 // nvReadPublic returns index's current Name (needed to authorize ops — it changes
 // when the WRITTEN bit flips on the first increment), whether it has been written,
-// and whether it exists. A failed read is reported as "does not exist" (commonly an
-// undefined handle); a genuine comms failure then surfaces downstream as a
-// fail-closed epoch mismatch rather than false trust.
+// and whether it exists. Only an undefined index (TPM_RC_HANDLE) counts as "does not
+// exist"; any other error (TPM comms, owner-auth, ...) is propagated rather than
+// masked as absence — masking would let tpmCounterDelete / uninstall silently
+// "succeed" without deleting, and misclassify failures as errCounterUndefined.
 func nvReadPublic(t transport.TPM, index tpm2.TPMHandle) (name tpm2.TPM2BName, written, exists bool, err error) {
 	rsp, e := (tpm2.NVReadPublic{NVIndex: index}).Execute(t)
 	if e != nil {
-		return tpm2.TPM2BName{}, false, false, nil
+		if errors.Is(e, tpm2.TPMRCHandle) {
+			return tpm2.TPM2BName{}, false, false, nil
+		}
+		return tpm2.TPM2BName{}, false, false, fmt.Errorf("enclave: NV read public: %w", e)
 	}
 	pub, e := rsp.NVPublic.Contents()
 	if e != nil {
