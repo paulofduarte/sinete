@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Paulo Duarte
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build linux
+
 // Package pinentry prompts for a PIN via the GnuPG pinentry program, which renders
 // a native dialog per desktop (pinentry-qt/-gnome3 on a graphical session, -curses/
 // -tty on a text console) over one Assuan code path. It is used on Linux for the TPM
@@ -34,17 +36,28 @@ func client(opts ...pinentry.ClientOption) (*pinentry.Client, error) {
 		return nil, err
 	}
 	base := []pinentry.ClientOption{pinentry.WithBinaryName(bin)}
-	// pinentry-curses/-tty need a tty; prefer $GPG_TTY, else the controlling /dev/tty
-	// — but only if it is actually openable. /dev/tty exists even when the process has
-	// no controlling terminal, so a stat would be misleading; opening it is the real
-	// test, and we don't bind a tty we can't use.
-	if tty := os.Getenv("GPG_TTY"); tty != "" {
+	// pinentry-curses/-tty need a tty; prefer $GPG_TTY, else the controlling /dev/tty —
+	// but only one we can actually open. Both can name a tty that exists yet isn't
+	// usable ($GPG_TTY may be stale; /dev/tty exists even with no controlling terminal),
+	// so a stat would mislead — opening it is the real test, and a stale $GPG_TTY falls
+	// through to /dev/tty rather than pinning pinentry to an unusable tty.
+	if tty := os.Getenv("GPG_TTY"); tty != "" && ttyOpenable(tty) {
 		base = append(base, pinentry.WithCommandf("OPTION ttyname=%s", tty))
-	} else if f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0); err == nil {
-		_ = f.Close()
+	} else if ttyOpenable("/dev/tty") {
 		base = append(base, pinentry.WithCommand("OPTION ttyname=/dev/tty"))
 	}
 	return pinentry.NewClient(append(base, opts...)...)
+}
+
+// ttyOpenable reports whether path can be opened read-write — the real test of whether
+// a tty is usable, since a tty device node can exist without being usable.
+func ttyOpenable(path string) bool {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return false
+	}
+	_ = f.Close()
+	return true
 }
 
 // pinentryBinary chooses the pinentry program: an explicit gpg-agent.conf
