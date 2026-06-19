@@ -14,6 +14,14 @@
 /bin/busybox --install -s /bin
 export HOME=/root XDG_DATA_HOME=/data XDG_CONFIG_HOME=/data/config PATH=/bin
 
+# The Linux master-key PIN (config writes / _enclave-check) prompts via pinentry. This
+# headless guest has no real pinentry or terminal, so point it at the fake that returns
+# a fixed PIN — TEST ONLY; production never has a non-interactive PIN path (presence
+# means a human at the machine).
+export GNUPGHOME=$HOME/.gnupg
+mkdir -p "$GNUPGHOME"
+echo "pinentry-program /bin/fake-pinentry" >"$GNUPGHOME/gpg-agent.conf"
+
 fail=0
 run() {
   label=$1

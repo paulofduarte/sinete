@@ -111,29 +111,61 @@ func RemoveMaster() error {
 // makes it readable (a counter must be incremented once before it can be read), just
 // like provisioning any key — see ensureEpoch.
 func EnsureMaster() error {
+	// Refuse a remote session FIRST, before touching any hardware. On Linux this
+	// confirms via logind/elogind that we run in a local session (fail-closed), so a
+	// remote user is turned away before the TPM epoch is provisioned or the key is
+	// created. No-op on macOS (the Secure Enclave's Touch ID ACL enforces local
+	// presence at sign time) and on platforms without a presence backend.
+	if err := requireLocalSession(); err != nil {
+		return err
+	}
 	if err := ensureEpoch(); err != nil {
 		return fmt.Errorf("provision epoch: %w", err)
 	}
 	if _, err := masterKey().PublicKey(); err == nil {
 		return nil // already present
 	}
-	// Create the master key requiring user presence to sign: on macOS useBiometrics
-	// maps to a Secure Enclave user-presence ACL (Touch ID); on Linux it is presence-
-	// less for now (no PIN machinery yet). sks.NewKey is idempotent.
-	if _, err := sks.NewKey(MasterLabel, Tag, true, false, nil); err != nil {
+	// Create the master key requiring user presence to sign. On macOS useBiometrics
+	// maps to a Secure Enclave user-presence ACL (Touch ID), no authValue. On Linux
+	// masterCreateAuth prompts the user to set a PIN, bound to the key as its TPM
+	// authValue so signing then requires it. A nil pin is the macOS case; sks.NewKey
+	// is idempotent.
+	pin, err := masterCreateAuth()
+	if err != nil {
+		return fmt.Errorf("cryptoprocessor: set master key PIN: %w", err)
+	}
+	if _, err := sks.NewKey(MasterLabel, Tag, true, false, nil, sks.WithAuthValue(pin)); err != nil {
 		// Tolerate a concurrent creator: if the key now exists, another process
-		// won the race and that is success, not a duplicate-item failure.
+		// won the race and that is success, not a duplicate-item failure. We do NOT
+		// cache our pin here — the key was created by the other process, possibly with
+		// a different PIN, so the next sign must prompt rather than reuse ours. Our pin
+		// is therefore unused: erase it now rather than leave it for the GC.
+		wipe(pin)
 		if _, perr := masterKey().PublicKey(); perr == nil {
 			return nil
 		}
 		return fmt.Errorf("cryptoprocessor: create master key: %w", err)
 	}
+	// We created the key with this PIN: reuse it for the immediately-following sign
+	// (e.g. the registry write in the same install) so the user isn't prompted twice.
+	cacheMasterPIN(pin)
 	return nil
 }
 
 // masterKey opens the master key via sks (by label+tag). Signing through it
 // triggers the user-presence prompt the key's ACL requires.
 func masterKey() *Key { return OpenLabelTag(MasterLabel, Tag) }
+
+// wipe zeroes a PIN buffer once it is no longer needed, shrinking the window the
+// secret sits in memory. It is best-effort: a PIN that originates as a Go string
+// (pinentry's return) leaves an immutable copy the GC owns and we cannot clear, and
+// sks may keep its own copy as the key handle's authValue. wipe(nil) is a no-op, so
+// the macOS/stub path (nil pin) is fine.
+func wipe(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
+}
 
 // MasterPublicKey returns the master key's public key (for verifying signed
 // config). Reading a public key requires no presence.
@@ -145,15 +177,33 @@ func MasterPublicKey() (ssh.PublicKey, error) {
 	return pub, nil
 }
 
-// MasterSign signs data with the master key (the ssh signer hashes it
-// internally). This triggers Touch ID — the key's user-presence ACL — so it must
-// run on the main OS thread. Verify with MasterPublicKey().Verify(data, sig).
+// MasterSign signs data with the master key (the ssh signer hashes it internally).
+// It requires user presence: on macOS the key's ACL triggers Touch ID (so it must
+// run on the main OS thread); on Linux masterSignAuth prompts for the key's PIN,
+// supplied as the TPM authValue. Verify with MasterPublicKey().Verify(data, sig).
 func MasterSign(data []byte) (*ssh.Signature, error) {
-	signer, err := masterKey().Signer()
+	// Refuse a remote session up front, before opening the key or prompting for a PIN.
+	if err := requireLocalSession(); err != nil {
+		return nil, err
+	}
+	pin, err := masterSignAuth()
 	if err != nil {
 		return nil, err
 	}
-	return signer.Sign(rand.Reader, data)
+	// Erase the PIN buffer as soon as the signature is done (success or failure), so
+	// the secret does not linger in memory until the GC runs.
+	defer wipe(pin)
+	// Open the master key with the authValue (nil on macOS, the PIN on Linux).
+	k := &Key{label: MasterLabel, inner: sks.FromLabelTag(MasterLabel+":"+Tag, sks.WithAuthValue(pin))}
+	signer, err := k.Signer()
+	if err != nil {
+		return nil, err
+	}
+	sig, err := signer.Sign(rand.Reader, data)
+	if err != nil {
+		return nil, masterSignError(err)
+	}
+	return sig, nil
 }
 
 // Epoch returns the current registry epoch, and whether it exists yet. The store

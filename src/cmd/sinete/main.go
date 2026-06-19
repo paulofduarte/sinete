@@ -362,7 +362,7 @@ func cmdEnclaveCheck(args []string) error {
 	}
 	fmt.Printf("  master pub (no prompt expected): %s\n", ssh.FingerprintSHA256(mpub))
 
-	fmt.Println("== master sign (a presence prompt may appear: Touch ID on macOS; presence-less on Linux v1) ==")
+	fmt.Println("== master sign (a presence prompt may appear: Touch ID on macOS, your PIN on Linux) ==")
 	msg := []byte("sinete enclave-check")
 	sig, err := cryptoprocessor.MasterSign(msg)
 	if err != nil {
@@ -403,7 +403,7 @@ func cmdEnclaveCheck(args []string) error {
 		return fmt.Errorf("an absent config should be trusted")
 	}
 	cfg.SetKeyConfig("enclave-check", registry.PresenceTTL, "7m")
-	fmt.Println("  saving config (a presence prompt may appear: Touch ID on macOS; presence-less on Linux v1)...")
+	fmt.Println("  saving config (a presence prompt may appear: Touch ID on macOS, your PIN on Linux)...")
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
@@ -949,11 +949,8 @@ func cmdInstall(args []string) error {
 		fmt.Println("installed: agent service registered to start at login")
 		fmt.Println("note: run `loginctl enable-linger` to keep the agent running after logout / on a headless box")
 	}
-	// Presence caching is a macOS-v1 concept (Touch ID windows). Linux is
-	// presence-less in v1, so presence TTLs are moot — skip configuring them.
-	if runtime.GOOS != "darwin" {
-		return nil
-	}
+	// Configure presence caching on both platforms: macOS gates with Touch ID, Linux
+	// with the master-key PIN (set here, when the signed registry is first written).
 	return configurePresenceOnInstall(*ttl, *maxTTL)
 }
 
@@ -1000,7 +997,7 @@ func configurePresenceOnInstall(ttlFlag, maxFlag string) error {
 			return nil
 		}
 		if !isInteractive() {
-			fmt.Fprintln(os.Stderr, "note: presence TTLs are unset, so every signature prompts for Touch ID. Configure them with `sinete config set presence-ttl <d>` and `sinete config set presence-max-ttl <d>`, or re-run `sinete install` interactively.")
+			fmt.Fprintln(os.Stderr, "note: presence TTLs are unset, so every signature prompts for presence (Touch ID on macOS, your PIN on Linux). Configure them with `sinete config set presence-ttl <d>` and `sinete config set presence-max-ttl <d>`, or re-run `sinete install` interactively.")
 			return nil
 		}
 		fmt.Fprintln(os.Stderr, "Configure presence caching (blank keeps the suggested value):")

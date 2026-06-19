@@ -6,8 +6,10 @@ require (
 	github.com/facebookincubator/sks v0.0.0-20260414012743-2ba33de48bd7
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/google/go-tpm v0.9.0
+	github.com/twpayne/go-pinentry v0.3.0
 	golang.org/x/crypto v0.53.0
 	golang.org/x/sys v0.46.0
+	golang.org/x/term v0.44.0
 )
 
 require (
@@ -23,7 +25,10 @@ require (
 	github.com/hashicorp/errwrap v1.0.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/jgoguen/go-utils v0.0.0-20200211015258-b42ad41486fd // indirect
+	github.com/mattn/go-colorable v0.1.13 // indirect
+	github.com/mattn/go-isatty v0.0.18 // indirect
 	github.com/peterbourgon/diskv v2.0.1+incompatible // indirect
+	github.com/rs/zerolog v1.29.1 // indirect
 )
 
 replace github.com/facebookincubator/sks => github.com/paulofduarte/sks v0.0.0-20260619135928-a47104fc1c21
