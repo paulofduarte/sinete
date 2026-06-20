@@ -178,7 +178,14 @@ echo "--- provision persistent master key (fake-pinentry) ---"
 prov_out=$(sinete config set presence-max-ttl 2h 2>&1)
 prov_rc=$?
 echo "PROV(rc=$prov_rc): $prov_out"
-[ -e "$XDG_DATA_HOME/sks/sinete-_master" ] && echo "PROV: master blob present" || echo "PROV: master blob ABSENT"
+# This is a PREREQUISITE for the sign scenarios [4]-[8], not just a log line: without the
+# master key, [4]-[7] can't sign and [8] would refuse on the CREATE path instead of the
+# SIGN path it means to test. Gate PASS/FAIL on it so the matrix enforces the prereq.
+if [ "$prov_rc" -eq 0 ] && [ -e "$XDG_DATA_HOME/sks/sinete-_master" ]; then
+  ok "master key provisioned"
+else
+  bad "master key provisioning (blob $([ -e "$XDG_DATA_HOME/sks/sinete-_master" ] && echo present || echo ABSENT))"
+fi
 fake_pinentry_off
 
 # ── [4]–[6] each REAL pinentry program / the x/term fallback signs a config write.
@@ -190,9 +197,12 @@ echo "--- [5] pinentry-tty sign ---"
 distro_expose_pinentry tty
 if feed_line 11m sign; then ok "pinentry-tty sign"; else bad "pinentry-tty sign"; fi
 
-echo "--- [6] x/term fallback sign (no pinentry on PATH) ---"
+# No pinentry program on PATH and DISPLAY/WAYLAND_DISPLAY unset (top of file), so sinete
+# reads the PIN straight from the controlling tty via golang.org/x/term — the terminal-read
+# fallback, NOT a graphical (xmessage/zenity) prompt.
+echo "--- [6] terminal-read fallback sign (x/term, no pinentry on PATH) ---"
 distro_expose_pinentry none
-if feed_line 12m sign; then ok "x/term fallback sign"; else bad "x/term fallback sign"; fi
+if feed_line 12m sign; then ok "terminal-read (x/term) fallback sign"; else bad "terminal-read (x/term) fallback sign"; fi
 distro_expose_pinentry all
 
 # ── [7] a wrong PIN must be rejected by the TPM (proves the authValue actually gates).
