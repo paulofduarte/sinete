@@ -22,10 +22,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v22
-      - name: enable KVM (best-effort)
+      - name: enable KVM (kvm group only, not world-writable)
         run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          # Restrict /dev/kvm to the kvm group (0660), not 0666 — the runner is
+          # single-tenant, but there's no reason to open KVM to every process. The
+          # matrix step runs under the kvm group (`sg kvm`) so QEMU still gets accel.
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0660", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm || true
+          sudo usermod -aG kvm "$(id -un)"
       - name: distro e2e matrix (Debian + Alpine)
-        run: nix run --accept-flake-config .#e2e-linux-full
+        # `sg kvm -c` runs with kvm as the primary group (so /dev/kvm is accessible)
+        # while preserving the environment — nix stays on PATH (unlike sudo, which resets it).
+        run: sg kvm -c 'nix run --accept-flake-config .#e2e-linux-full'
