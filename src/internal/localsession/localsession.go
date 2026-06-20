@@ -43,7 +43,7 @@ func RequireLocalSelf() error {
 		return fmt.Errorf("cannot confirm a local session for a presence-gated operation; refusing: %w", err)
 	}
 	if !local {
-		return errors.New("refusing a presence-gated operation: no local session for this user (a remote/SSH session, or no local login). Run sinete at the machine, where the master-key PIN is entered")
+		return errors.New("refusing a presence-gated operation: could not confirm a local-only session (this session is remote, or this user also has a remote session open, or there is no local login). Run sinete at the machine, where the master-key PIN is entered")
 	}
 	return nil
 }
@@ -77,8 +77,9 @@ const (
 //     terminals (gnome-terminal, konsole) run shells under user@.service, and so do
 //     systemd --user / D-Bus-activated apps and lingering services. A real SSH process,
 //     by contrast, is always inside its sshd session (caught above). So we fall back to
-//     "does this user have any LOCAL (non-remote) session?" — true ⇒ the user is present
-//     at the machine.
+//     "does this user have a local session AND no remote one?" — a session-less process
+//     can't be attributed to a session, so a user who is also logged in remotely is
+//     ambiguous and fails closed (see userLocalSession).
 //
 // It errors when localness can't be determined (no logind/elogind, hung bus, malformed
 // reply); every caller fails closed on an error.
@@ -99,7 +100,7 @@ func IsLocal(pid, uid uint32) (bool, error) {
 		}
 		return !remote, nil
 	case isNoSessionForPID(err):
-		return userHasLocalSession(bus, ctx, uid)
+		return userLocalSession(bus, ctx, uid)
 	default:
 		return false, err
 	}
@@ -126,9 +127,13 @@ func sessionRemote(bus *dbus.Conn, ctx context.Context, session dbus.ObjectPath)
 	return r, nil
 }
 
-// userHasLocalSession reports whether uid has any session whose Remote property is false
-// (a local console/graphical login). A remote-only user (SSH sessions only) yields false.
-func userHasLocalSession(bus *dbus.Conn, ctx context.Context, uid uint32) (bool, error) {
+// userLocalSession is the fail-closed fallback for a session-less process: it reports
+// true only if uid has at least one LOCAL session AND no remote one. A session-less
+// process can't be attributed to a specific session, so if the user is ALSO logged in
+// remotely we cannot rule out that the process belongs to the remote context — refuse.
+// A Remote read failure for any of the user's sessions is likewise "cannot confirm" and
+// returns an error (the caller fails closed), never silently skipped.
+func userLocalSession(bus *dbus.Conn, ctx context.Context, uid uint32) (bool, error) {
 	var sessions []struct {
 		ID   string
 		UID  uint32
@@ -140,19 +145,21 @@ func userHasLocalSession(bus *dbus.Conn, ctx context.Context, uid uint32) (bool,
 		CallWithContext(ctx, loginMgrIf+".ListSessions", 0).Store(&sessions); err != nil {
 		return false, err
 	}
+	hasLocal := false
 	for _, s := range sessions {
 		if s.UID != uid {
 			continue
 		}
 		remote, err := sessionRemote(bus, ctx, s.Path)
 		if err != nil {
-			continue // skip a session we can't read rather than fail the whole check
+			return false, err // can't read this session ⇒ can't confirm ⇒ fail closed
 		}
-		if !remote {
-			return true, nil // a local session for this user ⇒ they are at the machine
+		if remote {
+			return false, nil // a remote session for this user ⇒ ambiguous ⇒ refuse
 		}
+		hasLocal = true
 	}
-	return false, nil
+	return hasLocal, nil
 }
 
 // isNoSessionForPID reports whether err is logind's "this pid has no session" — the
