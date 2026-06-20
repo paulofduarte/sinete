@@ -44,6 +44,12 @@ emit_user_data() {
 	UD
 }
 
+# sha256_of prints "<hex>  <file>" — sha256sum on Linux / under nix, shasum -a 256 on a
+# macOS direct run (no coreutils). Keeps `bash run-full.sh` working on both.
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi
+}
+
 fetch_image() { # $1 distro  -> echoes cached image path
   local d="$1" url sha img
   # Upstream cloud images, version-pinned with a verified sha256 (cached after first
@@ -81,7 +87,7 @@ fetch_image() { # $1 distro  -> echoes cached image path
     echo "FATAL: $d image sha256 not pinned" >&2
     return 1
   }
-  echo "$sha  $img" | sha256sum -c - >&2 || {
+  sha256_of "$img" | grep -qiF "$sha" || {
     echo "FATAL: $d image sha256 mismatch (upstream changed?) — re-pin, or remove $img and retry" >&2
     return 1
   }
