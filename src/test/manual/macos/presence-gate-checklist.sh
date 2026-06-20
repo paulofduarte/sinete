@@ -94,6 +94,14 @@ need_ssh() {
     echo "${c_red}ssh-add not found on PATH${c_off} — required for the Tier C agent scenarios"
     return 1
   }
+  # -T (sign-test with a key) arrived in OpenSSH 8.0; an older ssh-add would reject it and
+  # Tier C would mis-grade (e.g. C4 PASSes without ever attempting a signature). Probe it
+  # directly: a missing flag prints "illegal option"/"unknown option"; a supported -T just
+  # fails on the empty input (no Touch ID — /dev/null is not a key).
+  if ssh-add -T /dev/null 2>&1 | grep -qiE 'illegal option|unknown option'; then
+    echo "${c_red}this ssh-add has no -T (sign-test) option — needs OpenSSH >= 8.0${c_off}; Tier C can't drive an agent signature"
+    return 1
+  fi
 }
 
 # ssh-add -T signs a challenge with each listed key via the agent → triggers the presence
