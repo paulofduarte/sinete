@@ -40,7 +40,7 @@ emit_user_data() {
 		password: root
 		chpasswd: { expire: false }
 		runcmd:
-		  - [ sh, -c, "mkdir -p /mnt/seed; for d in /dev/vdb /dev/vdb1 /dev/sr0 /dev/sdb /dev/sdb1; do mount -o ro $d /mnt/seed 2>/dev/null && [ -f /mnt/seed/driver.sh ] && break; umount /mnt/seed 2>/dev/null; done; cp /mnt/seed/driver.sh /mnt/seed/distro.sh /mnt/seed/sinete /mnt/seed/fake-pinentry /root/; chmod +x /root/driver.sh /root/sinete /root/fake-pinentry; . /root/distro.sh; distro_provision > /dev/console 2>&1" ]
+		  - [ sh, -c, "mkdir -p /mnt/seed; m=0; for d in /dev/vdb /dev/vdb1 /dev/sr0 /dev/sdb /dev/sdb1; do mount -o ro $d /mnt/seed 2>/dev/null && [ -f /mnt/seed/driver.sh ] && { m=1; break; }; umount /mnt/seed 2>/dev/null; done; [ $m = 1 ] || { echo 'SEED MOUNT FAILED' > /dev/console; echo SINETE_VM_FAIL > /dev/console; poweroff -f; }; cp /mnt/seed/driver.sh /mnt/seed/distro.sh /mnt/seed/sinete /mnt/seed/fake-pinentry /root/ && chmod +x /root/driver.sh /root/sinete /root/fake-pinentry || { echo 'SEED COPY FAILED' > /dev/console; echo SINETE_VM_FAIL > /dev/console; poweroff -f; }; . /root/distro.sh; distro_provision > /dev/console 2>&1 || { echo 'PROVISION FAILED' > /dev/console; echo SINETE_VM_FAIL > /dev/console; poweroff -f; }" ]
 	UD
 }
 
