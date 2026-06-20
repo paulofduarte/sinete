@@ -238,6 +238,30 @@
             exec bash src/test/qemu/full/run-full.sh
           '';
         };
+
+        # `nix run .#presence-gate-checklist`: the MANUAL, interactive harness for the
+        # Linux local-session presence gate (logind/elogind local-vs-remote check that
+        # guards master-key PIN entry; internal/localsession). It builds the real sinete,
+        # points the checklist at it (SINETE), and walks you through the local / remote /
+        # mixed / no-logind scenarios — the human-judged counterpart of the qemu matrix,
+        # to be run ON the machine under test (a VM or real hardware). Linux-only for now
+        # (the scenarios use loginctl/ssh; the macOS presence path is covered by .#e2e-macos).
+        presenceChecklistApp = pkgs.writeShellApplication {
+          name = "sinete-presence-gate-checklist";
+          # loginctl/busctl are intentionally NOT pinned: the checklist must use the HOST's
+          # to query the running logind/elogind, and writeShellApplication PREPENDS these to
+          # $PATH — pinning systemd would shadow the host's clients with a possibly-mismatched
+          # build. They're best-effort context anyway; the verdict comes from sinete's output.
+          runtimeInputs = [
+            pkgs.bash
+            pkgs.coreutils
+            pkgs.gnugrep
+          ];
+          text = ''
+            export SINETE="${self.packages.${system}.default}/bin/sinete"
+            exec bash "${self}/src/test/manual/linux/presence-gate-checklist.sh" "$@"
+          '';
+        };
       in
       {
         packages.default = pkgs.buildGoModule {
@@ -273,9 +297,10 @@
         # signRunApp, which signs the binary with the SE entitlements first (a bare
         # binary is rejected by the Secure Enclave otherwise). `nix build` produces just
         # the binary on both. `nix run .#e2e-linux-full` is the heavy 2-VM distro
-        # acceptance matrix (all systems). The remaining apps are macOS-only (Apple tools):
-        # `nix run .#bundle -- <profile>` builds the signed .app, `nix run .#e2e-macos`
-        # the on-device SE acceptance test.
+        # acceptance matrix (all systems); `nix run .#presence-gate-checklist` (Linux only)
+        # is the manual, interactive local-session presence-gate harness. The remaining apps
+        # are macOS-only (Apple tools): `nix run .#bundle -- <profile>` builds the signed
+        # .app, `nix run .#e2e-macos` the on-device SE acceptance test.
         apps = {
           default = {
             type = "app";
@@ -288,6 +313,12 @@
           e2e-linux-full = {
             type = "app";
             program = "${e2eLinuxFullApp}/bin/sinete-e2e-linux-full";
+          };
+        }
+        // pkgs.lib.optionalAttrs (!pkgs.stdenv.isDarwin) {
+          presence-gate-checklist = {
+            type = "app";
+            program = "${presenceChecklistApp}/bin/sinete-presence-gate-checklist";
           };
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {

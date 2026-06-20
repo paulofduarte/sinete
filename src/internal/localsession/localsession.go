@@ -3,20 +3,21 @@
 
 //go:build linux
 
-// Package localsession answers one question on Linux: is a given process's login
-// session LOCAL (at the machine), as opposed to remote (SSH) or unconfirmable? It
-// resolves the session via logind/elogind (org.freedesktop.login1) by PID and reads
-// its Remote property — a value the system sets at login from the session class,
-// which a client cannot forge via its environment. It is the shared, unspoofable
-// local-presence signal used both by the agent (to refuse signing cryptoprocessor
-// keys for a remote peer) and by config signing (to refuse a remote master-key PIN
-// prompt).
+// Package localsession answers one question on Linux: is a process (and its user)
+// operating LOCALLY (at the machine), as opposed to remotely (SSH) or unconfirmable? It
+// resolves this via logind/elogind (org.freedesktop.login1): a session's Remote property
+// — set by the system at login from the session class, which a client cannot forge via
+// its environment — and, for processes that run outside a session scope (graphical
+// terminals, systemd --user services), the user's other sessions. It is the shared,
+// unspoofable local-presence signal used both by the agent (to refuse signing
+// cryptoprocessor keys for a remote peer) and by config signing (to refuse a remote
+// master-key PIN prompt).
 //
-// Every caller fails CLOSED: any error from IsLocalPID means "could not confirm
-// local", and presence / PIN entry must then be refused. This is deliberate — on
-// Linux pinentry will happily prompt on an SSH pty, so an unconfirmed session could
-// be a remote one that answers it; the remote check is the security boundary and must
-// be positively confirmed, never assumed.
+// Every caller fails CLOSED: any error from IsLocal means "could not confirm local", and
+// presence / PIN entry must then be refused. This is deliberate — on Linux pinentry will
+// happily prompt on an SSH pty, so an unconfirmed session could be a remote one that
+// answers it; the remote check is the security boundary and must be positively
+// confirmed, never assumed.
 package localsession
 
 import (
@@ -29,12 +30,12 @@ import (
 	"github.com/godbus/dbus/v5"
 )
 
-// RequireLocalSelf refuses unless THIS process's logind/elogind session is positively
-// local — the own-process counterpart of the agent's peer check, on the same
-// unspoofable signal, fail-closed. It is the Linux half of the cross-platform
-// local-session gate (see the darwin and other-platform files for the same API).
+// RequireLocalSelf refuses unless THIS process — or, when it isn't in a session scope,
+// its user — is positively local. It is the own-process counterpart of the agent's peer
+// check, on the same unspoofable signal, fail-closed. It is the Linux half of the
+// cross-platform local-session gate (see the darwin and other-platform files).
 func RequireLocalSelf() error {
-	local, err := IsLocalPID(uint32(os.Getpid()))
+	local, err := IsLocal(uint32(os.Getpid()), uint32(os.Getuid()))
 	if err != nil {
 		if Unavailable(err) {
 			return fmt.Errorf("sinete needs systemd-logind or elogind to confirm this is a local session before a presence-gated operation — install/start one and run sinete at the machine (remote sessions are refused): %w", err)
@@ -42,7 +43,7 @@ func RequireLocalSelf() error {
 		return fmt.Errorf("cannot confirm a local session for a presence-gated operation; refusing: %w", err)
 	}
 	if !local {
-		return errors.New("refusing a presence-gated operation from a remote session — run sinete from a local session at the machine, where the master-key PIN is entered")
+		return errors.New("refusing a presence-gated operation: could not confirm a local-only session (this session is remote, or this user also has a remote session open, or there is no local login). Run sinete at the machine, where the master-key PIN is entered")
 	}
 	return nil
 }
@@ -57,43 +58,138 @@ const dbusTimeout = 2 * time.Second
 // false for it (the caller still fails closed, but it is not a "no logind" condition).
 var errMalformedReply = errors.New("login1 Session.Remote is not a bool")
 
-// IsLocalPID reports whether the logind/elogind session owning pid is local (its
-// Remote property is false). It returns an error when localness cannot be confirmed —
-// logind/elogind unavailable, the system bus is hung (timeout), or pid has no session
-// — and every caller fails closed on any such error.
-func IsLocalPID(pid uint32) (bool, error) {
-	const (
-		dest     = "org.freedesktop.login1"
-		mgrPath  = "/org/freedesktop/login1"
-		mgrIf    = "org.freedesktop.login1.Manager"
-		sessIf   = "org.freedesktop.login1.Session"
-		propsGet = "org.freedesktop.DBus.Properties.Get"
-	)
+const (
+	loginDest    = "org.freedesktop.login1"
+	loginMgrPath = "/org/freedesktop/login1"
+	loginMgrIf   = "org.freedesktop.login1.Manager"
+	loginSessIf  = "org.freedesktop.login1.Session"
+	propsGet     = "org.freedesktop.DBus.Properties.Get"
+)
 
+// IsLocal reports whether pid — or, when pid is not in a session scope, its user uid —
+// is operating LOCALLY (at the machine) rather than remotely (SSH).
+//
+//   - If pid is in a logind/elogind session, its Remote property is authoritative: a
+//     console/graphical session is local, an SSH session is not. This is precise — if a
+//     user is logged in both locally and over SSH, the SSH process is caught here.
+//   - If pid is NOT in a session (GetSessionByPID returns NoSessionForPID), the process
+//     escaped the login session cgroup. This is the common local case: graphical
+//     terminals (gnome-terminal, konsole) run shells under user@.service, and so do
+//     systemd --user / D-Bus-activated apps and lingering services. A real SSH process,
+//     by contrast, is always inside its sshd session (caught above). So we fall back to
+//     "does this user have a local session AND no remote one?" — a session-less process
+//     can't be attributed to a session, so a user who is also logged in remotely is
+//     ambiguous and fails closed (see userLocalSession).
+//
+// It errors when localness can't be determined (no logind/elogind, hung bus, malformed
+// reply); every caller fails closed on an error.
+func IsLocal(pid, uid uint32) (bool, error) {
 	bus, err := dbus.SystemBus()
 	if err != nil {
 		return false, err
 	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), dbusTimeout)
 	defer cancel()
 
-	var session dbus.ObjectPath
-	if err := bus.Object(dest, mgrPath).
-		CallWithContext(ctx, mgrIf+".GetSessionByPID", 0, pid).Store(&session); err != nil {
+	session, err := sessionByPID(bus, ctx, pid)
+	switch {
+	case err == nil:
+		remote, rerr := sessionRemote(bus, ctx, session)
+		if rerr != nil {
+			return false, rerr
+		}
+		return !remote, nil
+	case isNoSessionForPID(err):
+		return userLocalSession(bus, ctx, uid)
+	default:
 		return false, err
 	}
+}
 
+func sessionByPID(bus *dbus.Conn, ctx context.Context, pid uint32) (dbus.ObjectPath, error) {
+	var session dbus.ObjectPath
+	err := bus.Object(loginDest, loginMgrPath).
+		CallWithContext(ctx, loginMgrIf+".GetSessionByPID", 0, pid).Store(&session)
+	return session, err
+}
+
+// sessionRemote reads a session's Remote property.
+func sessionRemote(bus *dbus.Conn, ctx context.Context, session dbus.ObjectPath) (bool, error) {
 	var remote dbus.Variant
-	if err := bus.Object(dest, session).
-		CallWithContext(ctx, propsGet, 0, sessIf, "Remote").Store(&remote); err != nil {
+	if err := bus.Object(loginDest, session).
+		CallWithContext(ctx, propsGet, 0, loginSessIf, "Remote").Store(&remote); err != nil {
 		return false, err
 	}
 	r, ok := remote.Value().(bool)
 	if !ok {
 		return false, errMalformedReply
 	}
-	return !r, nil
+	return r, nil
+}
+
+// sessionRemoteInfo is one logind session reduced to the two fields the local-only
+// decision needs: whose it is, and whether it is remote. It is what userLocalSession
+// gathers from D-Bus and hands to the pure localOnlyForUID decision.
+type sessionRemoteInfo struct {
+	uid    uint32
+	remote bool
+}
+
+// localOnlyForUID is the security decision, factored out as a pure function so it can be
+// unit-tested without a live logind bus. Given every session's owner uid and Remote flag,
+// it reports true iff uid owns at least one session and NONE of uid's sessions is remote.
+// A session-less process (the only caller's situation) can't be pinned to a specific
+// session, so a uid that is ALSO logged in remotely is ambiguous and refused; another
+// user's remote session is irrelevant and ignored.
+func localOnlyForUID(sessions []sessionRemoteInfo, uid uint32) bool {
+	hasLocal := false
+	for _, s := range sessions {
+		if s.uid != uid {
+			continue
+		}
+		if s.remote {
+			return false // a remote session for this user ⇒ ambiguous ⇒ refuse
+		}
+		hasLocal = true
+	}
+	return hasLocal
+}
+
+// userLocalSession is the fail-closed fallback for a session-less process: it gathers
+// uid's sessions and their Remote flags from logind, then applies localOnlyForUID. A
+// Remote read failure for any of the user's sessions is "cannot confirm" and returns an
+// error (the caller fails closed), never silently skipped.
+func userLocalSession(bus *dbus.Conn, ctx context.Context, uid uint32) (bool, error) {
+	var sessions []struct {
+		ID   string
+		UID  uint32
+		User string
+		Seat string
+		Path dbus.ObjectPath
+	}
+	if err := bus.Object(loginDest, loginMgrPath).
+		CallWithContext(ctx, loginMgrIf+".ListSessions", 0).Store(&sessions); err != nil {
+		return false, err
+	}
+	infos := make([]sessionRemoteInfo, 0, len(sessions))
+	for _, s := range sessions {
+		if s.UID != uid {
+			continue
+		}
+		remote, err := sessionRemote(bus, ctx, s.Path)
+		if err != nil {
+			return false, err // can't read this session ⇒ can't confirm ⇒ fail closed
+		}
+		infos = append(infos, sessionRemoteInfo{uid: s.UID, remote: remote})
+	}
+	return localOnlyForUID(infos, uid), nil
+}
+
+// isNoSessionForPID reports whether err is logind's "this pid has no session" — the
+// signal to fall back to the user's sessions.
+func isNoSessionForPID(err error) bool {
+	name, ok := dbusErrorName(err)
+	return ok && name == "org.freedesktop.login1.NoSessionForPID"
 }
 
 // Unavailable reports whether err means local presence could not be detected because
