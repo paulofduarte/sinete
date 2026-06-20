@@ -296,6 +296,13 @@
               echo "no provisioning profile given and no built bundle at $app." >&2
               echo "Build it once AT the Mac:  nix run .#presence-gate-checklist -- <profile>" >&2
               echo "then re-run scenarios (including C4 over ssh) without a profile." >&2
+              # C4 (remote test) drives only the running agent, so let it through even with
+              # no bundle. Anything else — including no scenario — genuinely can't run here,
+              # so fail loudly rather than drop into the menu and exit 0.
+              case "''${1:-}" in
+                C4 | c4) : ;;
+                *) exit 1 ;;
+              esac
             fi
             exec bash "${self}/src/test/manual/macos/presence-gate-checklist.sh" "$@"
           '';
