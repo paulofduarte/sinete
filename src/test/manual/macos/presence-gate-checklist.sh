@@ -37,6 +37,13 @@ c_grn=$'\033[32m'
 c_dim=$'\033[2m'
 c_off=$'\033[0m'
 
+# C2 waits out the TTL via integer-seconds arithmetic, so the value must be like "30s".
+# Reject anything else up front (e.g. "1m" would break the wait and the expiry observation).
+printf '%s' "$TTL" | grep -qE '^[0-9]+s$' || {
+  echo "SINETE_PRESENCE_TTL must be integer seconds like '30s' (C2 waits that long); got '$TTL'" >&2
+  exit 2
+}
+
 # --- scenario table -------------------------------------------------------------------
 # kind is one of:
 #   APPROVE   expect exit 0 after you approve the prompt
@@ -80,11 +87,23 @@ need_agent() {
     return 1
   }
 }
+# ssh-add drives the Tier C agent signatures; without it those scenarios can't run, and a
+# missing-tool exit (127) must not be mistaken for an agent refusal. Require it explicitly.
+need_ssh() {
+  command -v ssh-add >/dev/null 2>&1 || {
+    echo "${c_red}ssh-add not found on PATH${c_off} — required for the Tier C agent scenarios"
+    return 1
+  }
+}
 
 # ssh-add -T signs a challenge with each listed key via the agent → triggers the presence
-# path without needing a server. Returns 0 iff the agent signed.
-agent_sign() { # -> 0 signed / non-zero refused-or-failed
-  local keys
+# path without needing a server. Three-way result so callers never confuse "could not even
+# attempt" with "the agent refused":
+#   0  the agent SIGNED
+#   1  the agent was asked but did NOT sign (refused / signature failed) — the C4 case
+#   2  could not attempt (agent advertised no keys)
+agent_sign() {
+  local keys rc
   keys="$(mktemp "${TMPDIR:-/tmp}/sinete-agentkeys.XXXXXX")"
   SSH_AUTH_SOCK="$AGENT_SOCK" ssh-add -L >"$keys" 2>/dev/null
   if ! [ -s "$keys" ]; then
@@ -92,10 +111,9 @@ agent_sign() { # -> 0 signed / non-zero refused-or-failed
     echo "  (agent advertised no keys — generate one first: $SINETE generate <name>)" >&2
     return 2
   fi
-  SSH_AUTH_SOCK="$AGENT_SOCK" ssh-add -T "$keys" >/dev/null 2>&1
-  local rc=$?
+  if SSH_AUTH_SOCK="$AGENT_SOCK" ssh-add -T "$keys" >/dev/null 2>&1; then rc=0; else rc=1; fi
   rm -f "$keys"
-  return $rc
+  return "$rc"
 }
 
 ask_yn() { # $1 prompt -> 0 yes / 1 no
@@ -131,7 +149,7 @@ run_scenario() {
   read -r -p "Ready? press Enter to run (Ctrl-C to abort)… " _
   echo
 
-  local rc=1
+  local rc=1 a b r k out
   case "$s" in
   # ── Tier A: presence prompt (LocalAuthentication) — exit code is authoritative ──
   A1)
@@ -183,24 +201,39 @@ run_scenario() {
   # ── Tier C: agent presence window + remote refusal ──
   C1)
     need_agent || return 1
+    need_ssh || return 1
     echo "Signing once — APPROVE the Touch ID prompt:"
     agent_sign
+    a=$?
     echo "Signing again immediately (should be SILENT — no prompt):"
     agent_sign
-    ask_yn "Did the FIRST prompt, and the SECOND stay silent (within $TTL)?" && rc=0 || rc=1
+    b=$?
+    if [ "$a" -ne 0 ] || [ "$b" -ne 0 ]; then
+      echo "  ${c_red}a signature did not complete (first=$a second=$b) — cannot judge caching${c_off}"
+      rc=1
+    else
+      ask_yn "Did the FIRST prompt, and the SECOND stay silent (within $TTL)?" && rc=0 || rc=1
+    fi
     ;;
   C2)
     need_agent || return 1
+    need_ssh || return 1
     echo "Waiting out the idle TTL ($TTL) so the window lapses…"
-    sleep_for="${TTL%s}"
-    sleep "$((sleep_for + 3))"
+    sleep "$((${TTL%s} + 3))" # $TTL is validated as integer-seconds at startup
     echo "Signing again — it should RE-PROMPT:"
     agent_sign
-    ask_yn "Did it re-prompt for Touch ID after the idle wait?" && rc=0 || rc=1
+    r=$?
+    if [ "$r" -ne 0 ]; then
+      echo "  ${c_red}the signature did not complete (=$r) — cannot judge the re-prompt${c_off}"
+      rc=1
+    else
+      ask_yn "Did it re-prompt for Touch ID after the idle wait?" && rc=0 || rc=1
+    fi
     ;;
   C3)
     need_sinete "$s" || return 1
     need_agent || return 1
+    need_ssh || return 1
     k="checklist-c3-$$"
     echo "${c_dim}Using a throwaway key '$k' (created and removed here; your real keys are untouched).${c_off}"
     "$SINETE" generate "$k" >/dev/null 2>&1 || {
@@ -209,18 +242,32 @@ run_scenario() {
     }
     echo "Sign with it — APPROVE:"
     agent_sign
+    a=$?
     echo "Deleting and recreating '$k' (same name, NEW key) — approve any prompts:"
     "$SINETE" delete "$k" >/dev/null 2>&1
     "$SINETE" generate "$k" >/dev/null 2>&1
     echo "Sign again — it should RE-PROMPT (window is keyed by public key, which changed):"
     agent_sign
-    ask_yn "Did the recreated key re-prompt (not silently reuse the old window)?" && rc=0 || rc=1
+    b=$?
+    if [ "$a" -ne 0 ] || [ "$b" -ne 0 ]; then
+      echo "  ${c_red}a signature did not complete (first=$a second=$b) — cannot judge re-auth${c_off}"
+      rc=1
+    else
+      ask_yn "Did the recreated key re-prompt (not silently reuse the old window)?" && rc=0 || rc=1
+    fi
     "$SINETE" delete "$k" >/dev/null 2>&1 # clean up the throwaway
     ;;
   C4)
     need_agent || return 1
+    need_ssh || return 1
     echo "${c_dim}You should be in an ssh session into this Mac. Attempting an agent signature…${c_off}"
-    if agent_sign; then rc=0; else rc=1; fi
+    agent_sign
+    r=$?
+    if [ "$r" -eq 2 ]; then
+      echo "  ${c_red}agent advertised no keys — generate one first; cannot run C4${c_off}"
+      return 1
+    fi
+    rc=$r # 0 = signed (FAIL: remote should be refused), 1 = refused (PASS)
     ;;
   esac
 
