@@ -215,24 +215,28 @@
           '';
         };
 
-        # `nix run .#e2e-linux`: the Linux TPM backend acceptance test — boot a Linux
-        # kernel + software TPM (swtpm) in QEMU and run the enclave backend against
-        # /dev/tpmrm0. The same script the CI `integration` job runs; invoke from a repo
-        # checkout (its CWD). Available on every system (the x86_64 guest runs under TCG
-        # on an aarch64 macOS box, KVM on an x86_64 Linux host).
-        e2eLinuxApp = pkgs.writeShellApplication {
-          name = "sinete-e2e-linux";
+        # `nix run .#e2e-linux-full`: the heavier 2-VM distro MATRIX — boots real cloud
+        # images (Debian glibc / systemd-logind + Alpine musl / elogind) and runs the
+        # full local-session + TPM matrix on each (fail-closed, remote-refused,
+        # _enclave-check, pinentry-curses/-tty/x-term, wrong-PIN). NOT a per-build CI
+        # gate (it needs network + is slow); run on demand or on releases. It downloads
+        # cloud images, so it needs curl + CA certs.
+        e2eLinuxFullApp = pkgs.writeShellApplication {
+          name = "sinete-e2e-linux-full";
           runtimeInputs = [
             pkgs.go
             pkgs.nix
             pkgs.bash
             pkgs.coreutils
-            pkgs.findutils
+            pkgs.curl
+            pkgs.cacert
             pkgs.gnugrep
-            pkgs.gzip
-            pkgs.cpio
+            pkgs.gnused
           ];
-          text = "exec bash src/test/qemu/run.sh";
+          text = ''
+            export SSL_CERT_FILE="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+            exec bash src/test/qemu/full/run-full.sh
+          '';
         };
 
         # `nix run .#presence-gate-checklist`: the MANUAL, interactive harness for the
@@ -292,11 +296,11 @@
         # directly (no wrapper — Linux needs no signing); on macOS it goes through
         # signRunApp, which signs the binary with the SE entitlements first (a bare
         # binary is rejected by the Secure Enclave otherwise). `nix build` produces just
-        # the binary on both. `nix run .#e2e-linux` is the Linux acceptance test (all
-        # systems); `nix run .#presence-gate-checklist` (Linux only) is the manual,
-        # interactive local-session presence-gate harness. The remaining apps are
-        # macOS-only (the Apple toolchain): `nix run .#bundle -- <profile>` builds the
-        # signed .app, `nix run .#e2e-macos` the on-device SE acceptance test.
+        # the binary on both. `nix run .#e2e-linux-full` is the heavy 2-VM distro
+        # acceptance matrix (all systems); `nix run .#presence-gate-checklist` (Linux only)
+        # is the manual, interactive local-session presence-gate harness. The remaining apps
+        # are macOS-only (Apple tools): `nix run .#bundle -- <profile>` builds the signed
+        # .app, `nix run .#e2e-macos` the on-device SE acceptance test.
         apps = {
           default = {
             type = "app";
@@ -306,9 +310,9 @@
               else
                 "${self.packages.${system}.default}/bin/sinete";
           };
-          e2e-linux = {
+          e2e-linux-full = {
             type = "app";
-            program = "${e2eLinuxApp}/bin/sinete-e2e-linux";
+            program = "${e2eLinuxFullApp}/bin/sinete-e2e-linux-full";
           };
         }
         // pkgs.lib.optionalAttrs (!pkgs.stdenv.isDarwin) {

@@ -52,24 +52,7 @@ jobs:
       - name: tpmsim test (NV counter vs go-tpm simulator)
         run: nix develop --accept-flake-config -c go -C src test -tags tpmsim ./internal/cryptoprocessor
 
-  # Boot a real Linux kernel with a software TPM (swtpm) and run the Linux
-  # cryptoprocessor backend end-to-end against /dev/tpmrm0 — the kernel
-  # resource-manager path the simulator can't exercise (it's where the HMAC-session
-  # hang lived). x86_64 only; KVM makes it fast on the runner.
-  integration:
-    needs: lint
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@v22
-      # /dev/kvm exists on ubuntu-latest but isn't group-accessible by default; make it
-      # world-usable so the test runs with KVM. Best-effort — run.sh falls back to TCG
-      # (slower, but fine within the timeout) if /dev/kvm is absent or unusable.
-      - name: enable KVM (best-effort)
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm || true
-      - name: qemu + swtpm integration test
-        run: nix develop --accept-flake-config -c bash src/test/qemu/run.sh
+  # The full Linux TPM + local-session end-to-end coverage lives in the heavier 2-VM
+  # distro matrix (.github/workflows/e2e-matrix.yml — Debian + Alpine under QEMU/swtpm),
+  # which runs on demand and on releases rather than per-push. Per-push, the crypto path
+  # is covered by the tpmsim test above.
