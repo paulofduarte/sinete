@@ -160,7 +160,9 @@
             } >"$app/Contents/Info.plist"
 
             # Sign inside-out: the unentitled helper first, then the bundle (which
-            # signs the main `sinete` with the SE entitlements and seals all).
+            # signs the main `sinete` with the SE entitlements and seals all). codesign
+            # needs the local login-keychain (GUI) session — it fails with
+            # errSecInternalComponent over ssh, so build the bundle AT the Mac.
             /usr/bin/codesign --force --sign "$identity" "$app/Contents/MacOS/sinete-ui"
             /usr/bin/codesign --force --sign "$identity" \
               --entitlements "$repo/sinete.entitlements" "$app"
@@ -244,8 +246,9 @@
         # guards master-key PIN entry; internal/localsession). It builds the real sinete,
         # points the checklist at it (SINETE), and walks you through the local / remote /
         # mixed / no-logind scenarios — the human-judged counterpart of the qemu matrix,
-        # to be run ON the machine under test (a VM or real hardware). Linux-only for now
-        # (the scenarios use loginctl/ssh; the macOS presence path is covered by .#e2e-macos).
+        # to be run ON the machine under test (a VM or real hardware). This is the LINUX
+        # half of `.#presence-gate-checklist`; the macOS half (presenceMacosApp) runs the
+        # Touch ID / Secure Enclave presence checklist instead (dispatched by stdenv below).
         presenceChecklistApp = pkgs.writeShellApplication {
           name = "sinete-presence-gate-checklist";
           # loginctl/busctl are intentionally NOT pinned: the checklist must use the HOST's
@@ -260,6 +263,67 @@
           text = ''
             export SINETE="${self.packages.${system}.default}/bin/sinete"
             exec bash "${self}/src/test/manual/linux/presence-gate-checklist.sh" "$@"
+          '';
+        };
+
+        # macOS counterpart of presence-gate-checklist: runs the Touch ID / Secure Enclave /
+        # agent-window presence checklist. Touch ID can't be faked, so it is manual by
+        # construction (the gating logic is covered by the Go unit tests).
+        #
+        # The bundle is built ONCE, not on every run — building codesigns the bundle, and
+        # codesign needs the local login-keychain (GUI) session, so it fails over ssh. So:
+        #   - first arg is a provisioning profile → build + sign the bundle now (do this AT
+        #     the Mac). Remaining args select scenarios.
+        #   - no profile → reuse the bundle you already built; DON'T rebuild. This is how you
+        #     run C4 (the remote test) over ssh: no codesign, just the running agent.
+        presenceMacosApp = pkgs.writeShellApplication {
+          name = "sinete-presence-gate-checklist-macos";
+          runtimeInputs = [
+            pkgs.bash
+            pkgs.coreutils
+            pkgs.gnugrep
+          ];
+          text = ''
+            app="$PWD/${bundleRelPath}/Contents/MacOS/sinete"
+            # Detect a profile by its EXTENSION, not just "is $1 a file": scenario ids are
+            # bare (A1/B2/C4), so `[ -f "$1" ]` would misread `-- A1` as a profile if a file
+            # named A1 happened to exist in the CWD.
+            case "''${1:-}" in
+            *.provisionprofile)
+              profile="$1"
+              if [ ! -f "$profile" ]; then
+                echo "provisioning profile not found: $profile" >&2
+                exit 1
+              fi
+              shift
+              # codesigns → must run AT the Mac (fails over ssh). Surface a clear failure
+              # instead of relying on set -e to abort with a cryptic codesign error and the
+              # script then dropping into the menu.
+              if ! ${bundleApp}/bin/sinete-bundle "$profile"; then
+                echo "bundle build/sign failed — codesign needs the local keychain session." >&2
+                echo "Build AT the Mac, not over ssh (then run C4 over ssh WITHOUT a profile)." >&2
+                exit 1
+              fi
+              export SINETE="$app"
+              ;;
+            *)
+              if [ -x "$app" ]; then
+                export SINETE="$app" # reuse the already-built bundle; no rebuild, no codesign
+              else
+                echo "no provisioning profile given and no built bundle at $app." >&2
+                echo "Build it once AT the Mac:  nix run .#presence-gate-checklist -- <profile>" >&2
+                echo "then re-run scenarios (including C4 over ssh) without a profile." >&2
+                # C4 (remote test) drives only the running agent, so let it through even with
+                # no bundle. Anything else — including no scenario — genuinely can't run here,
+                # so fail loudly rather than drop into the menu and exit 0.
+                case "''${1:-}" in
+                  C4) : ;; # the script's scenario ids are uppercase; match it exactly
+                  *) exit 1 ;;
+                esac
+              fi
+              ;;
+            esac
+            exec bash "${self}/src/test/manual/macos/presence-gate-checklist.sh" "$@"
           '';
         };
       in
@@ -297,10 +361,11 @@
         # signRunApp, which signs the binary with the SE entitlements first (a bare
         # binary is rejected by the Secure Enclave otherwise). `nix build` produces just
         # the binary on both. `nix run .#e2e-linux-full` is the heavy 2-VM distro
-        # acceptance matrix (all systems); `nix run .#presence-gate-checklist` (Linux only)
-        # is the manual, interactive local-session presence-gate harness. The remaining apps
-        # are macOS-only (Apple tools): `nix run .#bundle -- <profile>` builds the signed
-        # .app, `nix run .#e2e-macos` the on-device SE acceptance test.
+        # acceptance matrix (all systems); `nix run .#presence-gate-checklist` is the manual
+        # presence harness — on Linux the local-session (logind) gate, on macOS the Touch ID
+        # / Secure Enclave checklist (`-- <profile>`). The remaining apps are macOS-only
+        # (Apple tools): `nix run .#bundle -- <profile>` builds the signed .app,
+        # `nix run .#e2e-macos` the on-device SE acceptance test.
         apps = {
           default = {
             type = "app";
@@ -314,11 +379,16 @@
             type = "app";
             program = "${e2eLinuxFullApp}/bin/sinete-e2e-linux-full";
           };
-        }
-        // pkgs.lib.optionalAttrs (!pkgs.stdenv.isDarwin) {
+          # Same name on both OSes, different body: Linux → the local-session (logind) gate
+          # checklist; macOS → the Touch ID / Secure Enclave presence checklist (which needs
+          # a provisioning profile, so it takes one as its first argument).
           presence-gate-checklist = {
             type = "app";
-            program = "${presenceChecklistApp}/bin/sinete-presence-gate-checklist";
+            program =
+              if pkgs.stdenv.isDarwin then
+                "${presenceMacosApp}/bin/sinete-presence-gate-checklist-macos"
+              else
+                "${presenceChecklistApp}/bin/sinete-presence-gate-checklist";
           };
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
