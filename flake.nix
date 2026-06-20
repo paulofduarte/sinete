@@ -285,8 +285,16 @@
           ];
           text = ''
             app="$PWD/${bundleRelPath}/Contents/MacOS/sinete"
-            if [ $# -ge 1 ] && [ -f "$1" ]; then
+            # Detect a profile by its EXTENSION, not just "is $1 a file": scenario ids are
+            # bare (A1/B2/C4), so `[ -f "$1" ]` would misread `-- A1` as a profile if a file
+            # named A1 happened to exist in the CWD.
+            case "''${1:-}" in
+            *.provisionprofile)
               profile="$1"
+              if [ ! -f "$profile" ]; then
+                echo "provisioning profile not found: $profile" >&2
+                exit 1
+              fi
               shift
               # codesigns → must run AT the Mac (fails over ssh). Surface a clear failure
               # instead of relying on set -e to abort with a cryptic codesign error and the
@@ -297,20 +305,24 @@
                 exit 1
               fi
               export SINETE="$app"
-            elif [ -x "$app" ]; then
-              export SINETE="$app" # reuse the already-built bundle; no rebuild, no codesign
-            else
-              echo "no provisioning profile given and no built bundle at $app." >&2
-              echo "Build it once AT the Mac:  nix run .#presence-gate-checklist -- <profile>" >&2
-              echo "then re-run scenarios (including C4 over ssh) without a profile." >&2
-              # C4 (remote test) drives only the running agent, so let it through even with
-              # no bundle. Anything else — including no scenario — genuinely can't run here,
-              # so fail loudly rather than drop into the menu and exit 0.
-              case "''${1:-}" in
-                C4) : ;; # the script's scenario ids are uppercase; match it exactly
-                *) exit 1 ;;
-              esac
-            fi
+              ;;
+            *)
+              if [ -x "$app" ]; then
+                export SINETE="$app" # reuse the already-built bundle; no rebuild, no codesign
+              else
+                echo "no provisioning profile given and no built bundle at $app." >&2
+                echo "Build it once AT the Mac:  nix run .#presence-gate-checklist -- <profile>" >&2
+                echo "then re-run scenarios (including C4 over ssh) without a profile." >&2
+                # C4 (remote test) drives only the running agent, so let it through even with
+                # no bundle. Anything else — including no scenario — genuinely can't run here,
+                # so fail loudly rather than drop into the menu and exit 0.
+                case "''${1:-}" in
+                  C4) : ;; # the script's scenario ids are uppercase; match it exactly
+                  *) exit 1 ;;
+                esac
+              fi
+              ;;
+            esac
             exec bash "${self}/src/test/manual/macos/presence-gate-checklist.sh" "$@"
           '';
         };
