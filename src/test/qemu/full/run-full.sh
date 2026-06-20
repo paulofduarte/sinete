@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 Paulo Duarte
 # SPDX-License-Identifier: Apache-2.0
 #
-# Distro e2e MATRIX (heavier than the hermetic busybox run.sh). Boots real cloud images
+# Distro e2e MATRIX — the Linux TPM + local-session end-to-end test. Boots real cloud images
 # — Debian (glibc / systemd-logind) and Alpine (musl / elogind) — under QEMU + swtpm and
 # runs the full local-session + TPM matrix (src/test/qemu/full/driver.sh) on each:
 # fail-closed refusal, remote(ssh)-refused on create & sign, _enclave-check TPM crypto,
