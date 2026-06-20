@@ -300,7 +300,7 @@
               # no bundle. Anything else — including no scenario — genuinely can't run here,
               # so fail loudly rather than drop into the menu and exit 0.
               case "''${1:-}" in
-                C4 | c4) : ;;
+                C4) : ;; # the script's scenario ids are uppercase; match it exactly
                 *) exit 1 ;;
               esac
             fi
