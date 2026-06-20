@@ -106,13 +106,16 @@ run_distro() { # $1 distro -> 0 pass / 1 fail
   local d="$1" img dir
   img="$(fetch_image "$d")" || return 1
   dir="$WORK/$d"
-  mkdir -p "$dir/seed" "$dir/tpm"
-  printf 'instance-id: sinete-%s\nlocal-hostname: sinete-%s\n' "$d" "$d" >"$dir/seed/meta-data"
-  emit_user_data >"$dir/seed/user-data"
-  cp "$HERE/driver.sh" "$dir/seed/driver.sh"
-  cp "$HERE/distro-$d.sh" "$dir/seed/distro.sh"
-  cp "$HERE/../fake-pinentry.sh" "$dir/seed/fake-pinentry"
-  cp "$WORK/sinete" "$dir/seed/sinete"
+  # set -e is disabled in this function (it's called as `run_distro || rc=1`), so guard
+  # each seed-setup step explicitly — a silent failure here would boot a partial/invalid
+  # seed and surface as a confusing downstream failure instead of a clean per-distro FAIL.
+  mkdir -p "$dir/seed" "$dir/tpm" || return 1
+  printf 'instance-id: sinete-%s\nlocal-hostname: sinete-%s\n' "$d" "$d" >"$dir/seed/meta-data" || return 1
+  emit_user_data >"$dir/seed/user-data" || return 1
+  cp "$HERE/driver.sh" "$dir/seed/driver.sh" || return 1
+  cp "$HERE/distro-$d.sh" "$dir/seed/distro.sh" || return 1
+  cp "$HERE/../fake-pinentry.sh" "$dir/seed/fake-pinentry" || return 1
+  cp "$WORK/sinete" "$dir/seed/sinete" || return 1
 
   echo "== [$d] build vfat cidata seed + overlay ==" >&2
   # bash -ec: any step (truncate/mformat/mcopy) failing propagates, so `|| return 1`
