@@ -13,12 +13,27 @@ set -u
 
 modprobe tpm_crb 2>/dev/null || true
 modprobe tpm_tis 2>/dev/null || true
+# Give the TPM device a moment to appear (udev race right after boot).
+for _ in 1 2 3 4 5; do
+  [ -e /dev/tpmrm0 ] && break
+  sleep 1
+done
 
 # Alpine's first boot runs on the TPM-less linux-virt kernel and reboots into linux-lts
-# (see distro-alpine.sh). Until a TPM appears, do nothing and DON'T mark the run done,
-# so the post-reboot autologin runs us for real.
+# (see distro-alpine.sh); the post-reboot autologin runs us for real. Bound the wait: if
+# the TPM is still absent on the SECOND boot, the kernel swap failed — fail fast rather
+# than idle at the autologin prompt until the host-side `timeout` kills QEMU.
 if [ ! -e /dev/tpmrm0 ]; then
-  echo "DRIVER: no /dev/tpmrm0 yet (kernel $(uname -r)) — awaiting the TPM-capable reboot"
+  n=$(cat /root/.notpm 2>/dev/null || echo 0)
+  n=$((n + 1))
+  echo "$n" >/root/.notpm
+  if [ "$n" -ge 2 ]; then
+    echo "FATAL: /dev/tpmrm0 still absent on boot $n (kernel $(uname -r)) — the TPM-capable (lts) kernel did not come up"
+    echo "SINETE_VM_FAIL"
+    poweroff -f 2>/dev/null || systemctl poweroff -f 2>/dev/null || true
+    exit 1
+  fi
+  echo "DRIVER: no /dev/tpmrm0 on boot $n (kernel $(uname -r)) — awaiting the TPM-capable reboot"
   exit 0
 fi
 [ -f /root/.driver-ran ] && exit 0
