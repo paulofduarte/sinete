@@ -28,11 +28,19 @@ touch /root/.driver-ran
 . /root/distro.sh
 
 echo "=== SINETE E2E DRIVER  distro=$DISTRO  kernel=$(uname -r)  $(date +%T) ==="
-# Wait until provisioning (package install, services, autologin) has finished.
+# Wait until provisioning (package install, services, autologin) has finished. If it
+# never does, fail fast with a clear marker rather than running scenarios on a half-set-
+# up guest (which would produce misleading failures).
 for _ in $(seq 1 120); do
   [ -f /root/.provisioned ] && break
   sleep 2
 done
+if [ ! -f /root/.provisioned ]; then
+  echo "FATAL: provisioning did not complete (/root/.provisioned missing) — see distro_provision output above"
+  echo "SINETE_VM_FAIL"
+  poweroff -f 2>/dev/null || systemctl poweroff -f 2>/dev/null || true
+  exit 1
+fi
 
 install -m 0755 /root/sinete /usr/local/bin/sinete
 export XDG_DATA_HOME=/root/.local/share XDG_CONFIG_HOME=/root/.config

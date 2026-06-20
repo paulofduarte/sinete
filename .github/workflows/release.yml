@@ -61,6 +61,10 @@ jobs:
   # publish) — it is a release-time signal you can inspect.
   e2e-matrix:
     needs: lint
+    # This job only reads the repo + boots external VM images; drop the workflow-level
+    # `contents: write` to read-only.
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:

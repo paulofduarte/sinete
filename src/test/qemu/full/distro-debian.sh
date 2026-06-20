@@ -13,10 +13,20 @@ DISTRO=debian
 # already has the TPM driver, so no kernel swap is needed (unlike Alpine).
 distro_provision() {
   export DEBIAN_FRONTEND=noninteractive
+  ok=
   for _ in 1 2 3; do
-    apt-get update -qq && apt-get install -y -qq pinentry-curses pinentry-tty expect openssh-server && break
+    if apt-get update -qq && apt-get install -y -qq pinentry-curses pinentry-tty expect openssh-server openssh-client; then
+      ok=1
+      break
+    fi
     sleep 5
   done
+  # Fail hard (don't mark provisioned) so the driver's .provisioned wait fails fast
+  # rather than running scenarios with missing dependencies.
+  [ -n "$ok" ] || {
+    echo "FATAL: apt provisioning failed after retries"
+    return 1
+  }
   ssh-keygen -A >/dev/null 2>&1
   systemctl enable --now ssh 2>/dev/null || systemctl enable --now sshd 2>/dev/null || true
   mkdir -p /etc/systemd/system/serial-getty@ttyS0.service.d

@@ -13,7 +13,7 @@
 #
 # Override the set with: DISTROS="debian" bash run-full.sh
 
-set -uo pipefail
+set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GOMOD="$(cd "$HERE/../../.." && pwd)" # src/
@@ -46,18 +46,19 @@ emit_user_data() {
 
 fetch_image() { # $1 distro  -> echoes cached image path
   local d="$1" url sha img
-  # Upstream cloud images, cached after first fetch. Debian rotates dated snapshots out,
-  # so we track its stable `latest/` URL; Alpine keeps point releases (version-pinned).
-  # Set sha to pin a specific image (verified); empty just warns — fine for this
-  # manual/release-only run.
+  # Upstream cloud images, version-pinned with a verified sha256 (cached after first
+  # fetch). To bump: change the URL, download it, verify its sha against upstream's
+  # published checksum, and paste the new sha256 here. Debian prunes dated snapshots
+  # eventually — when this 404s, bump to a current snapshot. (Debian's sha256 below was
+  # cross-checked against the snapshot's official SHA512SUMS.)
   case "$d" in
   debian)
-    url="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
-    sha=""
+    url="https://cloud.debian.org/images/cloud/bookworm/20251112-2294/debian-12-genericcloud-amd64-20251112-2294.qcow2"
+    sha="510f0bc0814fe298ec944c5bf97598699b2dec033fa79c6802cc3af8948217de"
     ;;
   alpine)
     url="https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/cloud/nocloud_alpine-3.21.2-x86_64-bios-cloudinit-r0.qcow2"
-    sha=""
+    sha="671d5264be976b391e5c69162a1fd87ed77f992eaa70c4ee5b53953a540c663d"
     ;;
   *)
     echo "FATAL: unknown distro $d" >&2
@@ -67,22 +68,31 @@ fetch_image() { # $1 distro  -> echoes cached image path
   img="$CACHE/$(basename "$url")"
   if [ ! -f "$img" ]; then
     echo "== fetch $d image ($(basename "$url")) ==" >&2
-    curl -fsSL -o "$img.part" "$url" && mv "$img.part" "$img"
-  fi
-  if [ -n "$sha" ]; then
-    echo "$sha  $img" | sha256sum -c - >&2 || {
-      echo "FATAL: $d image sha256 mismatch" >&2
-      exit 1
+    curl -fsSL -o "$img.part" "$url" || {
+      echo "FATAL: $d image download failed ($url)" >&2
+      rm -f "$img.part"
+      return 1
     }
-  else
-    echo "WARN: $d image sha256 not pinned; got $(sha256sum "$img" | awk '{print $1}')" >&2
+    mv "$img.part" "$img"
   fi
+  # Integrity is mandatory: the image is booted under QEMU (incl. on the release runner),
+  # so a silently-changed/compromised image must not run. Re-pin intentionally on a bump.
+  [ -n "$sha" ] || {
+    echo "FATAL: $d image sha256 not pinned" >&2
+    return 1
+  }
+  echo "$sha  $img" | sha256sum -c - >&2 || {
+    echo "FATAL: $d image sha256 mismatch (upstream changed?) — re-pin, or remove $img and retry" >&2
+    return 1
+  }
   echo "$img"
 }
 
 run_distro() { # $1 distro -> 0 pass / 1 fail
+  # -e is suppressed here (this runs as `run_distro || rc=1`), so setup steps check
+  # explicitly and return 1 on failure rather than silently booting with bad inputs.
   local d="$1" img dir
-  img="$(fetch_image "$d")"
+  img="$(fetch_image "$d")" || return 1
   dir="$WORK/$d"
   mkdir -p "$dir/seed" "$dir/tpm"
   printf 'instance-id: sinete-%s\nlocal-hostname: sinete-%s\n' "$d" "$d" >"$dir/seed/meta-data"
@@ -96,8 +106,8 @@ run_distro() { # $1 distro -> 0 pass / 1 fail
   nix shell "$NIXPKGS#mtools" "$NIXPKGS#coreutils" -c bash -c '
 		truncate -s 96M "'"$dir"'/seed.img"
 		mformat -i "'"$dir"'/seed.img" -v cidata -T 196608 ::
-		mcopy -i "'"$dir"'/seed.img" "'"$dir"'/seed/"* ::' >&2
-  nix shell "$NIXPKGS#qemu" -c qemu-img create -f qcow2 -F qcow2 -b "$img" "$dir/overlay.qcow2" 12G >/dev/null
+		mcopy -i "'"$dir"'/seed.img" "'"$dir"'/seed/"* ::' >&2 || return 1
+  nix shell "$NIXPKGS#qemu" -c qemu-img create -f qcow2 -F qcow2 -b "$img" "$dir/overlay.qcow2" 12G >/dev/null || return 1
 
   if [ "$(uname -m)" = "x86_64" ] && [ -w /dev/kvm ]; then ACCEL=kvm CPU=host; else ACCEL=tcg CPU=max; fi
   export ACCEL CPU DIR="$dir"

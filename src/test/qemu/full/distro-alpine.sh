@@ -13,9 +13,13 @@ DISTRO=alpine
 # The driver runs on that second boot (its TPM gate skips the first). cloud-init does not
 # re-run after the reboot, but the inittab autologin and rc-update'd services persist.
 distro_provision() {
-  apk update
-  apk add bash elogind elogind-openrc dbus dbus-openrc linux-pam shadow-login util-linux \
-    expect openssh pinentry pinentry-tty linux-lts
+  # Fail hard (don't reach the .provisioned marker) if package install fails, so the
+  # driver's wait fails fast instead of running scenarios with missing dependencies.
+  if ! { apk update && apk add bash elogind elogind-openrc dbus dbus-openrc linux-pam \
+    shadow-login util-linux expect openssh pinentry pinentry-tty linux-lts; }; then
+    echo "FATAL: apk provisioning failed"
+    return 1
+  fi
   # PAM: create elogind sessions on local login AND over ssh.
   for f in /etc/pam.d/base-session /etc/pam.d/login /etc/pam.d/sshd; do
     [ -f "$f" ] && { grep -q pam_elogind "$f" || echo "session optional pam_elogind.so" >>"$f"; }
