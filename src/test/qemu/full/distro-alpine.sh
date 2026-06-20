@@ -24,9 +24,11 @@ distro_provision() {
   for f in /etc/pam.d/base-session /etc/pam.d/login /etc/pam.d/sshd; do
     [ -f "$f" ] && { grep -q pam_elogind "$f" || echo "session optional pam_elogind.so" >>"$f"; }
   done
-  # sshd: root pubkey login + PAM (so the ssh session is an elogind session, Remote=yes).
-  sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
-  grep -q '^PermitRootLogin yes' /etc/ssh/sshd_config || echo 'PermitRootLogin yes' >>/etc/ssh/sshd_config
+  # sshd: root PUBKEY login (no password) + PAM (so the ssh session is an elogind
+  # session, Remote=yes).
+  sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+  grep -q '^PermitRootLogin ' /etc/ssh/sshd_config || echo 'PermitRootLogin prohibit-password' >>/etc/ssh/sshd_config
+  grep -q '^PasswordAuthentication no' /etc/ssh/sshd_config || echo 'PasswordAuthentication no' >>/etc/ssh/sshd_config
   grep -q '^UsePAM yes' /etc/ssh/sshd_config || echo 'UsePAM yes' >>/etc/ssh/sshd_config
   ssh-keygen -A
   rc-update add dbus

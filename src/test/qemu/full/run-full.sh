@@ -35,10 +35,11 @@ echo "== build REAL static linux/amd64 sinete (no bypass tag) =="
 (cd "$GOMOD" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$WORK/sinete" ./cmd/sinete)
 
 emit_user_data() {
+  # No root password is set: the guest is driven entirely by a serial autologin getty
+  # (no auth) and key-based ssh, so there is nothing to brute-force even if a port were
+  # ever forwarded. The distro shims also leave ssh password auth off.
   cat <<-'UD'
 		#cloud-config
-		password: root
-		chpasswd: { expire: false }
 		runcmd:
 		  - [ sh, -c, "mkdir -p /mnt/seed; m=0; for d in /dev/vdb /dev/vdb1 /dev/sr0 /dev/sdb /dev/sdb1; do mount -o ro $d /mnt/seed 2>/dev/null && [ -f /mnt/seed/driver.sh ] && { m=1; break; }; umount /mnt/seed 2>/dev/null; done; [ $m = 1 ] || { echo 'SEED MOUNT FAILED' > /dev/console; echo SINETE_VM_FAIL > /dev/console; poweroff -f; }; cp /mnt/seed/driver.sh /mnt/seed/distro.sh /mnt/seed/sinete /mnt/seed/fake-pinentry /root/ && chmod +x /root/driver.sh /root/sinete /root/fake-pinentry || { echo 'SEED COPY FAILED' > /dev/console; echo SINETE_VM_FAIL > /dev/console; poweroff -f; }; . /root/distro.sh; distro_provision > /dev/console 2>&1 || { echo 'PROVISION FAILED' > /dev/console; echo SINETE_VM_FAIL > /dev/console; poweroff -f; }" ]
 	UD
@@ -74,7 +75,8 @@ fetch_image() { # $1 distro  -> echoes cached image path
   img="$CACHE/$(basename "$url")"
   if [ ! -f "$img" ]; then
     echo "== fetch $d image ($(basename "$url")) ==" >&2
-    curl -fsSL -o "$img.part" "$url" || {
+    # Retry to ride out transient CDN/network hiccups on CI/release runners.
+    curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors -o "$img.part" "$url" || {
       echo "FATAL: $d image download failed ($url)" >&2
       rm -f "$img.part"
       return 1
