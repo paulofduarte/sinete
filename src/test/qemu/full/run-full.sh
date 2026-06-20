@@ -103,7 +103,9 @@ run_distro() { # $1 distro -> 0 pass / 1 fail
   cp "$WORK/sinete" "$dir/seed/sinete"
 
   echo "== [$d] build vfat cidata seed + overlay ==" >&2
-  nix shell "$NIXPKGS#mtools" "$NIXPKGS#coreutils" -c bash -c '
+  # bash -ec: any step (truncate/mformat/mcopy) failing propagates, so `|| return 1`
+  # catches it, not only the last command. ($dir is spliced in host-side via the quotes.)
+  nix shell "$NIXPKGS#mtools" "$NIXPKGS#coreutils" -c bash -ec '
 		truncate -s 96M "'"$dir"'/seed.img"
 		mformat -i "'"$dir"'/seed.img" -v cidata -T 196608 ::
 		mcopy -i "'"$dir"'/seed.img" "'"$dir"'/seed/"* ::' >&2 || return 1
