@@ -15,15 +15,19 @@
 #   B  Secure Enclave        `sinete config set`, `_enclave-check` — master-key Touch ID
 #   C  agent window + remote  the running sinete agent   — TTL cache, expiry, remote refuse
 #
-#   nix run .#presence-gate-checklist -- <profile>      # builds+signs the bundle, runs this
-#   nix run .#presence-gate-checklist -- <profile> A1   # one scenario
+# Build the signed bundle ONCE, AT the Mac (building codesigns it, and codesign needs the
+# local login-keychain session — it fails over ssh):
+#   nix run .#presence-gate-checklist -- <profile>      # build + show the menu
+#   nix run .#presence-gate-checklist -- <profile> A1   # build + run one scenario
+# Then re-run scenarios WITHOUT a profile — no rebuild, no codesign. This is REQUIRED for
+# C4, the remote test, which must run from an ssh session and only drives the running agent:
+#   nix run .#presence-gate-checklist -- C4             # over ssh into this Mac
 #
-# Or directly (point SINETE at a signed bundle binary):
+# Or directly (point SINETE at an already-built bundle binary):
 #   SINETE=./dist/sinete.app/Contents/MacOS/sinete ./presence-gate-checklist.sh
 #
 # Tier C drives the *installed/running* agent via its socket (it can't be faked either);
-# override with SINETE_AGENT_SOCK. Tier C / scenario C4 is the remote test: run it from an
-# ssh session into this Mac.
+# override with SINETE_AGENT_SOCK.
 
 set -u
 
@@ -69,7 +73,7 @@ scn_desc() { case "$1" in
   esac }
 scn_setup() { case "$1" in
   A1 | A2 | A3 | A4 | B1 | B2 | B3 | C1 | C2 | C3) echo "run locally, at the Mac (Touch ID reachable)." ;;
-  C4) echo "ssh INTO this Mac and run this scenario from that ssh session." ;;
+  C4) echo "build the bundle locally first, then ssh INTO this Mac and run it with no profile (scenario C4) from that ssh session." ;;
   esac }
 
 need_sinete() {

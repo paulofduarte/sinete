@@ -160,7 +160,9 @@
             } >"$app/Contents/Info.plist"
 
             # Sign inside-out: the unentitled helper first, then the bundle (which
-            # signs the main `sinete` with the SE entitlements and seals all).
+            # signs the main `sinete` with the SE entitlements and seals all). codesign
+            # needs the local login-keychain (GUI) session — it fails with
+            # errSecInternalComponent over ssh, so build the bundle AT the Mac.
             /usr/bin/codesign --force --sign "$identity" "$app/Contents/MacOS/sinete-ui"
             /usr/bin/codesign --force --sign "$identity" \
               --entitlements "$repo/sinete.entitlements" "$app"
@@ -264,10 +266,16 @@
           '';
         };
 
-        # macOS counterpart of presence-gate-checklist: builds + signs the bundle (impure;
-        # needs a provisioning profile, like e2e-macos) and runs the Touch ID / Secure
-        # Enclave / agent-window presence checklist from it. Touch ID can't be faked, so it
-        # is manual by construction (the gating logic is covered by the Go unit tests).
+        # macOS counterpart of presence-gate-checklist: runs the Touch ID / Secure Enclave /
+        # agent-window presence checklist. Touch ID can't be faked, so it is manual by
+        # construction (the gating logic is covered by the Go unit tests).
+        #
+        # The bundle is built ONCE, not on every run — building codesigns the bundle, and
+        # codesign needs the local login-keychain (GUI) session, so it fails over ssh. So:
+        #   - first arg is a provisioning profile → build + sign the bundle now (do this AT
+        #     the Mac). Remaining args select scenarios.
+        #   - no profile → reuse the bundle you already built; DON'T rebuild. This is how you
+        #     run C4 (the remote test) over ssh: no codesign, just the running agent.
         presenceMacosApp = pkgs.writeShellApplication {
           name = "sinete-presence-gate-checklist-macos";
           runtimeInputs = [
@@ -276,15 +284,19 @@
             pkgs.gnugrep
           ];
           text = ''
-            if [ $# -lt 1 ]; then
-              echo "usage: nix run .#presence-gate-checklist -- <path-to.provisionprofile> [scenario]" >&2
-              echo "  builds + signs the bundle, then runs the macOS presence checklist (Touch ID)." >&2
-              exit 1
+            app="$PWD/${bundleRelPath}/Contents/MacOS/sinete"
+            if [ $# -ge 1 ] && [ -f "$1" ]; then
+              profile="$1"
+              shift
+              ${bundleApp}/bin/sinete-bundle "$profile" # codesigns → run AT the Mac, not over ssh
+              export SINETE="$app"
+            elif [ -x "$app" ]; then
+              export SINETE="$app" # reuse the already-built bundle; no rebuild, no codesign
+            else
+              echo "no provisioning profile given and no built bundle at $app." >&2
+              echo "Build it once AT the Mac:  nix run .#presence-gate-checklist -- <profile>" >&2
+              echo "then re-run scenarios (including C4 over ssh) without a profile." >&2
             fi
-            profile="$1"
-            shift
-            ${bundleApp}/bin/sinete-bundle "$profile"
-            export SINETE="$PWD/${bundleRelPath}/Contents/MacOS/sinete"
             exec bash "${self}/src/test/manual/macos/presence-gate-checklist.sh" "$@"
           '';
         };
