@@ -11,6 +11,10 @@ on:
   workflow_dispatch:
   push:
     tags: ["v*"]
+  # TEMPORARY: run on this PR once to validate the matrix on a CI runner (KVM) and time
+  # it; removed before merge.
+  pull_request:
+    branches: ["develop"]
 
 permissions:
   contents: read
