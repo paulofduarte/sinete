@@ -127,12 +127,38 @@ func sessionRemote(bus *dbus.Conn, ctx context.Context, session dbus.ObjectPath)
 	return r, nil
 }
 
-// userLocalSession is the fail-closed fallback for a session-less process: it reports
-// true only if uid has at least one LOCAL session AND no remote one. A session-less
-// process can't be attributed to a specific session, so if the user is ALSO logged in
-// remotely we cannot rule out that the process belongs to the remote context — refuse.
-// A Remote read failure for any of the user's sessions is likewise "cannot confirm" and
-// returns an error (the caller fails closed), never silently skipped.
+// sessionRemoteInfo is one logind session reduced to the two fields the local-only
+// decision needs: whose it is, and whether it is remote. It is what userLocalSession
+// gathers from D-Bus and hands to the pure localOnlyForUID decision.
+type sessionRemoteInfo struct {
+	uid    uint32
+	remote bool
+}
+
+// localOnlyForUID is the security decision, factored out as a pure function so it can be
+// unit-tested without a live logind bus. Given every session's owner uid and Remote flag,
+// it reports true iff uid owns at least one session and NONE of uid's sessions is remote.
+// A session-less process (the only caller's situation) can't be pinned to a specific
+// session, so a uid that is ALSO logged in remotely is ambiguous and refused; another
+// user's remote session is irrelevant and ignored.
+func localOnlyForUID(sessions []sessionRemoteInfo, uid uint32) bool {
+	hasLocal := false
+	for _, s := range sessions {
+		if s.uid != uid {
+			continue
+		}
+		if s.remote {
+			return false // a remote session for this user ⇒ ambiguous ⇒ refuse
+		}
+		hasLocal = true
+	}
+	return hasLocal
+}
+
+// userLocalSession is the fail-closed fallback for a session-less process: it gathers
+// uid's sessions and their Remote flags from logind, then applies localOnlyForUID. A
+// Remote read failure for any of the user's sessions is "cannot confirm" and returns an
+// error (the caller fails closed), never silently skipped.
 func userLocalSession(bus *dbus.Conn, ctx context.Context, uid uint32) (bool, error) {
 	var sessions []struct {
 		ID   string
@@ -145,7 +171,7 @@ func userLocalSession(bus *dbus.Conn, ctx context.Context, uid uint32) (bool, er
 		CallWithContext(ctx, loginMgrIf+".ListSessions", 0).Store(&sessions); err != nil {
 		return false, err
 	}
-	hasLocal := false
+	infos := make([]sessionRemoteInfo, 0, len(sessions))
 	for _, s := range sessions {
 		if s.UID != uid {
 			continue
@@ -154,12 +180,9 @@ func userLocalSession(bus *dbus.Conn, ctx context.Context, uid uint32) (bool, er
 		if err != nil {
 			return false, err // can't read this session ⇒ can't confirm ⇒ fail closed
 		}
-		if remote {
-			return false, nil // a remote session for this user ⇒ ambiguous ⇒ refuse
-		}
-		hasLocal = true
+		infos = append(infos, sessionRemoteInfo{uid: s.UID, remote: remote})
 	}
-	return hasLocal, nil
+	return localOnlyForUID(infos, uid), nil
 }
 
 // isNoSessionForPID reports whether err is logind's "this pid has no session" — the

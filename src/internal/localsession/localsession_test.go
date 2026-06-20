@@ -59,3 +59,31 @@ func TestIsNoSessionForPID(t *testing.T) {
 		}
 	}
 }
+
+// localOnlyForUID is the security decision for a session-less process: confirm the user
+// is local-only (≥1 local session, none remote). These cases pin down the boundary —
+// most importantly that a mixed local+remote user fails closed, and that another user's
+// remote session is irrelevant.
+func TestLocalOnlyForUID(t *testing.T) {
+	const me, other = uint32(1000), uint32(1001)
+	cases := []struct {
+		name     string
+		sessions []sessionRemoteInfo
+		want     bool
+	}{
+		{"no sessions at all", nil, false},
+		{"only another user's local session", []sessionRemoteInfo{{other, false}}, false},
+		{"only another user's remote session", []sessionRemoteInfo{{other, true}}, false},
+		{"one local session for me", []sessionRemoteInfo{{me, false}}, true},
+		{"one remote session for me", []sessionRemoteInfo{{me, true}}, false},
+		{"mixed local+remote for me ⇒ refuse", []sessionRemoteInfo{{me, false}, {me, true}}, false},
+		{"remote-then-local for me ⇒ refuse (order-independent)", []sessionRemoteInfo{{me, true}, {me, false}}, false},
+		{"two local sessions for me", []sessionRemoteInfo{{me, false}, {me, false}}, true},
+		{"my local + another user's remote ⇒ allow", []sessionRemoteInfo{{me, false}, {other, true}}, true},
+	}
+	for _, c := range cases {
+		if got := localOnlyForUID(c.sessions, me); got != c.want {
+			t.Errorf("%s: localOnlyForUID = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
