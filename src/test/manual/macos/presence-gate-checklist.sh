@@ -63,7 +63,7 @@ scn_desc() { case "$1" in
   A2) echo "present → CANCEL the prompt" ;;
   A3) echo "present → use the passcode fallback (Enter Password)" ;;
   A4) echo "present -n 3 → approve three prompts in one run" ;;
-  B1) echo "config set presence-ttl $TTL → APPROVE (master-key Touch ID; arms C1/C2)" ;;
+  B1) echo "config set presence-ttl $TTL + presence-max-ttl 1h → APPROVE x2 (arms C1/C2 caching)" ;;
   B2) echo "config set presence-ttl 45s → CANCEL (write must be refused)" ;;
   B3) echo "_enclave-check → APPROVE (full SE master sign/verify + config round-trip)" ;;
   C1) echo "agent: first signature prompts, a second within $TTL is SILENT (cache)" ;;
@@ -197,9 +197,15 @@ run_scenario() {
   # ── Tier B: Secure Enclave / master key ──
   B1)
     need_sinete "$s" || return 1
-    "$SINETE" config set presence-ttl "$TTL"
+    # Caching needs BOTH a non-zero idle TTL and a non-zero absolute cap: with
+    # presence-max-ttl unset the agent stays strict (prompts every signature) and C1/C2
+    # can't be observed. Set both (two master-key writes → two Touch ID prompts).
+    echo "${c_dim}Approve BOTH master-key prompts (presence-ttl, then presence-max-ttl).${c_off}"
+    "$SINETE" config set presence-ttl "$TTL" && "$SINETE" config set presence-max-ttl 1h
     rc=$?
-    [ $rc -eq 0 ] && echo "  presence-ttl now: $("$SINETE" config get presence-ttl 2>/dev/null)"
+    if [ $rc -eq 0 ]; then
+      echo "  presence-ttl=$("$SINETE" config get presence-ttl 2>/dev/null) presence-max-ttl=$("$SINETE" config get presence-max-ttl 2>/dev/null)"
+    fi
     ;;
   B2)
     need_sinete "$s" || return 1

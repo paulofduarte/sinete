@@ -288,7 +288,14 @@
             if [ $# -ge 1 ] && [ -f "$1" ]; then
               profile="$1"
               shift
-              ${bundleApp}/bin/sinete-bundle "$profile" # codesigns → run AT the Mac, not over ssh
+              # codesigns → must run AT the Mac (fails over ssh). Surface a clear failure
+              # instead of relying on set -e to abort with a cryptic codesign error and the
+              # script then dropping into the menu.
+              if ! ${bundleApp}/bin/sinete-bundle "$profile"; then
+                echo "bundle build/sign failed — codesign needs the local keychain session." >&2
+                echo "Build AT the Mac, not over ssh (then run C4 over ssh WITHOUT a profile)." >&2
+                exit 1
+              fi
               export SINETE="$app"
             elif [ -x "$app" ]; then
               export SINETE="$app" # reuse the already-built bundle; no rebuild, no codesign
