@@ -67,17 +67,25 @@ scn_pre() { case "$1" in
   esac }
 
 # --- the logind view the gate decides from -------------------------------------------
+# IMPORTANT: the gate keys on the session logind maps THIS pid to (Manager.GetSessionByPID),
+# NOT $XDG_SESSION_ID — an inherited env var that may name a session this pid isn't in. So
+# mirror the gate's own D-Bus call (via busctl) instead of inferring from the environment:
+# an "o <path>" reply means in-session (its Remote flag then decides); a NoSessionForPID
+# error is the session-less fallback case (graphical terminal / systemd --user) that
+# scenarios 1 and 4 exercise. $XDG_SESSION_ID is shown only as a hint. busctl/loginctl are
+# the HOST's by design (they must talk to the running logind/elogind); they're best-effort
+# context here — the verdict comes from sinete's own gate output, not from these.
 topology() {
-  echo "${c_dim}--- loginctl list-sessions ---${c_off}"
-  loginctl list-sessions 2>/dev/null || echo "  (loginctl unavailable)"
-  echo "${c_dim}--- this process's session (\$XDG_SESSION_ID=${XDG_SESSION_ID:-unset}) ---${c_off}"
-  if [ -n "${XDG_SESSION_ID:-}" ]; then
-    loginctl show-session "$XDG_SESSION_ID" -p Id -p Type -p Class -p Remote -p Active 2>/dev/null |
-      sed 's/^/  /'
+  echo "${c_dim}--- loginctl list-sessions (all sessions; context) ---${c_off}"
+  loginctl list-sessions 2>/dev/null || echo "  (loginctl not on PATH — context only)"
+  echo "${c_dim}--- GetSessionByPID($$): what the gate resolves for this process ---${c_off}"
+  if command -v busctl >/dev/null 2>&1; then
+    busctl call org.freedesktop.login1 /org/freedesktop/login1 \
+      org.freedesktop.login1.Manager GetSessionByPID u "$$" 2>&1 | while IFS= read -r l; do echo "  $l"; done
   else
-    echo "  no XDG_SESSION_ID set — this process is session-less (expected for a graphical"
-    echo "  terminal / systemd --user); the gate falls back to the user's sessions."
+    echo "  (busctl not on PATH — install systemd's busctl to see logind's per-PID lookup)"
   fi
+  echo "  \$XDG_SESSION_ID=${XDG_SESSION_ID:-unset}  (env hint only; the gate does not use it)"
 }
 
 # classify the probe output -> ALLOW | REFUSE_REMOTE | REFUSE_UNAVAIL | REFUSE_OTHER

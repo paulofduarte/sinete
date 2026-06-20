@@ -244,6 +244,10 @@
         # (the scenarios use loginctl/ssh; the macOS presence path is covered by .#e2e-macos).
         presenceChecklistApp = pkgs.writeShellApplication {
           name = "sinete-presence-gate-checklist";
+          # loginctl/busctl are intentionally NOT pinned: the checklist must use the HOST's
+          # to query the running logind/elogind, and writeShellApplication PREPENDS these to
+          # $PATH — pinning systemd would shadow the host's clients with a possibly-mismatched
+          # build. They're best-effort context anyway; the verdict comes from sinete's output.
           runtimeInputs = [
             pkgs.bash
             pkgs.coreutils
