@@ -194,11 +194,11 @@ run_scenario() {
     echo "${c_dim}CANCEL the Touch ID prompt — the config write must be refused.${c_off}"
     out="$("$SINETE" config set presence-ttl 45s 2>&1)"
     rc=$?
-    echo "$out" | tail -1
-    # config set may exit 0 with a warning when the signed write is refused; treat a
-    # refusal/declined note as a refusal regardless of exit code. (Avoid matching the bare
-    # word "presence", which appears in normal successful output like the max-ttl note.)
-    echo "$out" | grep -qiE 'could not|refus|not verified|declined|cancel' && rc=1
+    echo "$out" | tail -2
+    # Grade on the exit code alone: a declined Touch ID fails the master-key signature, so
+    # saveConfig (cfg.Save) returns an error and `config set` exits non-zero. Do NOT grep the
+    # text — the "signed config could not be verified" line is a pre-write READ warning that
+    # also prints on a *successful* write, so matching it would mis-grade a success as refused.
     ;;
   B3)
     need_sinete "$s" || return 1
@@ -252,18 +252,23 @@ run_scenario() {
     agent_sign "$k" # target only the throwaway key, not whatever else the agent advertises
     a=$?
     echo "Deleting and recreating '$k' (same name, NEW key) — approve any prompts:"
-    "$SINETE" delete "$k" >/dev/null 2>&1
-    "$SINETE" generate "$k" >/dev/null 2>&1
-    echo "Sign again — it should RE-PROMPT (window is keyed by public key, which changed):"
-    agent_sign "$k"
-    b=$?
-    if [ "$a" -ne 0 ] || [ "$b" -ne 0 ]; then
-      echo "  ${c_red}a signature did not complete (first=$a second=$b) — cannot judge re-auth${c_off}"
+    if ! "$SINETE" delete "$k" >/dev/null 2>&1 || ! "$SINETE" generate "$k" >/dev/null 2>&1; then
+      # If delete/recreate failed, the next signature could hit the OLD key (or none), so
+      # the "keyed by public key" check would be meaningless — abort instead of mis-grading.
+      echo "  ${c_red}could not delete+recreate '$k' — cannot judge re-auth${c_off}"
       rc=1
     else
-      ask_yn "Did the recreated key re-prompt (not silently reuse the old window)?" && rc=0 || rc=1
+      echo "Sign again — it should RE-PROMPT (window is keyed by public key, which changed):"
+      agent_sign "$k"
+      b=$?
+      if [ "$a" -ne 0 ] || [ "$b" -ne 0 ]; then
+        echo "  ${c_red}a signature did not complete (first=$a second=$b) — cannot judge re-auth${c_off}"
+        rc=1
+      else
+        ask_yn "Did the recreated key re-prompt (not silently reuse the old window)?" && rc=0 || rc=1
+      fi
     fi
-    "$SINETE" delete "$k" >/dev/null 2>&1 # clean up the throwaway
+    "$SINETE" delete "$k" >/dev/null 2>&1 # clean up the throwaway (best effort)
     ;;
   C4)
     need_agent || return 1
