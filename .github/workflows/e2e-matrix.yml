@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2026 Paulo Duarte
+# SPDX-License-Identifier: Apache-2.0
+
+name: e2e-matrix
+
+# The heavier 2-VM distro matrix (Debian glibc / systemd-logind + Alpine musl /
+# elogind): boots real cloud images under QEMU + swtpm and runs the full local-session
+# + TPM matrix on each. Too slow/networked for the per-push CI gate, so it runs only
+# here — on demand (workflow_dispatch) and on tagged releases.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 130
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - name: enable KVM (best-effort)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+      - name: distro e2e matrix (Debian + Alpine)
+        run: nix run --accept-flake-config .#e2e-linux-full
