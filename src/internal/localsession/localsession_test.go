@@ -38,3 +38,24 @@ func TestUnavailable(t *testing.T) {
 		}
 	}
 }
+
+// isNoSessionForPID gates the fallback from the per-process check to the user's sessions
+// (for GUI terminals / systemd --user processes that have no session of their own).
+func TestIsNoSessionForPID(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"no session (ptr)", &dbus.Error{Name: "org.freedesktop.login1.NoSessionForPID"}, true},
+		{"no session (value)", dbus.Error{Name: "org.freedesktop.login1.NoSessionForPID"}, true},
+		{"other login1 error", &dbus.Error{Name: "org.freedesktop.login1.SomethingElse"}, false},
+		{"service unknown", &dbus.Error{Name: "org.freedesktop.DBus.Error.ServiceUnknown"}, false},
+		{"non-dbus error", errors.New("bus connect failed"), false},
+	}
+	for _, c := range cases {
+		if got := isNoSessionForPID(c.err); got != c.want {
+			t.Errorf("%s: isNoSessionForPID = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

@@ -39,11 +39,11 @@ import (
 // positive-local — a seatd session is only ever local. ConsoleKit2 / turnstile are
 // other candidates. See .claude/LINUX-PRESENCE.md.
 func presenceUnavailable(conn net.Conn) bool {
-	pid, ok := peerPID(conn)
+	pid, uid, ok := peerCreds(conn)
 	if !ok {
 		return true // can't read peer credentials ⇒ can't confirm local ⇒ refuse
 	}
-	local, err := localsession.IsLocalPID(pid)
+	local, err := localsession.IsLocal(pid, uid)
 	if err != nil {
 		if localsession.Unavailable(err) {
 			warnNoLogind()
@@ -53,18 +53,19 @@ func presenceUnavailable(conn net.Conn) bool {
 	return !local
 }
 
-// peerPID returns the connecting peer's pid via SO_PEERCRED. ok is false when conn
-// is not a unix socket, the credentials can't be read, or the pid is not positive
+// peerCreds returns the connecting peer's pid and uid via SO_PEERCRED. ok is false when
+// conn is not a unix socket, the credentials can't be read, or the pid is not positive
 // (a guard against a 0/-1 pid being widened to a bogus uint32 and matched to an
-// unrelated session).
-func peerPID(conn net.Conn) (uint32, bool) {
-	uc, ok := conn.(*net.UnixConn)
-	if !ok {
-		return 0, false
+// unrelated session). The uid is used to confirm local presence when the peer is not in
+// a session scope (see localsession.IsLocal).
+func peerCreds(conn net.Conn) (pid, uid uint32, ok bool) {
+	uc, isUnix := conn.(*net.UnixConn)
+	if !isUnix {
+		return 0, 0, false
 	}
 	raw, err := uc.SyscallConn()
 	if err != nil {
-		return 0, false
+		return 0, 0, false
 	}
 	var (
 		cred    *unix.Ucred
@@ -73,9 +74,9 @@ func peerPID(conn net.Conn) (uint32, bool) {
 	if err := raw.Control(func(fd uintptr) {
 		cred, credErr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
 	}); err != nil || credErr != nil || cred == nil || cred.Pid <= 0 {
-		return 0, false
+		return 0, 0, false
 	}
-	return uint32(cred.Pid), true
+	return uint32(cred.Pid), cred.Uid, true
 }
 
 // noLogindOnce keeps the missing-logind diagnostic to a single line: it's an
