@@ -244,8 +244,9 @@
         # guards master-key PIN entry; internal/localsession). It builds the real sinete,
         # points the checklist at it (SINETE), and walks you through the local / remote /
         # mixed / no-logind scenarios — the human-judged counterpart of the qemu matrix,
-        # to be run ON the machine under test (a VM or real hardware). Linux-only for now
-        # (the scenarios use loginctl/ssh; the macOS presence path is covered by .#e2e-macos).
+        # to be run ON the machine under test (a VM or real hardware). This is the LINUX
+        # half of `.#presence-gate-checklist`; the macOS half (presenceMacosApp) runs the
+        # Touch ID / Secure Enclave presence checklist instead (dispatched by stdenv below).
         presenceChecklistApp = pkgs.writeShellApplication {
           name = "sinete-presence-gate-checklist";
           # loginctl/busctl are intentionally NOT pinned: the checklist must use the HOST's
@@ -260,6 +261,31 @@
           text = ''
             export SINETE="${self.packages.${system}.default}/bin/sinete"
             exec bash "${self}/src/test/manual/linux/presence-gate-checklist.sh" "$@"
+          '';
+        };
+
+        # macOS counterpart of presence-gate-checklist: builds + signs the bundle (impure;
+        # needs a provisioning profile, like e2e-macos) and runs the Touch ID / Secure
+        # Enclave / agent-window presence checklist from it. Touch ID can't be faked, so it
+        # is manual by construction (the gating logic is covered by the Go unit tests).
+        presenceMacosApp = pkgs.writeShellApplication {
+          name = "sinete-presence-gate-checklist-macos";
+          runtimeInputs = [
+            pkgs.bash
+            pkgs.coreutils
+            pkgs.gnugrep
+          ];
+          text = ''
+            if [ $# -lt 1 ]; then
+              echo "usage: nix run .#presence-gate-checklist -- <path-to.provisionprofile> [scenario]" >&2
+              echo "  builds + signs the bundle, then runs the macOS presence checklist (Touch ID)." >&2
+              exit 1
+            fi
+            profile="$1"
+            shift
+            ${bundleApp}/bin/sinete-bundle "$profile"
+            export SINETE="$PWD/${bundleRelPath}/Contents/MacOS/sinete"
+            exec bash "${self}/src/test/manual/macos/presence-gate-checklist.sh" "$@"
           '';
         };
       in
@@ -297,10 +323,11 @@
         # signRunApp, which signs the binary with the SE entitlements first (a bare
         # binary is rejected by the Secure Enclave otherwise). `nix build` produces just
         # the binary on both. `nix run .#e2e-linux-full` is the heavy 2-VM distro
-        # acceptance matrix (all systems); `nix run .#presence-gate-checklist` (Linux only)
-        # is the manual, interactive local-session presence-gate harness. The remaining apps
-        # are macOS-only (Apple tools): `nix run .#bundle -- <profile>` builds the signed
-        # .app, `nix run .#e2e-macos` the on-device SE acceptance test.
+        # acceptance matrix (all systems); `nix run .#presence-gate-checklist` is the manual
+        # presence harness — on Linux the local-session (logind) gate, on macOS the Touch ID
+        # / Secure Enclave checklist (`-- <profile>`). The remaining apps are macOS-only
+        # (Apple tools): `nix run .#bundle -- <profile>` builds the signed .app,
+        # `nix run .#e2e-macos` the on-device SE acceptance test.
         apps = {
           default = {
             type = "app";
@@ -314,11 +341,16 @@
             type = "app";
             program = "${e2eLinuxFullApp}/bin/sinete-e2e-linux-full";
           };
-        }
-        // pkgs.lib.optionalAttrs (!pkgs.stdenv.isDarwin) {
+          # Same name on both OSes, different body: Linux → the local-session (logind) gate
+          # checklist; macOS → the Touch ID / Secure Enclave presence checklist (which needs
+          # a provisioning profile, so it takes one as its first argument).
           presence-gate-checklist = {
             type = "app";
-            program = "${presenceChecklistApp}/bin/sinete-presence-gate-checklist";
+            program =
+              if pkgs.stdenv.isDarwin then
+                "${presenceMacosApp}/bin/sinete-presence-gate-checklist-macos"
+              else
+                "${presenceChecklistApp}/bin/sinete-presence-gate-checklist";
           };
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {

@@ -1,0 +1,282 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Paulo Duarte
+# SPDX-License-Identifier: Apache-2.0
+#
+# Manual, interactive checklist for the macOS PRESENCE gate — the Touch ID
+# (LocalAuthentication) confirmation that guards Secure-Enclave key use, plus the agent's
+# per-key presence window (TTL cache) and the remote-session refusal. It is the macOS
+# counterpart of src/test/manual/linux/presence-gate-checklist.sh: the same checklist
+# shape (per-scenario expected verdict + PASS/FAIL grading), but exercising Touch ID / SE
+# paths a human must drive — Touch ID cannot be faked, so this is manual by construction
+# (the gating *logic* is covered automatically by the Go unit tests in internal/agent).
+#
+# Tiers (the nix app wires $SINETE to the signed bundle binary, which can do all of them):
+#   A  presence prompt      `sinete present`            — approve / cancel / passcode / -n
+#   B  Secure Enclave        `sinete config set`, `_enclave-check` — master-key Touch ID
+#   C  agent window + remote  the running sinete agent   — TTL cache, expiry, remote refuse
+#
+#   nix run .#presence-gate-checklist -- <profile>      # builds+signs the bundle, runs this
+#   nix run .#presence-gate-checklist -- <profile> A1   # one scenario
+#
+# Or directly (point SINETE at a signed bundle binary):
+#   SINETE=./dist/sinete.app/Contents/MacOS/sinete ./presence-gate-checklist.sh
+#
+# Tier C drives the *installed/running* agent via its socket (it can't be faked either);
+# override with SINETE_AGENT_SOCK. Tier C / scenario C4 is the remote test: run it from an
+# ssh session into this Mac.
+
+set -u
+
+SINETE="${SINETE:-./dist/sinete.app/Contents/MacOS/sinete}"
+AGENT_SOCK="${SINETE_AGENT_SOCK:-$HOME/Library/Caches/sinete/agent.sock}"
+# Where B1 parks the presence TTL so C1/C2 have a known, short window to observe.
+TTL="${SINETE_PRESENCE_TTL:-30s}"
+
+c_red=$'\033[31m'
+c_grn=$'\033[32m'
+c_dim=$'\033[2m'
+c_off=$'\033[0m'
+
+# --- scenario table -------------------------------------------------------------------
+# kind is one of:
+#   APPROVE   expect exit 0 after you approve the prompt
+#   REFUSE    expect non-zero exit (you cancel, or the op is refused)
+#   OBSERVE   exit can't tell prompt-from-silent; you confirm the observed behaviour
+scn_kind() { case "$1" in
+  A1 | A3 | A4 | B1 | B3) echo APPROVE ;;
+  A2 | B2 | C4) echo REFUSE ;;
+  C1 | C2 | C3) echo OBSERVE ;;
+  *) echo "?" ;; esac }
+scn_desc() { case "$1" in
+  A1) echo "present → APPROVE Touch ID" ;;
+  A2) echo "present → CANCEL the prompt" ;;
+  A3) echo "present → use the passcode fallback (Enter Password)" ;;
+  A4) echo "present -n 3 → approve three prompts in one run" ;;
+  B1) echo "config set presence-ttl $TTL → APPROVE (master-key Touch ID; arms C1/C2)" ;;
+  B2) echo "config set presence-ttl 45s → CANCEL (write must be refused)" ;;
+  B3) echo "_enclave-check → APPROVE (full SE master sign/verify + config round-trip)" ;;
+  C1) echo "agent: first signature prompts, a second within $TTL is SILENT (cache)" ;;
+  C2) echo "agent: after $TTL idle, the next signature RE-PROMPTS (expiry)" ;;
+  C3) echo "agent: a deleted+recreated key RE-AUTHS (window keyed by public key)" ;;
+  C4) echo "agent: a REMOTE (ssh) peer signing is REFUSED (sessionIsRemote)" ;;
+  esac }
+scn_setup() { case "$1" in
+  A1 | A2 | A3 | A4 | B1 | B2 | B3 | C1 | C2 | C3) echo "run locally, at the Mac (Touch ID reachable)." ;;
+  C4) echo "ssh INTO this Mac and run this scenario from that ssh session." ;;
+  esac }
+
+need_sinete() {
+  [ -x "$SINETE" ] || {
+    echo "${c_red}no sinete binary at \$SINETE=$SINETE${c_off}"
+    echo "  build the signed bundle:  nix run .#bundle -- <profile>"
+    echo "  then re-run, e.g.:        SINETE=./dist/sinete.app/Contents/MacOS/sinete $0 $1"
+    return 1
+  }
+}
+need_agent() {
+  [ -S "$AGENT_SOCK" ] || {
+    echo "${c_red}no agent socket at $AGENT_SOCK${c_off} — install/start sinete first"
+    echo "  (./dist/sinete.app/Contents/MacOS/sinete install), or set SINETE_AGENT_SOCK."
+    return 1
+  }
+}
+
+# ssh-add -T signs a challenge with each listed key via the agent → triggers the presence
+# path without needing a server. Returns 0 iff the agent signed.
+agent_sign() { # -> 0 signed / non-zero refused-or-failed
+  local keys
+  keys="$(mktemp "${TMPDIR:-/tmp}/sinete-agentkeys.XXXXXX")"
+  SSH_AUTH_SOCK="$AGENT_SOCK" ssh-add -L >"$keys" 2>/dev/null
+  if ! [ -s "$keys" ]; then
+    rm -f "$keys"
+    echo "  (agent advertised no keys — generate one first: $SINETE generate <name>)" >&2
+    return 2
+  fi
+  SSH_AUTH_SOCK="$AGENT_SOCK" ssh-add -T "$keys" >/dev/null 2>&1
+  local rc=$?
+  rm -f "$keys"
+  return $rc
+}
+
+ask_yn() { # $1 prompt -> 0 yes / 1 no
+  local a
+  read -r -p "$1 [y/N] " a
+  case "$a" in [yY]*) return 0 ;; *) return 1 ;; esac
+}
+
+grade() { # $1 kind  $2 exit-or-observed(0/1)  -> prints verdict, sets RC
+  case "$1:$2" in
+  APPROVE:0) echo "  VERDICT: ${c_grn}PASS${c_off} (approved → exit 0)" ;;
+  APPROVE:*) echo "  VERDICT: ${c_red}FAIL${c_off} (expected success but it failed/was declined)" ;;
+  REFUSE:0) echo "  VERDICT: ${c_red}FAIL${c_off} (expected a refusal but it succeeded)" ;;
+  REFUSE:*) echo "  VERDICT: ${c_grn}PASS${c_off} (refused, as expected)" ;;
+  OBSERVE:0) echo "  VERDICT: ${c_grn}PASS${c_off} (you confirmed the expected behaviour)" ;;
+  OBSERVE:*) echo "  VERDICT: ${c_red}FAIL${c_off} (observed behaviour did not match)" ;;
+  esac
+}
+
+run_scenario() {
+  local s="$1" kind
+  kind="$(scn_kind "$s")"
+  [ "$kind" = "?" ] && {
+    echo "no such scenario: $s"
+    return 2
+  }
+  echo
+  echo "================ scenario $s ================"
+  echo "  WHAT     : $(scn_desc "$s")"
+  echo "  SETUP    : $(scn_setup "$s")"
+  echo "  EXPECT   : $kind"
+  echo "============================================"
+  read -r -p "Ready? press Enter to run (Ctrl-C to abort)… " _
+  echo
+
+  local rc=1
+  case "$s" in
+  # ── Tier A: presence prompt (LocalAuthentication) — exit code is authoritative ──
+  A1)
+    need_sinete "$s" || return 1
+    "$SINETE" present "checklist A1 — approve me"
+    rc=$?
+    ;;
+  A2)
+    need_sinete "$s" || return 1
+    echo "${c_dim}When the prompt appears, CANCEL it.${c_off}"
+    "$SINETE" present "checklist A2 — cancel me"
+    rc=$?
+    ;;
+  A3)
+    need_sinete "$s" || return 1
+    echo "${c_dim}Click \"Enter Password\" and use your login passcode (device-owner fallback).${c_off}"
+    "$SINETE" present "checklist A3 — use the passcode"
+    rc=$?
+    ;;
+  A4)
+    need_sinete "$s" || return 1
+    "$SINETE" present -n 3 "checklist A4 — approve x3"
+    rc=$?
+    ;;
+
+  # ── Tier B: Secure Enclave / master key ──
+  B1)
+    need_sinete "$s" || return 1
+    "$SINETE" config set presence-ttl "$TTL"
+    rc=$?
+    [ $rc -eq 0 ] && echo "  presence-ttl now: $("$SINETE" config get presence-ttl 2>/dev/null)"
+    ;;
+  B2)
+    need_sinete "$s" || return 1
+    echo "${c_dim}CANCEL the Touch ID prompt — the config write must be refused.${c_off}"
+    out="$("$SINETE" config set presence-ttl 45s 2>&1)"
+    rc=$?
+    echo "$out" | tail -1
+    # config set may exit 0 with a warning when the signed write is refused; treat a
+    # "could not"/"refus"/presence-failure note as a refusal regardless of exit code.
+    echo "$out" | grep -qiE 'could not|refus|not verified|presence' && rc=1
+    ;;
+  B3)
+    need_sinete "$s" || return 1
+    "$SINETE" _enclave-check
+    rc=$?
+    ;;
+
+  # ── Tier C: agent presence window + remote refusal ──
+  C1)
+    need_agent || return 1
+    echo "Signing once — APPROVE the Touch ID prompt:"
+    agent_sign
+    echo "Signing again immediately (should be SILENT — no prompt):"
+    agent_sign
+    ask_yn "Did the FIRST prompt, and the SECOND stay silent (within $TTL)?" && rc=0 || rc=1
+    ;;
+  C2)
+    need_agent || return 1
+    echo "Waiting out the idle TTL ($TTL) so the window lapses…"
+    sleep_for="${TTL%s}"
+    sleep "$((sleep_for + 3))"
+    echo "Signing again — it should RE-PROMPT:"
+    agent_sign
+    ask_yn "Did it re-prompt for Touch ID after the idle wait?" && rc=0 || rc=1
+    ;;
+  C3)
+    need_sinete "$s" || return 1
+    need_agent || return 1
+    k="checklist-c3-$$"
+    echo "${c_dim}Using a throwaway key '$k' (created and removed here; your real keys are untouched).${c_off}"
+    "$SINETE" generate "$k" >/dev/null 2>&1 || {
+      echo "  could not create test key"
+      return 1
+    }
+    echo "Sign with it — APPROVE:"
+    agent_sign
+    echo "Deleting and recreating '$k' (same name, NEW key) — approve any prompts:"
+    "$SINETE" delete "$k" >/dev/null 2>&1
+    "$SINETE" generate "$k" >/dev/null 2>&1
+    echo "Sign again — it should RE-PROMPT (window is keyed by public key, which changed):"
+    agent_sign
+    ask_yn "Did the recreated key re-prompt (not silently reuse the old window)?" && rc=0 || rc=1
+    "$SINETE" delete "$k" >/dev/null 2>&1 # clean up the throwaway
+    ;;
+  C4)
+    need_agent || return 1
+    echo "${c_dim}You should be in an ssh session into this Mac. Attempting an agent signature…${c_off}"
+    if agent_sign; then rc=0; else rc=1; fi
+    ;;
+  esac
+
+  echo
+  if [ "$kind" = OBSERVE ]; then
+    grade "$kind" "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
+  else
+    echo "  exit=$rc"
+    grade "$kind" "$rc"
+  fi
+}
+
+menu() {
+  cat <<EOF
+macOS presence-gate checklist — sinete=$SINETE  agent=$AGENT_SOCK
+
+Touch ID can't be faked, so you drive each prompt; the script grades the result.
+Run scenarios in order — B1 sets presence-ttl=$TTL, which C1/C2 then observe.
+
+  Tier A — presence prompt (Touch ID via LocalAuthentication)
+    A1  APPROVE   present → approve
+    A2  REFUSE    present → cancel
+    A3  APPROVE   present → passcode fallback
+    A4  APPROVE   present -n 3
+
+  Tier B — Secure Enclave / master key  (needs the signed bundle)
+    B1  APPROVE   config set presence-ttl $TTL → approve   (arms C1/C2)
+    B2  REFUSE    config set → cancel (write refused)
+    B3  APPROVE   _enclave-check (full SE round-trip)
+
+  Tier C — agent window + remote  (needs the running agent)
+    C1  OBSERVE   first sign prompts, second within $TTL is silent
+    C2  OBSERVE   after $TTL idle, next sign re-prompts
+    C3  OBSERVE   deleted+recreated key re-auths (throwaway key)
+    C4  REFUSE    remote ssh peer refused  ← run from an ssh session
+
+  <id>   run one scenario (e.g. A1, C4)
+  all-a | all-b   run a whole local tier in order
+
+C4 is also the headless/remote-macOS test: ssh into this Mac and run \`… C4\`.
+EOF
+}
+
+case "${1:-}" in
+"" | menu | help | -h | --help) menu ;;
+all-a)
+  for s in A1 A2 A3 A4; do run_scenario "$s"; done
+  ;;
+all-b)
+  for s in B1 B2 B3; do run_scenario "$s"; done
+  ;;
+A1 | A2 | A3 | A4 | B1 | B2 | B3 | C1 | C2 | C3 | C4) run_scenario "$1" ;;
+*)
+  echo "unknown: $1"
+  echo
+  menu
+  exit 2
+  ;;
+esac
