@@ -97,18 +97,25 @@ need_ssh() {
 }
 
 # ssh-add -T signs a challenge with each listed key via the agent → triggers the presence
-# path without needing a server. Three-way result so callers never confuse "could not even
+# path without needing a server. Optional $1 restricts the test to the key whose comment
+# (the sinete key name) equals $1, so a scenario can target one specific key even when the
+# agent advertises several. Three-way result so callers never confuse "could not even
 # attempt" with "the agent refused":
 #   0  the agent SIGNED
 #   1  the agent was asked but did NOT sign (refused / signature failed) — the C4 case
-#   2  could not attempt (agent advertised no keys)
+#   2  could not attempt (agent advertised no matching keys)
 agent_sign() {
-  local keys rc
+  local keys rc want="${1:-}"
   keys="$(mktemp "${TMPDIR:-/tmp}/sinete-agentkeys.XXXXXX")"
-  SSH_AUTH_SOCK="$AGENT_SOCK" ssh-add -L >"$keys" 2>/dev/null
+  if [ -n "$want" ]; then
+    # Keep only the line whose trailing comment field is exactly $want.
+    SSH_AUTH_SOCK="$AGENT_SOCK" ssh-add -L 2>/dev/null | awk -v w="$want" '$NF == w' >"$keys"
+  else
+    SSH_AUTH_SOCK="$AGENT_SOCK" ssh-add -L >"$keys" 2>/dev/null
+  fi
   if ! [ -s "$keys" ]; then
     rm -f "$keys"
-    echo "  (agent advertised no keys — generate one first: $SINETE generate <name>)" >&2
+    echo "  (agent advertised no${want:+ matching} keys — generate one first: $SINETE generate <name>)" >&2
     return 2
   fi
   if SSH_AUTH_SOCK="$AGENT_SOCK" ssh-add -T "$keys" >/dev/null 2>&1; then rc=0; else rc=1; fi
@@ -189,8 +196,9 @@ run_scenario() {
     rc=$?
     echo "$out" | tail -1
     # config set may exit 0 with a warning when the signed write is refused; treat a
-    # "could not"/"refus"/presence-failure note as a refusal regardless of exit code.
-    echo "$out" | grep -qiE 'could not|refus|not verified|presence' && rc=1
+    # refusal/declined note as a refusal regardless of exit code. (Avoid matching the bare
+    # word "presence", which appears in normal successful output like the max-ttl note.)
+    echo "$out" | grep -qiE 'could not|refus|not verified|declined|cancel' && rc=1
     ;;
   B3)
     need_sinete "$s" || return 1
@@ -219,7 +227,7 @@ run_scenario() {
     need_agent || return 1
     need_ssh || return 1
     echo "Waiting out the idle TTL ($TTL) so the window lapses…"
-    sleep "$((${TTL%s} + 3))" # $TTL is validated as integer-seconds at startup
+    sleep "$((10#${TTL%s} + 3))" # base-10 (10#) so a leading-zero TTL like 08s isn't read as octal
     echo "Signing again — it should RE-PROMPT:"
     agent_sign
     r=$?
@@ -241,13 +249,13 @@ run_scenario() {
       return 1
     }
     echo "Sign with it — APPROVE:"
-    agent_sign
+    agent_sign "$k" # target only the throwaway key, not whatever else the agent advertises
     a=$?
     echo "Deleting and recreating '$k' (same name, NEW key) — approve any prompts:"
     "$SINETE" delete "$k" >/dev/null 2>&1
     "$SINETE" generate "$k" >/dev/null 2>&1
     echo "Sign again — it should RE-PROMPT (window is keyed by public key, which changed):"
-    agent_sign
+    agent_sign "$k"
     b=$?
     if [ "$a" -ne 0 ] || [ "$b" -ne 0 ]; then
       echo "  ${c_red}a signature did not complete (first=$a second=$b) — cannot judge re-auth${c_off}"
