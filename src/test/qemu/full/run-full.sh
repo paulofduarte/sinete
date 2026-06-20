@@ -89,7 +89,9 @@ fetch_image() { # $1 distro  -> echoes cached image path
     echo "FATAL: $d image sha256 not pinned" >&2
     return 1
   }
-  sha256_of "$img" | grep -qiF "$sha" || {
+  got="$(sha256_of "$img")"
+  got="${got%% *}" # strip the trailing "  <file>", leaving just the hash
+  [ "$got" = "$sha" ] || {
     echo "FATAL: $d image sha256 mismatch (upstream changed?) — re-pin, or remove $img and retry" >&2
     return 1
   }
