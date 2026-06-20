@@ -141,7 +141,7 @@ ask_yn() { # $1 prompt -> 0 yes / 1 no
   case "$a" in [yY]*) return 0 ;; *) return 1 ;; esac
 }
 
-grade() { # $1 kind  $2 exit-or-observed(0/1)  -> prints verdict, sets RC
+grade() { # $1 kind  $2 exit-or-observed(0/1)  -> prints the PASS/FAIL verdict line
   case "$1:$2" in
   APPROVE:0) echo "  VERDICT: ${c_grn}PASS${c_off} (approved → exit 0)" ;;
   APPROVE:*) echo "  VERDICT: ${c_red}FAIL${c_off} (expected success but it failed/was declined)" ;;
