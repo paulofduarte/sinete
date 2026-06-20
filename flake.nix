@@ -232,8 +232,6 @@
             pkgs.cacert
             pkgs.gnugrep
             pkgs.gnused
-            pkgs.gawk
-            pkgs.findutils
           ];
           text = ''
             export SSL_CERT_FILE="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"

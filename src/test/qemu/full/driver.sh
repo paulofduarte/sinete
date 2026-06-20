@@ -58,6 +58,7 @@ if [ ! -f /root/.provisioned ]; then
 fi
 
 install -m 0755 /root/sinete /usr/local/bin/sinete
+export PATH=/usr/local/bin:$PATH # invoke `sinete` regardless of the distro's default PATH
 export XDG_DATA_HOME=/root/.local/share XDG_CONFIG_HOME=/root/.config
 mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME"
 unset DISPLAY WAYLAND_DISPLAY GPG_TTY

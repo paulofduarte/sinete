@@ -95,8 +95,10 @@ fetch_image() { # $1 distro  -> echoes cached image path
 }
 
 run_distro() { # $1 distro -> 0 pass / 1 fail
-  # -e is suppressed here (this runs as `run_distro || rc=1`), so setup steps check
-  # explicitly and return 1 on failure rather than silently booting with bad inputs.
+  # Called as `run_distro || rc=1`, so per bash `set -e` is ignored throughout this
+  # function body — unguarded failures here do NOT abort. Hence the explicit `|| return
+  # 1` on each setup step, so a failure is reported as a FAIL rather than booting with
+  # bad inputs.
   local d="$1" img dir
   img="$(fetch_image "$d")" || return 1
   dir="$WORK/$d"
