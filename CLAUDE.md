@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`sinete` is a hardware-backed SSH key manager + agent. Private keys are generated inside, and never leave, the platform secure element (macOS Secure Enclave; Linux TPM 2.0 is planned). Only public keys are ever exported; every signature is computed in-hardware. Keys are presented as plain `ecdsa-sha2-nistp256` so they work with GitHub, OpenSSH servers, and SSH-based git commit signing — the whole reason the project exists (macOS's native SE path yields `sk-ecdsa-...@openssh.com`, which GitHub rejects).
+`sinete` is a hardware-backed SSH key manager + agent. Private keys are generated inside, and never leave, the platform secure element (macOS Secure Enclave; Linux TPM 2.0). Only public keys are ever exported; every signature is computed in-hardware. Keys are presented as plain `ecdsa-sha2-nistp256` so they work with GitHub, OpenSSH servers, and SSH-based git commit signing — the whole reason the project exists (macOS's native SE path yields `sk-ecdsa-...@openssh.com`, which GitHub rejects).
 
 The crypto/hardware core is [`facebookincubator/sks`](https://github.com/facebookincubator/sks) (Apache-2.0), which abstracts Secure Enclave + TPM behind one Go API. `sinete` adds the SSH/agent/CLI layer on top.
 
@@ -88,10 +88,10 @@ Prereqs: an Apple Development identity, the WWDR **G3** intermediate, and a dev 
 
 ## Build notes
 
-`flake.nix` pins nixpkgs to `nixos-26.05`, sets a real `vendorHash`, and wires `treefmt-nix` + `git-hooks.nix`. `sks` is upstream `facebookincubator/sks` (the `paulofduarte/sks` fork was dropped in v2; the `replace` is gone). If `go.mod` / `go.sum` change, regenerate the `vendorHash` (set it to `pkgs.lib.fakeHash`, run `nix build`, paste the printed hash).
+`flake.nix` pins nixpkgs to `nixos-26.05`, sets a real `vendorHash`, and wires `treefmt-nix` + `git-hooks.nix`. `sks` is pinned to the `paulofduarte/sks` fork via a `replace` in `src/go.mod` (it honors `useBiometrics` on macOS and carries `WithAuthValue` for the Linux TPM PIN — see the `sks.NewKey` note above); switch the pin back to upstream `facebookincubator/sks` once the upstream PRs land. If `go.mod` / `go.sum` change, regenerate the `vendorHash` (set it to `pkgs.lib.fakeHash`, run `nix build`, paste the printed hash).
 
 ## Branching
 
-- **`develop`** — active development (all code, flake, CI). **Work here.** (Agent v2 lands via a PR from `agent-v2`.)
+- **`develop`** — active development (all code, flake, CI). **Work here.** (Agent v2 "Model B" has landed; feature work continues here via short-lived branches → PR → develop.)
 - **`main`** (default) — clean landing page: `README.md`, `LICENSE.md`, `.gitignore`, logo. Releases merge/tag here.
 - Module path: `github.com/paulofduarte/sinete`. CI gates everything on a `lint` job (build/test and the release workflow `needs:` it), on a `macos-14` + `ubuntu-latest` matrix.
