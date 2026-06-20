@@ -11,6 +11,16 @@
 exec >/dev/console 2>&1
 set -u
 
+# Fail fast with the marker run-full.sh greps for, then power off so the host-side
+# `timeout` doesn't have to wait us out. Used by every unrecoverable setup failure below
+# (this script does NOT run under set -e, so each such step is checked explicitly).
+die() {
+  echo "FATAL: $1"
+  echo "SINETE_VM_FAIL"
+  poweroff -f 2>/dev/null || systemctl poweroff -f 2>/dev/null || true
+  exit 1
+}
+
 modprobe tpm_crb 2>/dev/null || true
 modprobe tpm_tis 2>/dev/null || true
 # Give the TPM device a moment to appear (udev race right after boot).
@@ -28,10 +38,7 @@ if [ ! -e /dev/tpmrm0 ]; then
   n=$((n + 1))
   echo "$n" >/root/.notpm
   if [ "$n" -ge 2 ]; then
-    echo "FATAL: /dev/tpmrm0 still absent on boot $n (kernel $(uname -r)) — the TPM-capable (lts) kernel did not come up"
-    echo "SINETE_VM_FAIL"
-    poweroff -f 2>/dev/null || systemctl poweroff -f 2>/dev/null || true
-    exit 1
+    die "/dev/tpmrm0 still absent on boot $n (kernel $(uname -r)) — the TPM-capable (lts) kernel did not come up"
   fi
   echo "DRIVER: no /dev/tpmrm0 on boot $n (kernel $(uname -r)) — awaiting the TPM-capable reboot"
   exit 0
@@ -51,13 +58,14 @@ for _ in $(seq 1 120); do
   sleep 2
 done
 if [ ! -f /root/.provisioned ]; then
-  echo "FATAL: provisioning did not complete (/root/.provisioned missing) — see distro_provision output above"
-  echo "SINETE_VM_FAIL"
-  poweroff -f 2>/dev/null || systemctl poweroff -f 2>/dev/null || true
-  exit 1
+  die "provisioning did not complete (/root/.provisioned missing) — see distro_provision output above"
 fi
 
-install -m 0755 /root/sinete /usr/local/bin/sinete
+# Put the real sinete on PATH. Checked + dir created explicitly: a failure here (no
+# install(1), unwritable target) would otherwise cascade into misleading "sinete: not
+# found" scenario failures rather than a clear marker.
+install -d /usr/local/bin || die "could not create /usr/local/bin"
+install -m 0755 /root/sinete /usr/local/bin/sinete || die "could not install sinete to /usr/local/bin (install(1) missing or target not writable)"
 export PATH=/usr/local/bin:$PATH # invoke `sinete` regardless of the distro's default PATH
 export XDG_DATA_HOME=/root/.local/share XDG_CONFIG_HOME=/root/.config
 mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME"
