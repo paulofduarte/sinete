@@ -211,6 +211,12 @@ run_scenario() {
     # saveConfig (cfg.Save) returns an error and `config set` exits non-zero. Do NOT grep the
     # text — the "signed config could not be verified" line is a pre-write READ warning that
     # also prints on a *successful* write, so matching it would mis-grade a success as refused.
+    if [ "$rc" -eq 0 ]; then
+      # It went through (you approved instead of cancelling): presence-ttl is now 45s, not
+      # the $TTL B1 set, which would skew the C1/C2 window observations. Restore it.
+      echo "${c_red}note: the write SUCCEEDED — presence-ttl is now 45s, not the $TTL from B1.${c_off}"
+      echo "${c_red}      re-run B1 to restore the intended window before C1/C2.${c_off}"
+    fi
     ;;
   B3)
     need_sinete "$s" || return 1
