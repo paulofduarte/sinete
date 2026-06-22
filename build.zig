@@ -14,8 +14,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // A static archive of the core, installed for external (including non-Zig) consumers. The
-    // sinete executable below does not link it; it imports the module and compiles the core in.
+    // A static archive of the core, installed as a build artifact. The sinete executable below
+    // does not link it; it imports the module and compiles the core in. (No C ABI is exported
+    // yet, so this archive is for Zig consumers; a C-callable surface can be added later.)
     const lib = b.addLibrary(.{
         .name = "sinete",
         .root_module = lib_mod,
