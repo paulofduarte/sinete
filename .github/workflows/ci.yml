@@ -54,17 +54,49 @@ jobs:
 
   coverage:
     needs: lint
-    # kcov was dropped from the Ubuntu 24.04 (noble) repos, so pin to 22.04 where it ships.
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
+    env:
+      KCOV_VERSION: v43
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-      - name: Install kcov
-        run: sudo apt-get update && sudo apt-get install -y kcov
+      - name: Cache kcov
+        id: kcov-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/kcov
+          key: kcov-${{ env.KCOV_VERSION }}-${{ runner.os }}
+      - name: Build kcov from source
+        if: steps.kcov-cache.outputs.cache-hit != 'true'
+        run: |
+          # The Ubuntu repos no longer package kcov, so build the latest stable release.
+          # Zig is the C/C++ compiler when it can build kcov; otherwise fall back to gcc.
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config \
+            libcurl4-openssl-dev libdw-dev libelf-dev binutils-dev libiberty-dev zlib1g-dev libssl-dev
+          git clone --depth 1 --branch "$KCOV_VERSION" https://github.com/SimonKagstrom/kcov /tmp/kcov
+          printf '#!/bin/sh\nexec zig cc "$@"\n'  | sudo tee /usr/local/bin/zig-cc  >/dev/null
+          printf '#!/bin/sh\nexec zig c++ "$@"\n' | sudo tee /usr/local/bin/zig-cxx >/dev/null
+          sudo chmod +x /usr/local/bin/zig-cc /usr/local/bin/zig-cxx
+          if cmake -S /tmp/kcov -B /tmp/kcov/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+               -DCMAKE_INSTALL_PREFIX="$HOME/.local/kcov" \
+               -DCMAKE_C_COMPILER=zig-cc -DCMAKE_CXX_COMPILER=zig-cxx \
+             && cmake --build /tmp/kcov/build; then
+            echo "kcov built with zig cc"
+          else
+            echo "zig cc build failed; falling back to the system compiler"
+            rm -rf /tmp/kcov/build
+            cmake -S /tmp/kcov -B /tmp/kcov/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX="$HOME/.local/kcov"
+            cmake --build /tmp/kcov/build
+          fi
+          cmake --install /tmp/kcov/build
+      - name: Add kcov to PATH
+        run: echo "$HOME/.local/kcov/bin" >> "$GITHUB_PATH"
       - name: Run tests under kcov
-        run: zig build coverage
+        run: kcov --version && zig build coverage
       - name: Coverage summary
         run: |
           report=$(find kcov-out -name coverage.json | head -1)

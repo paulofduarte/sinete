@@ -49,7 +49,11 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_lib_tests.step);
 
     // coverage: run the test binary under kcov (which must be on PATH), writing kcov-out/.
-    const kcov = b.addSystemCommand(&.{ "kcov", "--clean", "--include-path=lib,src", "kcov-out" });
+    // The include path is absolute so it matches the source paths in the binary's debug info
+    // and excludes the Zig standard library.
+    const kcov = b.addSystemCommand(&.{ "kcov", "--clean" });
+    kcov.addArg(b.fmt("--include-path={s},{s}", .{ b.pathFromRoot("lib"), b.pathFromRoot("src") }));
+    kcov.addArg("kcov-out");
     kcov.addArtifactArg(lib_tests);
     const cov_step = b.step("coverage", "Run unit tests under kcov (writes kcov-out/)");
     cov_step.dependOn(&kcov.step);
