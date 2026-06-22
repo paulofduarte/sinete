@@ -7,32 +7,44 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // libsinete: the cross-platform core, a reusable module plus a static library.
+    const lib_mod = b.addModule("sinete", .{
+        .root_source_file = b.path("lib/sinete.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // A static archive of the core, installed as a build artifact. The sinete executable below
+    // does not link it; it imports the module and compiles the core in. (No C ABI is exported
+    // yet, so this archive is for Zig consumers; a C-callable surface can be added later.)
+    const lib = b.addLibrary(.{
+        .name = "sinete",
+        .root_module = lib_mod,
+        .linkage = .static,
+    });
+    b.installArtifact(lib);
+
+    // the sinete executable: a thin CLI and wiring layer that imports the libsinete module.
     const exe = b.addExecutable(.{
         .name = "sinete",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{.{ .name = "sinete", .module = lib_mod }},
         }),
     });
     b.installArtifact(exe);
 
-    // `zig build run -- <args>`
     const run = b.addRunArtifact(exe);
     run.step.dependOn(b.getInstallStep());
     if (b.args) |args| run.addArgs(args);
     const run_step = b.step("run", "Build and run sinete");
     run_step.dependOn(&run.step);
 
-    // `zig build test`
-    const unit_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    const run_tests = b.addRunArtifact(unit_tests);
+    // tests: the portable core runs with no hardware.
+    const lib_tests = b.addTest(.{ .root_module = lib_mod });
+    const run_lib_tests = b.addRunArtifact(lib_tests);
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_tests.step);
+    test_step.dependOn(&run_lib_tests.step);
 }

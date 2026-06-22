@@ -1,0 +1,62 @@
+// SPDX-FileCopyrightText: 2026 Paulo Duarte
+// SPDX-License-Identifier: Apache-2.0
+
+//! The presence-authorization interface. An Authorizer performs the human-presence gesture,
+//! and any per-key unlock, for a key and returns success or refusal. It is a gate, not a
+//! signer: the signature itself is computed by the Cryptoprocessor (crypto.zig) after the gate
+//! passes. On macOS the gesture is Touch ID and signing uses the Secure Enclave key; on Linux
+//! the gesture is a fingerprint or security-key touch that also establishes the TPM policy the
+//! signer consumes. The interface is runtime-polymorphic (an Allocator-style vtable) so the
+//! agent core is generic over the backend or a test fake.
+
+const std = @import("std");
+
+/// Performs the presence gesture (and any per-key unlock) for `key_id`, returning normally on
+/// success. Called by the agent only when a key's presence window is cold; an error means
+/// refuse the signature.
+pub const Authorizer = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        authorize: *const fn (ptr: *anyopaque, key_id: []const u8, reason: []const u8) anyerror!void,
+    };
+
+    pub fn authorize(self: Authorizer, key_id: []const u8, reason: []const u8) !void {
+        return self.vtable.authorize(self.ptr, key_id, reason);
+    }
+};
+
+/// A fake authorizer for unit tests and the early agent (before any TPM/SE backend exists).
+/// Counts the gestures performed; can be told to decline to exercise the refusal path.
+pub const Fake = struct {
+    granted: usize = 0,
+    declines: bool = false,
+
+    pub fn authorizer(self: *Fake) Authorizer {
+        return .{ .ptr = self, .vtable = &vt };
+    }
+    const vt = Authorizer.VTable{ .authorize = authorize };
+    fn authorize(ptr: *anyopaque, key_id: []const u8, reason: []const u8) !void {
+        _ = key_id;
+        _ = reason;
+        const self: *Fake = @ptrCast(@alignCast(ptr));
+        if (self.declines) return error.PresenceDeclined;
+        self.granted += 1;
+    }
+};
+
+test "fake authorizer grants presence through the vtable seam" {
+    var fake = Fake{};
+    const az = fake.authorizer();
+    try az.authorize("key-1", "sign");
+    try az.authorize("key-1", "sign");
+    try std.testing.expectEqual(@as(usize, 2), fake.granted);
+}
+
+test "fake authorizer can decline (refusal path)" {
+    var fake = Fake{ .declines = true };
+    const az = fake.authorizer();
+    try std.testing.expectError(error.PresenceDeclined, az.authorize("k", "r"));
+    try std.testing.expectEqual(@as(usize, 0), fake.granted);
+}
