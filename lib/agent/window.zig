@@ -52,11 +52,18 @@ pub const Cache = struct {
         if (self.map.getPtr(key)) |w| w.accessed_ms = now_ms;
     }
 
-    /// Open or restart the window for key at now_ms, after a successful cold-path sign.
+    /// Open or restart the window for key at now_ms, after a successful cold-path sign. On a
+    /// new key the blob is duplicated into the cache first, so an allocation failure leaves the
+    /// map unchanged rather than holding a borrowed key pointer.
     pub fn open(self: *Cache, key: []const u8, now_ms: i64) !void {
-        const gop = try self.map.getOrPut(self.gpa, key);
-        if (!gop.found_existing) gop.key_ptr.* = try self.gpa.dupe(u8, key);
-        gop.value_ptr.* = .{ .created_ms = now_ms, .accessed_ms = now_ms };
+        const win = Window{ .created_ms = now_ms, .accessed_ms = now_ms };
+        if (self.map.getPtr(key)) |w| {
+            w.* = win; // the key is already owned; just restart the window
+            return;
+        }
+        const owned = try self.gpa.dupe(u8, key);
+        errdefer self.gpa.free(owned);
+        try self.map.put(self.gpa, owned, win);
     }
 
     /// Drop a single key's window so it must re-authenticate.
@@ -103,4 +110,14 @@ test "a different key blob does not share a window" {
     defer c.deinit();
     try c.open("key-A", 1000);
     try std.testing.expect(!c.peek("key-B", 1100, 5000, 50000));
+}
+
+test "open rolls back cleanly when an allocation fails" {
+    // Fail the map insert after the key dup succeeds; the errdefer must free the dup and the
+    // map must be left empty, with no leak and no borrowed key pointer.
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    var c = Cache.init(failing.allocator());
+    defer c.deinit();
+    try std.testing.expectError(error.OutOfMemory, c.open("k", 1000));
+    try std.testing.expect(!c.peek("k", 1100, 1000, 5000));
 }
