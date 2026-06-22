@@ -3,7 +3,7 @@
 
 //! The agent sign-path — the backend-agnostic core that ties presence (Authorizer), the
 //! per-key TTL window, and the secure element (Cryptoprocessor) together. This is the
-//! "Model B" gate (CLAUDE.md): every registry key is advertised; the first signature with a
+//! "Model B" gate (internal design notes): every registry key is advertised; the first signature with a
 //! key runs presence, then within the idle/absolute TTL further signatures are silent.
 //! Pure orchestration — `now_ms` is injected, so the whole flow is unit-tested with fakes.
 

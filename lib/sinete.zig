@@ -4,7 +4,8 @@
 //! libsinete — the cross-platform core of sinete (no OS dependencies, fully unit-testable).
 //! Holds the ssh-agent protocol, SSH wire format, the presence-window/TTL logic, and the
 //! key-authorization seam. OS specifics (Secure Enclave, TPM, presence, sockets) live in the
-//! `backend` and are reached only through the interfaces defined here. See ZIG-ARCHITECTURE.md.
+//! `backend` and are reached only through the interfaces defined here. See the internal
+//! ZIG-ARCHITECTURE design doc (kept local/private, mirrored in the sinete-private-docs repo).
 
 const std = @import("std");
 

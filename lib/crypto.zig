@@ -4,7 +4,8 @@
 //! The Cryptoprocessor seam: the secure-element authority for key *lifecycle + signing*
 //! (macOS Secure Enclave, Linux TPM 2.0, or a fake). It owns the key handles; the agent
 //! reaches it only through this vtable. Presence is gated separately by the Authorizer
-//! (authz.zig) — a `sign` here is the post-presence/silent path. See KEY-AUTHZ-DESIGN.md.
+//! (authz.zig) — a `sign` here is the post-presence/silent path. See the internal
+//! KEY-AUTHZ design doc (kept local/private, mirrored in the sinete-private-docs repo).
 
 const std = @import("std");
 

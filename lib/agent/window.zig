@@ -5,7 +5,8 @@
 //! Authorizer (a Touch ID / TPM-ticket gesture); within the per-key idle TTL — and an
 //! absolute cap — further signatures are silent. Windows are keyed by the **public-key
 //! blob**, not the name, so a deleted-and-recreated key must re-authenticate
-//! (KEY-AUTHZ-DESIGN.md). Pure/time-injected: `now_ms` is passed in, never read here.
+//! (the internal KEY-AUTHZ design doc, kept local/private in sinete-private-docs).
+//! Pure/time-injected: `now_ms` is passed in, never read here.
 
 const std = @import("std");
 
