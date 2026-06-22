@@ -1,0 +1,86 @@
+# SPDX-FileCopyrightText: 2026 Paulo Duarte
+# SPDX-License-Identifier: Apache-2.0
+
+name: ci
+
+on:
+  push:
+    branches: [develop-zig, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: zig fmt
+        run: zig fmt --check .
+      - name: REUSE compliance
+        uses: fsfe/reuse-action@v5
+      - name: shellcheck
+        run: |
+          files=$(git ls-files '*.sh' '.githooks/*')
+          if [ -n "$files" ]; then
+            # shellcheck disable=SC2086
+            shellcheck $files
+          else
+            echo "no shell files to check"
+          fi
+
+  test:
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Build and test
+        run: zig build test --summary all
+
+  coverage:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Install kcov
+        run: sudo apt-get update && sudo apt-get install -y kcov
+      - name: Run tests under kcov
+        run: zig build coverage
+      - name: Coverage summary
+        run: |
+          report=$(find kcov-out -name coverage.json | head -1)
+          if [ -n "$report" ]; then
+            pct=$(jq -r '.percent_covered' "$report")
+            cov=$(jq -r '.covered_lines' "$report")
+            tot=$(jq -r '.total_lines' "$report")
+            {
+              echo "## Coverage"
+              echo ""
+              echo "Line coverage: **${pct}%** (${cov}/${tot} lines)"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "no kcov report found" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: kcov-out

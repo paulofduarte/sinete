@@ -47,4 +47,10 @@ pub fn build(b: *std.Build) void {
     const run_lib_tests = b.addRunArtifact(lib_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_tests.step);
+
+    // coverage: run the test binary under kcov (which must be on PATH), writing kcov-out/.
+    const kcov = b.addSystemCommand(&.{ "kcov", "--clean", "--include-path=lib,src", "kcov-out" });
+    kcov.addArtifactArg(lib_tests);
+    const cov_step = b.step("coverage", "Run unit tests under kcov (writes kcov-out/)");
+    cov_step.dependOn(&kcov.step);
 }

@@ -1,0 +1,16 @@
+version = 1
+
+# Files that cannot carry an SPDX header inline are declared here so the tree is
+# fully REUSE-compliant (every file has copyright + license information).
+
+[[annotations]]
+path = ["CLAUDE.md", "LICENSE.md", "logo.webp"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Paulo Duarte"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = "devenv.lock"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Paulo Duarte"
+SPDX-License-Identifier = "Apache-2.0"

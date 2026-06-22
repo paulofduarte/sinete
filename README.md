@@ -29,6 +29,7 @@ The repo builds with **`zig build` alone** — no nix needed if you have Zig 0.1
 zig build                 # → zig-out/bin/sinete
 zig build run -- version
 zig build test
+zig build coverage        # run tests under kcov → kcov-out/ (Linux; needs kcov on PATH)
 zig fmt .                 # format (enforced by the pre-commit hook)
 ```
 
@@ -40,6 +41,13 @@ devenv shell              # provides zig + shellcheck; sets the hooks path
 
 Pre-commit hooks are plain shell (`.githooks/pre-commit`: `zig fmt` + SPDX header + shellcheck).
 Enable once with `git config core.hooksPath .githooks` (the devenv shell does this automatically).
+
+## Continuous integration
+
+GitHub Actions (`.github/workflows/ci.yml`) gates every push and pull request on a `lint` job
+(`zig fmt`, [REUSE](https://reuse.software) compliance, shellcheck), then runs the test suite on
+a Linux + macOS matrix and produces a kcov coverage report (uploaded as a build artifact). Zig is
+installed directly, so CI needs no nix.
 
 ## License
 
