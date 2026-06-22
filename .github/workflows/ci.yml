@@ -60,9 +60,13 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      - name: Install kcov build libraries
+        # roc-lang/zig-kcov builds kcov via Zig but links the system DWARF/curl/zlib/libc++.
+        run: sudo apt-get update && sudo apt-get install -y
+          pkg-config libelf-dev libdw-dev libcurl4-openssl-dev zlib1g-dev libc++-dev libc++abi-dev
       - name: Run tests under kcov
-        # `zig build coverage` builds kcov (allyourcodebase/kcov, all deps vendored) and runs
-        # the test binary under it. No system packages required.
+        # `zig build coverage` builds kcov (roc-lang/zig-kcov, which resolves Zig's DWARF) and
+        # runs the test binary under it.
         run: zig build coverage
       - name: Coverage summary
         run: |

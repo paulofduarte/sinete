@@ -9,8 +9,8 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .kcov = .{
-            .url = "git+https://github.com/allyourcodebase/kcov#fe6a854b101af40c735b176ab51d1e13f5b3019d",
-            .hash = "kcov-43.0.0-xUyX6TKeAABKePl8XqUhwSQ2Y1tMNWElwV_3rUAz80UH",
+            .url = "git+https://github.com/roc-lang/zig-kcov?ref=zig-0.16.0#5e1954e53ce775a6ecf65abd03ae67deee64ac3c",
+            .hash = "kcov-42.0.1-EuAG4XacCwBu0G8YHvv6sFHfbMPZuwyBuZGqcRMi8IXq",
         },
     },
     .paths = .{
