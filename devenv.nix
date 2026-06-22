@@ -10,15 +10,6 @@
   packages = [
     pkgs.zig # 0.16.0 on nixpkgs 26.05
     pkgs.shellcheck # only used by the pre-commit hook (optional)
-
-    # `zig build coverage` builds kcov (roc-lang/zig-kcov) via Zig and links these system
-    # libraries. nixpkgs pins a recent elfutils, whose libdw parses Zig's DWARF correctly --
-    # the distro-packaged libdw on older systems does not, so nix is the reliable toolchain.
-    pkgs.pkg-config
-    pkgs.elfutils # libelf + libdw
-    pkgs.curl
-    pkgs.zlib
-    pkgs.libcxx
   ];
 
   enterShell = ''

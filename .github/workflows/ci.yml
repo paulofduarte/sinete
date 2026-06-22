@@ -54,20 +54,17 @@ jobs:
 
   coverage:
     needs: lint
-    # ARM64 runner: kcov (roc-lang/zig-kcov) is built without libbfd, so it relies on
-    # fixed-width instructions to place breakpoints. That works on aarch64 but not on x86-64,
-    # whose variable-length instructions need a disassembler kcov does not bundle.
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
-      - name: Install devenv
-        run: nix profile install nixpkgs#devenv
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
       - name: Run tests under kcov
-        # devenv provides the toolchain from devenv.nix: zig plus the kcov build libraries,
-        # including a recent elfutils whose libdw parses Zig's DWARF (distro libdw is too old).
-        # `zig build coverage` builds kcov (roc-lang/zig-kcov) and runs the test binary under it.
-        run: devenv shell -- zig build coverage
+        # `zig build coverage` builds kcov and all of its C dependencies (elfutils, binutils,
+        # curl, zlib) from source via the Zig build system (allyourcodebase/kcov), then runs
+        # the test binary under it. Only zig is required -- no system packages.
+        run: zig build coverage
       - name: Coverage summary
         run: |
           report=$(find kcov-out -name coverage.json | head -1)
