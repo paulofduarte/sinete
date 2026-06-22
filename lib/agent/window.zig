@@ -37,20 +37,22 @@ pub const Cache = struct {
         self.map.deinit(self.gpa);
     }
 
-    /// Whether `key` has a fresh window at `now_ms`; on a hit, slides the idle clock forward
-    /// (a silent signature counts as "used"). A miss/stale entry returns false — the caller
-    /// must then run the Authorizer and `open` the window.
-    pub fn fresh(self: *Cache, key: []const u8, now_ms: i64, idle_ms: i64, max_ms: i64) bool {
-        if (self.map.getPtr(key)) |w| {
-            if (w.fresh(now_ms, idle_ms, max_ms)) {
-                w.accessed_ms = now_ms;
-                return true;
-            }
-        }
+    /// Whether `key` has a fresh window at `now_ms`. **Non-mutating** — the caller commits
+    /// the window only after the signature succeeds (`touch` on a warm hit, `open` on a cold
+    /// one), so a failed sign never primes a silent window.
+    pub fn peek(self: *Cache, key: []const u8, now_ms: i64, idle_ms: i64, max_ms: i64) bool {
+        if (self.map.get(key)) |w| return w.fresh(now_ms, idle_ms, max_ms);
         return false;
     }
 
-    /// Open (or restart) the window for `key` at `now_ms`, after a successful gesture.
+    /// Slide the idle clock of an existing (warm) window forward — a silent signature counts
+    /// as "used". No-op if the key has no window. Keeps the original creation time (so the
+    /// absolute cap still applies).
+    pub fn touch(self: *Cache, key: []const u8, now_ms: i64) void {
+        if (self.map.getPtr(key)) |w| w.accessed_ms = now_ms;
+    }
+
+    /// Open (or restart) the window for `key` at `now_ms`, after a successful cold-path sign.
     pub fn open(self: *Cache, key: []const u8, now_ms: i64) !void {
         const gop = try self.map.getOrPut(self.gpa, key);
         if (!gop.found_existing) gop.key_ptr.* = try self.gpa.dupe(u8, key);
@@ -71,22 +73,34 @@ test "window freshness honours both idle and absolute caps" {
     try std.testing.expect(!w.fresh(1500, 0, 5000)); // zero idle ⇒ always cold
 }
 
-test "cache open/fresh/invalidate is keyed by the blob" {
+test "cache peek/touch/open/invalidate is keyed by the blob" {
     var c = Cache.init(std.testing.allocator);
     defer c.deinit();
     const key = "ecdsa-pubkey-blob";
 
-    try std.testing.expect(!c.fresh(key, 1000, 1000, 5000)); // cold: never opened
+    try std.testing.expect(!c.peek(key, 1000, 1000, 5000)); // cold: never opened
     try c.open(key, 1000);
-    try std.testing.expect(c.fresh(key, 1500, 1000, 5000)); // warm within idle
-    try std.testing.expect(c.fresh(key, 2400, 1000, 5000)); // idle slid forward by the prior hit
+    try std.testing.expect(c.peek(key, 1500, 1000, 5000)); // warm within idle (peek is pure)
+    try std.testing.expect(c.peek(key, 1500, 1000, 5000)); // still warm — peek did not mutate
+    c.touch(key, 1500); // a silent sign at t=1500 slides the idle clock
+    try std.testing.expect(c.peek(key, 2400, 1000, 5000)); // valid until 2500 thanks to the touch
     c.invalidate(key);
-    try std.testing.expect(!c.fresh(key, 2500, 1000, 5000)); // invalidated ⇒ cold again
+    try std.testing.expect(!c.peek(key, 2450, 1000, 5000)); // invalidated ⇒ cold again
+}
+
+test "open keeps the creation time on a touch but resets it on re-open" {
+    var c = Cache.init(std.testing.allocator);
+    defer c.deinit();
+    try c.open("k", 1000); // created=1000, cap → 1000+max
+    c.touch("k", 1800); // idle slides, creation stays 1000
+    try std.testing.expect(!c.peek("k", 1900, 1000, 500)); // absolute cap 1000+500=1500 exceeded
+    try c.open("k", 1900); // cold re-open resets creation → cap now 1900+500
+    try std.testing.expect(c.peek("k", 2000, 1000, 500));
 }
 
 test "a different key blob does not share a window" {
     var c = Cache.init(std.testing.allocator);
     defer c.deinit();
     try c.open("key-A", 1000);
-    try std.testing.expect(!c.fresh("key-B", 1100, 5000, 50000));
+    try std.testing.expect(!c.peek("key-B", 1100, 5000, 50000));
 }

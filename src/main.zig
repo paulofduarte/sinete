@@ -28,11 +28,16 @@ pub fn main(init: std.process.Init) !void {
     } else if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "-h") or std.mem.eql(u8, cmd, "--help")) {
         try out(init, usage);
     } else {
-        try out(init, usage);
+        // Unknown command is an error: usage goes to stderr so stdout stays clean for pipes.
+        try err(init, usage);
         std.process.exit(2);
     }
 }
 
 fn out(init: std.process.Init, bytes: []const u8) !void {
     try std.Io.File.stdout().writeStreamingAll(init.io, bytes);
+}
+
+fn err(init: std.process.Init, bytes: []const u8) !void {
+    try std.Io.File.stderr().writeStreamingAll(init.io, bytes);
 }

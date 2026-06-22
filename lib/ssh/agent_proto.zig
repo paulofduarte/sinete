@@ -35,19 +35,31 @@ pub const Request = union(enum) {
     unsupported: u8,
 };
 
-/// Parse a request body (`byte type` + payload). Slices in the result alias `body`.
-pub fn parseRequest(body: []const u8) wire.Decoder.Error!Request {
+pub const ParseError = wire.Decoder.Error || error{TrailingData};
+
+/// Parse a request body (`byte type` + payload). Slices in the result alias `body`. Known
+/// message types are parsed strictly: trailing bytes past the documented fields are rejected
+/// as `error.TrailingData` (→ the agent answers FAILURE) so untrusted input can't smuggle
+/// extra data. Unknown types are returned as `unsupported` without inspecting their payload.
+pub fn parseRequest(body: []const u8) ParseError!Request {
     var d = wire.Decoder{ .data = body };
     const t = try d.byte();
-    return switch (@as(MessageType, @enumFromInt(t))) {
-        .request_identities => .request_identities,
-        .sign_request => .{ .sign_request = .{
-            .key_blob = try d.string(),
-            .data = try d.string(),
-            .flags = try d.u32be(),
-        } },
-        else => .{ .unsupported = t },
-    };
+    switch (@as(MessageType, @enumFromInt(t))) {
+        .request_identities => {
+            if (!d.done()) return error.TrailingData;
+            return .request_identities;
+        },
+        .sign_request => {
+            const req = SignRequest{
+                .key_blob = try d.string(),
+                .data = try d.string(),
+                .flags = try d.u32be(),
+            };
+            if (!d.done()) return error.TrailingData;
+            return .{ .sign_request = req };
+        },
+        else => return .{ .unsupported = t },
+    }
 }
 
 /// One advertised identity in an IDENTITIES_ANSWER.
@@ -108,6 +120,21 @@ test "parse a SIGN_REQUEST body" {
 test "an unknown type parses as unsupported (→ FAILURE)" {
     const req = try parseRequest(&.{99});
     try std.testing.expectEqual(@as(u8, 99), req.unsupported);
+}
+
+test "trailing bytes on a known message are rejected" {
+    // REQUEST_IDENTITIES with a stray trailing byte
+    try std.testing.expectError(error.TrailingData, parseRequest(&.{ 11, 0 }));
+
+    // SIGN_REQUEST with extra bytes after flags
+    var enc = wire.Encoder.init(std.testing.allocator);
+    defer enc.deinit();
+    try enc.byte(13);
+    try enc.string("blob");
+    try enc.string("data");
+    try enc.u32be(0);
+    try enc.byte(0xFF); // trailing junk
+    try std.testing.expectError(error.TrailingData, parseRequest(enc.bytes()));
 }
 
 test "build + frame an IDENTITIES_ANSWER, then read it back" {

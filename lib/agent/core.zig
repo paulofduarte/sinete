@@ -22,8 +22,10 @@ pub const Config = struct {
 };
 
 /// Why a signature was refused — surfaced so the protocol layer can answer FAILURE and the
-/// CLI can explain. (`presence` wraps any Authorizer error; `backend` any Cryptoprocessor one.)
-pub const SignError = error{ PresenceRefused, BackendError } || std.mem.Allocator.Error;
+/// CLI can explain. (`PresenceRefused` wraps any Authorizer error; `BackendError` any
+/// Cryptoprocessor one.) Window bookkeeping can't fail the call — a lost window just means an
+/// extra presence prompt next time.
+pub const SignError = error{ PresenceRefused, BackendError };
 
 pub const Agent = struct {
     gpa: std.mem.Allocator,
@@ -48,14 +50,17 @@ pub const Agent = struct {
     /// `out` and returning its length. Runs the presence gesture only when the key's window
     /// is cold; refreshes the window on success.
     pub fn sign(self: *Agent, key_id: []const u8, data: []const u8, now_ms: i64, out: []u8) SignError!usize {
-        if (!self.windows.fresh(key_id, now_ms, self.cfg.idle_ms, self.cfg.max_ms)) {
-            // Cold window → require presence. The grant proves the gesture happened; the
-            // actual ECDSA runs in the secure element below (presence-less SE key on macOS;
-            // the Linux backend's sign reuses the ticket this gesture established).
-            _ = self.az.authorize(key_id, self.cfg.reason) catch return error.PresenceRefused;
-            try self.windows.open(key_id, now_ms);
-        }
-        return self.cp.sign(key_id, data, out) catch error.BackendError;
+        // Peek is non-mutating: we require presence on a cold window, then commit the window
+        // ONLY after the signature succeeds — so a failed sign never primes a silent window.
+        const warm = self.windows.peek(key_id, now_ms, self.cfg.idle_ms, self.cfg.max_ms);
+        if (!warm) self.az.authorize(key_id, self.cfg.reason) catch return error.PresenceRefused;
+
+        const n = self.cp.sign(key_id, data, out) catch return error.BackendError;
+
+        // Signature succeeded → open (cold) or slide (warm) the window. An allocation failure
+        // here is swallowed: the worst case is one extra presence prompt next time.
+        if (warm) self.windows.touch(key_id, now_ms) else self.windows.open(key_id, now_ms) catch {};
+        return n;
     }
 
     /// Force re-authentication for a key (e.g. it was deleted/recreated, or config changed).
@@ -103,6 +108,19 @@ test "the absolute cap forces re-authentication even with steady use" {
     _ = try agent.sign("key-1", "b", 2500, &out); // within idle and cap → silent
     _ = try agent.sign("key-1", "c", 3500, &out); // past the absolute cap → re-auth
     try testing.expectEqual(@as(usize, 2), az.granted);
+}
+
+test "a failed signature does not prime a silent window (regression)" {
+    var cp = crypto.Fake{ .keys = &.{} }; // no keys → cp.sign fails with UnknownKey
+    var az = authz.Fake{};
+    var agent = Agent.init(testing.allocator, cp.processor(), az.authorizer(), .{ .idle_ms = 1000, .max_ms = 10_000 });
+    defer agent.deinit();
+
+    var out: [8]u8 = undefined;
+    try testing.expectError(error.BackendError, agent.sign("ghost", "a", 1000, &out));
+    // presence did run, but because the sign failed the window must stay cold
+    try testing.expectEqual(@as(usize, 1), az.granted);
+    try testing.expect(!agent.windows.peek("ghost", 1100, 1000, 10_000));
 }
 
 test "a declined presence gesture refuses the signature and does not sign" {

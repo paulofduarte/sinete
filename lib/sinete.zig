@@ -21,7 +21,6 @@ pub const server = @import("agent/server.zig");
 
 // Headline types, re-exported for ergonomic consumers.
 pub const Authorizer = authz.Authorizer;
-pub const Grant = authz.Grant;
 pub const Cryptoprocessor = crypto.Cryptoprocessor;
 pub const LocalSession = session.LocalSession;
 pub const WindowCache = window.Cache;
