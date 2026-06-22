@@ -70,7 +70,7 @@ pub const Decoder = struct {
         return std.mem.readInt(u32, self.data[self.pos..][0..4], .big);
     }
     pub fn string(self: *Decoder) Error![]const u8 {
-        const n: usize = try self.u32be();
+        const n: usize = @intCast(try self.u32be());
         const end = std.math.add(usize, self.pos, n) catch return error.Truncated;
         if (end > self.data.len) return error.Truncated;
         defer self.pos = end;

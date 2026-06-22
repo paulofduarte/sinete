@@ -153,7 +153,7 @@ test "build and frame an IDENTITIES_ANSWER, then read it back" {
     try frame(&framed, body.bytes());
 
     var d = wire.Decoder{ .data = framed.bytes() };
-    const len: usize = try d.u32be();
+    const len: usize = @intCast(try d.u32be());
     try std.testing.expectEqual(body.bytes().len, len);
     try std.testing.expectEqual(@as(u8, @intFromEnum(MessageType.identities_answer)), try d.byte());
     try std.testing.expectEqual(@as(u32, 2), try d.u32be());
