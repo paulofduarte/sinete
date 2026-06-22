@@ -156,7 +156,9 @@ test "identities reflects the cryptoprocessor enumeration" {
     var agent = Agent.init(testing.allocator, cp.processor(), az.authorizer(), .{ .idle_ms = 1, .max_ms = 1 });
     defer agent.deinit();
 
-    const ids = try agent.identities(testing.allocator);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const ids = try agent.identities(arena.allocator());
     try testing.expectEqual(@as(usize, 2), ids.len);
     try testing.expectEqualStrings("k2", ids[1].blob);
 }

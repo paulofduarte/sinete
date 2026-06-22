@@ -43,6 +43,10 @@ pub const Encoder = struct {
     pub fn bytes(self: *const Encoder) []const u8 {
         return self.buf.items;
     }
+    /// Discard the encoded bytes, keeping the allocated capacity for reuse.
+    pub fn reset(self: *Encoder) void {
+        self.buf.clearRetainingCapacity();
+    }
 };
 
 /// Reads SSH-wire values from a fixed input slice. Returned slices alias the input, so copy

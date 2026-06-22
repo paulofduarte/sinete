@@ -14,6 +14,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // A static archive of the core, installed for external (including non-Zig) consumers. The
+    // sinete executable below does not link it; it imports the module and compiles the core in.
     const lib = b.addLibrary(.{
         .name = "sinete",
         .root_module = lib_mod,
@@ -21,7 +23,7 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(lib);
 
-    // the sinete executable: a thin CLI and wiring layer over libsinete.
+    // the sinete executable: a thin CLI and wiring layer that imports the libsinete module.
     const exe = b.addExecutable(.{
         .name = "sinete",
         .root_module = b.createModule(.{

@@ -49,9 +49,15 @@ pub const Fake = struct {
     const vt = Cryptoprocessor.VTable{ .enumerate = enumerate, .sign = sign };
 
     fn enumerate(ptr: *anyopaque, arena: std.mem.Allocator) ![]const KeyInfo {
-        _ = arena; // the fake's keys live for the program; no copy needed
         const self: *Fake = @ptrCast(@alignCast(ptr));
-        return self.keys;
+        // Copy into arena so the fake matches the real contract: returned slices live in the
+        // arena, not in the backend, and callers can rely on that lifetime.
+        const out = try arena.alloc(KeyInfo, self.keys.len);
+        for (self.keys, 0..) |k, i| out[i] = .{
+            .blob = try arena.dupe(u8, k.blob),
+            .comment = try arena.dupe(u8, k.comment),
+        };
+        return out;
     }
     fn sign(ptr: *anyopaque, key_id: []const u8, data: []const u8, out: []u8) !usize {
         const self: *Fake = @ptrCast(@alignCast(ptr));
@@ -74,7 +80,9 @@ test "fake cryptoprocessor enumerates and signs known keys" {
     } };
     const cp = fake.processor();
 
-    const keys = try cp.enumerate(std.testing.allocator);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const keys = try cp.enumerate(arena.allocator());
     try std.testing.expectEqual(@as(usize, 2), keys.len);
     try std.testing.expectEqualStrings("b@host", keys[1].comment);
 

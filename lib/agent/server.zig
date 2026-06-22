@@ -17,21 +17,28 @@ const max_sig = 512;
 
 /// Handle one request body (a parsed message body without the length frame), writing the
 /// response body into enc. arena backs per-request allocation, and now_ms is injected for the
-/// TTL logic. Malformed input and any backend or presence error are answered with
-/// SSH_AGENT_FAILURE rather than surfaced to the client. The function still returns an error
-/// if building the response itself fails, for example if the encoder runs out of memory.
+/// TTL logic. Fail-closed: malformed input, a backend or presence error, and a response that
+/// cannot be represented all collapse to a single SSH_AGENT_FAILURE. An error is returned only
+/// if even that one byte cannot be written, for example under memory exhaustion.
 pub fn respond(agent: *core.Agent, body: []const u8, arena: std.mem.Allocator, now_ms: i64, enc: *wire.Encoder) !void {
-    const req = proto.parseRequest(body) catch return proto.writeFailure(enc);
-    switch (req) {
+    buildResponse(agent, body, arena, now_ms, enc) catch {
+        // Discard any partial response, then answer FAILURE.
+        enc.reset();
+        try proto.writeFailure(enc);
+    };
+}
+
+fn buildResponse(agent: *core.Agent, body: []const u8, arena: std.mem.Allocator, now_ms: i64, enc: *wire.Encoder) !void {
+    switch (try proto.parseRequest(body)) {
         .request_identities => {
-            const keys = agent.identities(arena) catch return proto.writeFailure(enc);
+            const keys = try agent.identities(arena);
             const ids = try arena.alloc(proto.Identity, keys.len);
             for (keys, 0..) |k, i| ids[i] = .{ .blob = k.blob, .comment = k.comment };
             try proto.writeIdentitiesAnswer(enc, ids);
         },
         .sign_request => |sr| {
             var sig: [max_sig]u8 = undefined;
-            const n = agent.sign(sr.key_blob, sr.data, now_ms, &sig) catch return proto.writeFailure(enc);
+            const n = try agent.sign(sr.key_blob, sr.data, now_ms, &sig);
             try proto.writeSignResponse(enc, sig[0..n]);
         },
         .unsupported => try proto.writeFailure(enc),
