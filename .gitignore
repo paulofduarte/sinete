@@ -19,3 +19,6 @@
 
 # Editor / OS
 .DS_Store
+
+# stray local package mirror (zig uses the global cache)
+/zig-pkg/

@@ -7,10 +7,16 @@
     // security and trust implications.
     .fingerprint = 0x4b386b2ee80a228c,
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{},
+    .dependencies = .{
+        .kcov = .{
+            .url = "git+https://github.com/allyourcodebase/kcov#fe6a854b101af40c735b176ab51d1e13f5b3019d",
+            .hash = "kcov-43.0.0-xUyX6TKeAABKePl8XqUhwSQ2Y1tMNWElwV_3rUAz80UH",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",
+        "lib",
         "src",
         "LICENSE.md",
     },

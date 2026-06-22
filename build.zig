@@ -48,13 +48,23 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_tests.step);
 
-    // coverage: run the test binary under kcov (which must be on PATH), writing kcov-out/.
-    // The include path is absolute so it matches the source paths in the binary's debug info
-    // and excludes the Zig standard library.
-    const kcov = b.addSystemCommand(&.{ "kcov", "--clean" });
-    kcov.addArg(b.fmt("--include-path={s},{s}", .{ b.pathFromRoot("lib"), b.pathFromRoot("src") }));
-    kcov.addArg("kcov-out");
-    kcov.addArtifactArg(lib_tests);
+    // coverage: build kcov via the Zig build system (allyourcodebase/kcov) and run the test
+    // binary under it, writing kcov-out/. The dependency is lazy, so a normal `zig build` or
+    // `zig build test` neither fetches nor builds kcov.
+    //
+    // The binary records our sources with relative paths (lib/..., src/...) and the standard
+    // library with absolute paths under .../lib/zig/..., so kcov matches by substring pattern:
+    // include our directories and exclude the standard library.
     const cov_step = b.step("coverage", "Run unit tests under kcov (writes kcov-out/)");
-    cov_step.dependOn(&kcov.step);
+    if (b.lazyDependency("kcov", .{ .target = target, .optimize = .ReleaseFast })) |kcov_dep| {
+        const kcov = b.addRunArtifact(kcov_dep.artifact("kcov"));
+        kcov.addArgs(&.{
+            "--clean",
+            "--include-pattern=lib/,src/",
+            "--exclude-pattern=/zig/",
+            "kcov-out",
+        });
+        kcov.addArtifactArg(lib_tests);
+        cov_step.dependOn(&kcov.step);
+    }
 }
