@@ -2,22 +2,24 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Protocol dispatch: turn one parsed ssh-agent request into a response body by driving the
-//! Agent sign-path (core.zig). This is the seam between the wire protocol (agent_proto.zig)
-//! and the orchestration core; Z2's libxev socket layer reads a framed message, calls
-//! `respond`, then frames the body back. Kept transport-free so it stays unit-testable.
+//! agent sign-path (core.zig). This is the seam between the wire protocol (agent_proto.zig)
+//! and the orchestration core. The transport layer reads a framed message, calls respond, and
+//! frames the body back. It is transport-free so it stays unit-testable.
 
 const std = @import("std");
 const proto = @import("../ssh/agent_proto.zig");
 const wire = @import("../ssh/wire.zig");
 const core = @import("core.zig");
 
-/// The largest signature blob we emit: `ecdsa-sha2-nistp256` is ~101 bytes; 512 is ample.
+/// The largest signature blob emitted. An ecdsa-sha2-nistp256 signature is about 101 bytes,
+/// so 512 is ample.
 const max_sig = 512;
 
-/// Handle one request `body` (a parsed message body, sans length frame), writing the
-/// response body into `enc`. `arena` backs any per-request allocation; `now_ms` is injected
-/// for the TTL logic. Any malformed input or backend/presence error becomes SSH_AGENT_FAILURE
-/// — the agent never leaks an error to the client beyond "refused".
+/// Handle one request body (a parsed message body without the length frame), writing the
+/// response body into enc. arena backs per-request allocation, and now_ms is injected for the
+/// TTL logic. Malformed input and any backend or presence error are answered with
+/// SSH_AGENT_FAILURE rather than surfaced to the client. The function still returns an error
+/// if building the response itself fails, for example if the encoder runs out of memory.
 pub fn respond(agent: *core.Agent, body: []const u8, arena: std.mem.Allocator, now_ms: i64, enc: *wire.Encoder) !void {
     const req = proto.parseRequest(body) catch return proto.writeFailure(enc);
     switch (req) {

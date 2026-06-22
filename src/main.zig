@@ -9,7 +9,7 @@ const std = @import("std");
 const sinete = @import("sinete");
 
 const usage =
-    \\sinete — hardware-backed SSH key manager + agent
+    \\sinete - hardware-backed SSH key manager + agent
     \\
     \\usage: sinete <command> [args]
     \\

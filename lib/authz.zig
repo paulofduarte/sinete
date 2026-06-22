@@ -1,15 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Paulo Duarte
 // SPDX-License-Identifier: Apache-2.0
 
-//! The cross-platform presence seam (see KEY-AUTHZ-DESIGN.md — an internal design doc kept
-//! local/private, mirrored in the sinete-private-docs repo). An `Authorizer` performs the
-//! human-presence gesture (and any per-key unlock) for a key, returning success or refusal —
-//! it is a *gate*, not a signer: the actual ECDSA runs in the Cryptoprocessor (crypto.zig)
-//! after the gate passes. macOS satisfies the gate with Touch ID (LocalAuthentication) and
-//! signs with the Secure Enclave key; Linux satisfies it with fprintd/FIDO2, which also
-//! establishes the TPM policy ticket its Cryptoprocessor.sign consumes (a backend-internal
-//! detail behind this seam). Runtime-polymorphic (std.mem.Allocator-style vtable) so the
-//! agent core is generic over the backend (or a test fake).
+//! The presence-authorization interface. An Authorizer performs the human-presence gesture,
+//! and any per-key unlock, for a key and returns success or refusal. It is a gate, not a
+//! signer: the signature itself is computed by the Cryptoprocessor (crypto.zig) after the gate
+//! passes. On macOS the gesture is Touch ID and signing uses the Secure Enclave key; on Linux
+//! the gesture is a fingerprint or security-key touch that also establishes the TPM policy the
+//! signer consumes. The interface is runtime-polymorphic (an Allocator-style vtable) so the
+//! agent core is generic over the backend or a test fake.
 
 const std = @import("std");
 

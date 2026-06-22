@@ -1,15 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Paulo Duarte
 // SPDX-License-Identifier: Apache-2.0
 
-//! SSH wire-format primitives (RFC 4251 §5): u32-big-endian-length-prefixed strings, fixed
-//! ints, and bytes. The shared substrate for both the ssh-agent protocol framing and the
-//! `ecdsa-sha2-nistp256` key/signature blobs. Pure and allocation-light: the `Encoder`
-//! grows one buffer; the `Decoder` returns sub-slices of its input.
+//! SSH wire-format primitives (RFC 4251 section 5): strings prefixed by a big-endian u32
+//! length, fixed-width ints, and raw bytes. These are the shared substrate for the ssh-agent
+//! protocol framing and the ecdsa-sha2-nistp256 key and signature blobs. The Encoder grows a
+//! single buffer; the Decoder returns sub-slices of its input and never allocates.
 
 const std = @import("std");
 
-/// Appends SSH-wire values into a growable buffer. Caller owns the allocator and must
-/// `deinit`. `bytes()` returns the encoded slice (valid until the next append/deinit).
+/// Appends SSH-wire values into a growable buffer. The caller owns the allocator and must
+/// call deinit. bytes() returns the encoded slice, valid until the next append or deinit.
 pub const Encoder = struct {
     gpa: std.mem.Allocator,
     buf: std.ArrayList(u8) = .empty,
@@ -29,12 +29,14 @@ pub const Encoder = struct {
         std.mem.writeInt(u32, &b, v, .big);
         try self.buf.appendSlice(self.gpa, &b);
     }
-    /// An SSH `string`: a u32 length followed by that many bytes (also used for blobs).
+    /// An SSH string: a u32 length followed by that many bytes (also used for blobs). A slice
+    /// too long to express in the u32 length prefix returns error.StringTooLong.
     pub fn string(self: *Encoder, s: []const u8) !void {
+        if (s.len > std.math.maxInt(u32)) return error.StringTooLong;
         try self.u32be(@intCast(s.len));
         try self.buf.appendSlice(self.gpa, s);
     }
-    /// Raw bytes with no length prefix (for splicing a pre-encoded blob).
+    /// Raw bytes with no length prefix, for splicing a pre-encoded blob.
     pub fn raw(self: *Encoder, s: []const u8) !void {
         try self.buf.appendSlice(self.gpa, s);
     }
@@ -43,8 +45,9 @@ pub const Encoder = struct {
     }
 };
 
-/// Reads SSH-wire values from a fixed input slice. Returned slices alias the input — copy
-/// them if they must outlive it. Never allocates.
+/// Reads SSH-wire values from a fixed input slice. Returned slices alias the input, so copy
+/// them if they must outlive it. Never allocates. Lengths come from untrusted input, so every
+/// read is bounds-checked and offset arithmetic is overflow-checked.
 pub const Decoder = struct {
     data: []const u8,
     pos: usize = 0,
@@ -52,20 +55,22 @@ pub const Decoder = struct {
     pub const Error = error{Truncated};
 
     pub fn byte(self: *Decoder) Error!u8 {
-        if (self.pos + 1 > self.data.len) return error.Truncated;
+        if (self.pos >= self.data.len) return error.Truncated;
         defer self.pos += 1;
         return self.data[self.pos];
     }
     pub fn u32be(self: *Decoder) Error!u32 {
-        if (self.pos + 4 > self.data.len) return error.Truncated;
-        defer self.pos += 4;
+        const end = std.math.add(usize, self.pos, 4) catch return error.Truncated;
+        if (end > self.data.len) return error.Truncated;
+        defer self.pos = end;
         return std.mem.readInt(u32, self.data[self.pos..][0..4], .big);
     }
     pub fn string(self: *Decoder) Error![]const u8 {
-        const n = try self.u32be();
-        if (self.pos + n > self.data.len) return error.Truncated;
-        defer self.pos += n;
-        return self.data[self.pos..][0..n];
+        const n: usize = try self.u32be();
+        const end = std.math.add(usize, self.pos, n) catch return error.Truncated;
+        if (end > self.data.len) return error.Truncated;
+        defer self.pos = end;
+        return self.data[self.pos..end];
     }
     /// True once the entire input has been consumed.
     pub fn done(self: *const Decoder) bool {
@@ -79,7 +84,7 @@ test "encode/decode round-trip" {
     try enc.string("ssh-agent");
     try enc.u32be(0xCAFEBABE);
     try enc.byte(11);
-    try enc.string(""); // empty string is a valid 4-byte zero length
+    try enc.string(""); // an empty string is a valid 4-byte zero length
 
     var dec = Decoder{ .data = enc.bytes() };
     try std.testing.expectEqualStrings("ssh-agent", try dec.string());
@@ -90,8 +95,14 @@ test "encode/decode round-trip" {
 }
 
 test "decoder rejects a string that overruns the buffer" {
-    // claims a 5-byte string but only 2 bytes follow the length
+    // length prefix claims 5 bytes but only 2 follow
     var dec = Decoder{ .data = &[_]u8{ 0, 0, 0, 5, 'a', 'b' } };
+    try std.testing.expectError(error.Truncated, dec.string());
+}
+
+test "decoder rejects a string whose length would overflow the offset" {
+    // a near-max length must fail cleanly as Truncated, not wrap the position
+    var dec = Decoder{ .data = &[_]u8{ 0xFF, 0xFF, 0xFF, 0xFF, 'a' } };
     try std.testing.expectError(error.Truncated, dec.string());
 }
 

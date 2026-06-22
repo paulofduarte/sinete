@@ -1,16 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Paulo Duarte
 // SPDX-License-Identifier: Apache-2.0
 
-//! The Cryptoprocessor seam: the secure-element authority for key *lifecycle + signing*
-//! (macOS Secure Enclave, Linux TPM 2.0, or a fake). It owns the key handles; the agent
+//! The Cryptoprocessor interface: the secure-element authority for key lifecycle and signing
+//! (macOS Secure Enclave, Linux TPM 2.0, or a fake). It owns the key handles, and the agent
 //! reaches it only through this vtable. Presence is gated separately by the Authorizer
-//! (authz.zig) — a `sign` here is the post-presence/silent path. See the internal
-//! KEY-AUTHZ design doc (kept local/private, mirrored in the sinete-private-docs repo).
+//! (authz.zig), so a sign here is the post-presence, silent path.
 
 const std = @import("std");
 
-/// A public key as advertised to ssh clients: its `ecdsa-sha2-nistp256` wire blob and a
-/// human comment. Slices are owned by whatever allocator `enumerate` was given.
+/// A public key as advertised to ssh clients: its ecdsa-sha2-nistp256 wire blob and a human
+/// comment. The slices are owned by whatever allocator enumerate was given.
 pub const KeyInfo = struct {
     blob: []const u8,
     comment: []const u8,
@@ -21,11 +20,11 @@ pub const Cryptoprocessor = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        /// List every key the secure element holds, allocating into `arena` (the caller
-        /// frees it wholesale — typically a per-request arena).
+        /// List every key the secure element holds, allocating into arena. The caller frees
+        /// it wholesale, typically a per-request arena.
         enumerate: *const fn (ptr: *anyopaque, arena: std.mem.Allocator) anyerror![]const KeyInfo,
-        /// Sign `data` with the key identified by its public blob `key_id`, writing the SSH
-        /// signature blob into `out`; returns its length. Computed in-hardware.
+        /// Sign data with the key identified by its public blob key_id, writing the SSH
+        /// signature blob into out and returning its length. Computed in hardware.
         sign: *const fn (ptr: *anyopaque, key_id: []const u8, data: []const u8, out: []u8) anyerror!usize,
     };
 

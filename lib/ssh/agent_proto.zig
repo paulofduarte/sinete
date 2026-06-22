@@ -2,15 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! The ssh-agent protocol (draft-miller-ssh-agent): parse client requests and build agent
-//! responses, on top of the SSH wire codec (wire.zig). Framing convention here: a wire
-//! message is `u32 length` + `length` body bytes, where the body is `byte type` + payload.
-//! `parseRequest` takes a body (the IPC layer reads the length first, then that many bytes);
-//! the response builders write a body too — call `frame` to prepend the length for the wire.
+//! responses on top of the SSH wire codec (wire.zig). A wire message is a u32 length followed
+//! by that many body bytes, where the body is a type byte followed by a payload. parseRequest
+//! takes a body, since the transport reads the length first and then that many bytes; the
+//! response builders write a body too, so call frame to prepend the length for the wire.
 
 const std = @import("std");
 const wire = @import("wire.zig");
 
-/// Message type bytes. Non-exhaustive: unknown/unsupported types round-trip as their integer.
+/// Message type bytes. Non-exhaustive, so unknown types round-trip as their integer value.
 pub const MessageType = enum(u8) {
     failure = 5,
     success = 6,
@@ -27,7 +27,7 @@ pub const SignRequest = struct {
     flags: u32,
 };
 
-/// A parsed client→agent request. `unsupported` carries the raw type byte so the agent can
+/// A parsed request from a client. unsupported carries the raw type byte so the agent can
 /// answer SSH_AGENT_FAILURE without the protocol layer knowing every message.
 pub const Request = union(enum) {
     request_identities,
@@ -37,10 +37,10 @@ pub const Request = union(enum) {
 
 pub const ParseError = wire.Decoder.Error || error{TrailingData};
 
-/// Parse a request body (`byte type` + payload). Slices in the result alias `body`. Known
-/// message types are parsed strictly: trailing bytes past the documented fields are rejected
-/// as `error.TrailingData` (→ the agent answers FAILURE) so untrusted input can't smuggle
-/// extra data. Unknown types are returned as `unsupported` without inspecting their payload.
+/// Parse a request body (a type byte followed by a payload). Slices in the result alias body.
+/// Known message types are parsed strictly: trailing bytes past the documented fields are
+/// rejected as error.TrailingData, so untrusted input cannot smuggle extra data. Unknown types
+/// are returned as unsupported without inspecting their payload.
 pub fn parseRequest(body: []const u8) ParseError!Request {
     var d = wire.Decoder{ .data = body };
     const t = try d.byte();
@@ -68,8 +68,10 @@ pub const Identity = struct {
     comment: []const u8,
 };
 
-/// Write an SSH_AGENT_IDENTITIES_ANSWER body into `enc`.
+/// Write an SSH_AGENT_IDENTITIES_ANSWER body into enc. A count that does not fit the u32 wire
+/// field returns error.TooManyIdentities.
 pub fn writeIdentitiesAnswer(enc: *wire.Encoder, ids: []const Identity) !void {
+    if (ids.len > std.math.maxInt(u32)) return error.TooManyIdentities;
     try enc.byte(@intFromEnum(MessageType.identities_answer));
     try enc.u32be(@intCast(ids.len));
     for (ids) |id| {
@@ -78,7 +80,7 @@ pub fn writeIdentitiesAnswer(enc: *wire.Encoder, ids: []const Identity) !void {
     }
 }
 
-/// Write an SSH_AGENT_SIGN_RESPONSE body (the signature is itself an SSH blob).
+/// Write an SSH_AGENT_SIGN_RESPONSE body. The signature is itself an SSH blob.
 pub fn writeSignResponse(enc: *wire.Encoder, signature: []const u8) !void {
     try enc.byte(@intFromEnum(MessageType.sign_response));
     try enc.string(signature);
@@ -92,9 +94,10 @@ pub fn writeSuccess(enc: *wire.Encoder) !void {
     try enc.byte(@intFromEnum(MessageType.success));
 }
 
-/// Prepend the u32 length frame to a finished `body`, producing the bytes to write on the
-/// wire, into `out`.
+/// Prepend the u32 length frame to a finished body, writing the wire bytes into out. A body
+/// too large to express in the u32 length prefix returns error.BodyTooLarge.
 pub fn frame(out: *wire.Encoder, body: []const u8) !void {
+    if (body.len > std.math.maxInt(u32)) return error.BodyTooLarge;
     try out.u32be(@intCast(body.len));
     try out.raw(body);
 }
@@ -109,7 +112,7 @@ test "parse a SIGN_REQUEST body" {
     try enc.byte(13);
     try enc.string("the-key-blob");
     try enc.string("data-to-sign");
-    try enc.u32be(0x04); // SSH_AGENT_RSA_SHA2_512-style flag value, opaque here
+    try enc.u32be(0x04); // an opaque signature flag value
 
     const req = try parseRequest(enc.bytes());
     try std.testing.expectEqualStrings("the-key-blob", req.sign_request.key_blob);
@@ -117,7 +120,7 @@ test "parse a SIGN_REQUEST body" {
     try std.testing.expectEqual(@as(u32, 4), req.sign_request.flags);
 }
 
-test "an unknown type parses as unsupported (→ FAILURE)" {
+test "an unknown type parses as unsupported" {
     const req = try parseRequest(&.{99});
     try std.testing.expectEqual(@as(u8, 99), req.unsupported);
 }
@@ -137,7 +140,7 @@ test "trailing bytes on a known message are rejected" {
     try std.testing.expectError(error.TrailingData, parseRequest(enc.bytes()));
 }
 
-test "build + frame an IDENTITIES_ANSWER, then read it back" {
+test "build and frame an IDENTITIES_ANSWER, then read it back" {
     var body = wire.Encoder.init(std.testing.allocator);
     defer body.deinit();
     try writeIdentitiesAnswer(&body, &.{

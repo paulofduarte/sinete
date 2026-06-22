@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Paulo Duarte
 // SPDX-License-Identifier: Apache-2.0
 
-//! The LocalSession seam: decides whether a client connection originates from the user's
+//! The LocalSession interface: decides whether a client connection originates from the user's
 //! own local login session, so the agent can refuse presence-gated signatures driven from a
-//! remote/forwarded context (the scenario-4 refusal — issue #23). Implemented per-platform
-//! (macOS audit session, Linux logind) behind this vtable; a fake drives the unit tests.
+//! remote or forwarded context. Implemented per platform (macOS audit session, Linux logind)
+//! behind this vtable; a fake drives the unit tests.
 
 const std = @import("std");
 
@@ -20,8 +20,8 @@ pub const LocalSession = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        /// Whether `cred` belongs to the same local login session as the agent. A false
-        /// here means refuse presence-gated use (it may be a forwarded/remote caller).
+        /// Whether cred belongs to the same local login session as the agent. A false here
+        /// means refuse presence-gated use, since it may be a forwarded or remote caller.
         isLocal: *const fn (ptr: *anyopaque, cred: Cred) anyerror!bool,
     };
 
@@ -30,8 +30,8 @@ pub const LocalSession = struct {
     }
 };
 
-/// A fake session oracle returning a fixed verdict — the unit-test stand-in until the
-/// platform backends (macOS audit session / Linux logind) land.
+/// A fake session oracle returning a fixed verdict, used by the unit tests until the platform
+/// backends exist.
 pub const Fake = struct {
     local: bool = true,
 

@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // ── libsinete: the cross-platform core (a reusable module + static library) ──
+    // libsinete: the cross-platform core, a reusable module plus a static library.
     const lib_mod = b.addModule("sinete", .{
         .root_source_file = b.path("lib/sinete.zig"),
         .target = target,
@@ -21,7 +21,7 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(lib);
 
-    // ── the sinete executable: a thin CLI + wiring layer over libsinete ──
+    // the sinete executable: a thin CLI and wiring layer over libsinete.
     const exe = b.addExecutable(.{
         .name = "sinete",
         .root_module = b.createModule(.{
@@ -39,7 +39,7 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Build and run sinete");
     run_step.dependOn(&run.step);
 
-    // ── tests: the portable core runs with no hardware ──
+    // tests: the portable core runs with no hardware.
     const lib_tests = b.addTest(.{ .root_module = lib_mod });
     const run_lib_tests = b.addRunArtifact(lib_tests);
     const test_step = b.step("test", "Run unit tests");
