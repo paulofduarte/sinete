@@ -54,7 +54,10 @@ jobs:
 
   coverage:
     needs: lint
-    runs-on: ubuntu-latest
+    # ARM64 runner: kcov (roc-lang/zig-kcov) is built without libbfd, so it relies on
+    # fixed-width instructions to place breakpoints. That works on aarch64 but not on x86-64,
+    # whose variable-length instructions need a disassembler kcov does not bundle.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
