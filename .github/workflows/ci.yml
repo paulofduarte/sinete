@@ -54,7 +54,8 @@ jobs:
 
   coverage:
     needs: lint
-    runs-on: ubuntu-latest
+    # kcov was dropped from the Ubuntu 24.04 (noble) repos, so pin to 22.04 where it ships.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
