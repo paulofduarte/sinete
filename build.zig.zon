@@ -1,0 +1,17 @@
+// SPDX-FileCopyrightText: 2026 Paulo Duarte
+// SPDX-License-Identifier: Apache-2.0
+.{
+    .name = .sinete,
+    .version = "0.0.0-dev",
+    // Generated once by the Zig toolchain; never change it. Changing this has
+    // security and trust implications.
+    .fingerprint = 0x4b386b2ee80a228c,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE.md",
+    },
+}

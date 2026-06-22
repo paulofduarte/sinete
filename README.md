@@ -14,16 +14,33 @@ SPDX-License-Identifier: Apache-2.0
 - The private key is generated in, and never leaves, the secure hardware. Only the public key is exported, and every signature happens inside the secure hardware, gated by user presence.
 - It is fully CLI / scriptable.
 
-## Status
+## Status — `develop-zig` (experimental Zig rewrite)
 
-Proof-of-concept spike. See the planned work below.
+This branch is an **experimental rewrite in [Zig](https://ziglang.org) (0.16)**, run in parallel
+to the Go implementation on `develop`. It targets the hardened end-state directly — per-key TPM
+`authPolicy` + hardware presence + the multi-user broker — so it does not reproduce intermediate
+Go stages. The two branches will be compared before a direction is chosen.
 
-## Planned
+## Build & develop
 
-- `sinete generate <name>` -- create a key.
-- `sinete export <name>` -- print the public key.
-- `sinete daemon` -- run as an ssh-agent.
+The repo builds with **`zig build` alone** — no nix needed if you have Zig 0.16 installed:
+
+```sh
+zig build                 # → zig-out/bin/sinete
+zig build run -- version
+zig build test
+zig fmt .                 # format (enforced by the pre-commit hook)
+```
+
+Optionally, a pinned toolchain via [devenv](https://devenv.sh) (nixpkgs 26.05 → Zig 0.16):
+
+```sh
+devenv shell              # provides zig + shellcheck; sets the hooks path
+```
+
+Pre-commit hooks are plain shell (`.githooks/pre-commit`: `zig fmt` + SPDX header + shellcheck).
+Enable once with `git config core.hooksPath .githooks` (the devenv shell does this automatically).
 
 ## License
 
-Apache-2.0. Built on [`facebookincubator/sks`](https://github.com/facebookincubator/sks) (Apache-2.0).
+Apache-2.0.

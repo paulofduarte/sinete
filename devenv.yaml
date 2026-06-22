@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Paulo Duarte
+# SPDX-License-Identifier: Apache-2.0
+#
+# devenv inputs — pin nixpkgs to stable 26.05 so `pkgs.zig` is the 0.16.0 we target.
+inputs:
+  nixpkgs:
+    url: github:NixOS/nixpkgs/nixos-26.05

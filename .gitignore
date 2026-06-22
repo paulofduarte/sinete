@@ -1,14 +1,15 @@
 # SPDX-FileCopyrightText: 2026 Paulo Duarte
 # SPDX-License-Identifier: Apache-2.0
 
-# Go build output
-/sinete
-*.test
-*.out
+# Zig build output
+/zig-out/
+/.zig-cache/
 
-# Nix build output
-/result
-/result-*
+# devenv / direnv (optional dev env; the repo builds with `zig build` alone)
+/.devenv/
+/.devenv.flake.nix
+/devenv.local.nix
+/.direnv/
 
 # Claude local specs / working notes (not published)
 /.claude/

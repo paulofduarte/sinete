@@ -1,0 +1,45 @@
+#!/usr/bin/env sh
+# SPDX-FileCopyrightText: 2026 Paulo Duarte
+# SPDX-License-Identifier: Apache-2.0
+#
+# Pre-commit hook — pure shell + the zig toolchain, no nix/pre-commit framework.
+# Enable once with:  git config core.hooksPath .githooks
+# (the devenv shell does this automatically).
+set -eu
+
+fail=0
+
+# 1) Formatting — `zig fmt` is the source of truth.
+if command -v zig >/dev/null 2>&1; then
+  if ! zig fmt --check . >/dev/null 2>&1; then
+    echo "✗ zig fmt: files need formatting — run: zig fmt ." >&2
+    fail=1
+  fi
+else
+  echo "! zig not on PATH — skipping zig fmt (install zig or run 'devenv shell')" >&2
+fi
+
+# 2) SPDX headers on staged source (.zig / .sh) — plain grep, no reuse dependency.
+missing=""
+for f in $(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(zig|sh)$' || true); do
+  [ -f "$f" ] || continue
+  grep -q 'SPDX-License-Identifier' "$f" || missing="$missing $f"
+done
+if [ -n "$missing" ]; then
+  echo "✗ missing SPDX-License-Identifier header:$missing" >&2
+  fail=1
+fi
+
+# 3) shellcheck the shell files, if available (optional).
+if command -v shellcheck >/dev/null 2>&1; then
+  # shellcheck disable=SC2046
+  if ! shellcheck $(git ls-files '*.sh' '.githooks/pre-commit' 2>/dev/null) >/dev/null 2>&1; then
+    echo "✗ shellcheck reported issues" >&2
+    fail=1
+  fi
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo "pre-commit FAILED" >&2
+  exit 1
+fi
