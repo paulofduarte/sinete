@@ -37,33 +37,27 @@ jobs:
             echo "no shell files to check"
           fi
 
-  test:
+  coverage:
     needs: lint
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-14]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-      - name: Build and test
-        run: zig build test --summary all
-
-  coverage:
-    needs: lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
+      # macOS kcov uses the mach engine (task_for_pid); enable developer mode so it
+      # can debug the test binary without an interactive prompt.
+      - name: Enable developer mode (macOS)
+        if: runner.os == 'macOS'
+        run: sudo DevToolsSecurity -enable
       - name: Run tests under kcov
-        # `zig build coverage` builds kcov and all of its C dependencies (elfutils, binutils,
-        # curl, zlib) from source via the Zig build system (allyourcodebase/kcov), then runs
-        # the test binary under it. Only zig is required -- no system packages.
+        # `zig build coverage` builds kcov and its C dependencies from source via the Zig
+        # build system (the dwarf-zig fork) and runs the test binary under it. Coverage runs
+        # the tests, so there is no separate test job. Only zig is required.
         run: zig build coverage
       - name: Coverage summary
         run: |
@@ -73,7 +67,7 @@ jobs:
             cov=$(jq -r '.covered_lines' "$report")
             tot=$(jq -r '.total_lines' "$report")
             {
-              echo "## Coverage"
+              echo "## Coverage (${{ matrix.os }})"
               echo ""
               echo "Line coverage: **${pct}%** (${cov}/${tot} lines)"
             } >> "$GITHUB_STEP_SUMMARY"
@@ -83,5 +77,5 @@ jobs:
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
+          name: coverage-report-${{ matrix.os }}
           path: kcov-out

@@ -9,8 +9,8 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .kcov = .{
-            .url = "git+https://github.com/allyourcodebase/kcov#fe6a854b101af40c735b176ab51d1e13f5b3019d",
-            .hash = "kcov-43.0.0-xUyX6TKeAABKePl8XqUhwSQ2Y1tMNWElwV_3rUAz80UH",
+            .url = "git+https://github.com/paulofduarte/kcov?ref=zig-dwarf-backend#1185683dc6baca9e2c0b348c998b83ba62ccc99c",
+            .hash = "kcov-43.0.0-xUyX6RfhAAAm6JdobsIkkpbY5Tg4vL39to4ztVvbPoY4",
         },
     },
     .paths = .{

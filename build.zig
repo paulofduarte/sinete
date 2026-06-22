@@ -48,13 +48,13 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_tests.step);
 
-    // coverage: build kcov via the Zig build system (roc-lang/zig-kcov, a fork that resolves
-    // Zig's DWARF correctly) and run the test binary under it, writing kcov-out/. The
-    // dependency is lazy, so a normal `zig build` or `zig build test` neither fetches nor
-    // builds kcov.
+    // coverage: build kcov via the Zig build system (a dwarf-zig fork that reads DWARF
+    // line tables with std.debug.Dwarf, so the self-hosted backend's output is read
+    // correctly) and run the test binary under it, writing kcov-out/. The dependency is
+    // lazy, so a normal `zig build` or `zig build test` neither fetches nor builds kcov.
     //
-    // The include pattern is our absolute source directories, so kcov reports only our files
-    // and not the standard library (which lives under the Zig installation prefix).
+    // The include pattern is our absolute source directories, so kcov reports only our
+    // files and not the standard library (which lives under the Zig installation prefix).
     const cov_step = b.step("coverage", "Run unit tests under kcov (writes kcov-out/)");
     if (b.lazyDependency("kcov", .{ .target = target, .optimize = .ReleaseFast })) |kcov_dep| {
         const kcov = b.addRunArtifact(kcov_dep.artifact("kcov"));

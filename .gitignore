@@ -5,6 +5,9 @@
 /zig-out/
 /.zig-cache/
 
+# kcov coverage output
+/kcov-out/
+
 # devenv / direnv (optional dev env; the repo builds with `zig build` alone)
 /.devenv/
 /.devenv.flake.nix
