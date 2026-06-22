@@ -59,7 +59,6 @@ pub fn build(b: *std.Build) void {
     if (b.lazyDependency("kcov", .{ .target = target, .optimize = .ReleaseFast })) |kcov_dep| {
         const kcov = b.addRunArtifact(kcov_dep.artifact("kcov"));
         kcov.addArg("--clean");
-        kcov.addArg(b.fmt("--include-pattern={s},{s}", .{ b.pathFromRoot("lib"), b.pathFromRoot("src") }));
         kcov.addArg("kcov-out");
         kcov.addArtifactArg(lib_tests);
         cov_step.dependOn(&kcov.step);
