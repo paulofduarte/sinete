@@ -65,6 +65,22 @@ jobs:
         # summary step below uses jq, which the GitHub runners preinstall.
         # macOS: -Dkcov-sudo runs kcov as root so task_for_pid does not block in taskgated.
         run: zig build coverage ${{ runner.os == 'macOS' && '-Dkcov-sudo' || '' }}
+      - name: Collect macOS repro inputs (test binary + dSYM)
+        if: always() && runner.os == 'macOS'
+        run: |
+          base=$(find .zig-cache/o -type d -name '*.dSYM' 2>/dev/null | head -1)
+          echo "dSYM dir: $base"
+          mkdir -p repro
+          if [ -n "$base" ]; then
+            cp -R "$base" repro/
+            cp "${base%.dSYM}" repro/test 2>/dev/null || true
+          fi
+          ls -laR repro || true
+      - uses: actions/upload-artifact@v7
+        if: always() && runner.os == 'macOS'
+        with:
+          name: repro-${{ matrix.os }}
+          path: repro
       - name: Coverage summary
         run: |
           report=$(find kcov-out -name coverage.json | head -1)
