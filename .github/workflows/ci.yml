@@ -19,7 +19,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
@@ -45,15 +45,10 @@ jobs:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-      # macOS kcov uses the mach engine (task_for_pid); enable developer mode so it
-      # can debug the test binary without an interactive prompt.
-      - name: Enable developer mode (macOS)
-        if: runner.os == 'macOS'
-        run: sudo DevToolsSecurity -enable
       - name: Run tests under kcov
         # `zig build coverage` builds kcov and its C dependencies from source via the Zig
         # build system (the dwarf-zig fork) and runs the test binary under it. Coverage runs
@@ -75,7 +70,7 @@ jobs:
             echo "no kcov report found" >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-report-${{ matrix.os }}
           path: kcov-out

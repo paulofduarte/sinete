@@ -57,11 +57,34 @@ pub fn build(b: *std.Build) void {
     // files and not the standard library (which lives under the Zig installation prefix).
     const cov_step = b.step("coverage", "Run unit tests under kcov (writes kcov-out/)");
     if (b.lazyDependency("kcov", .{ .target = target, .optimize = .ReleaseFast })) |kcov_dep| {
-        const kcov = b.addRunArtifact(kcov_dep.artifact("kcov"));
+        const kcov_exe = kcov_dep.artifact("kcov");
+        const kcov = b.addRunArtifact(kcov_exe);
         kcov.addArg("--clean");
         kcov.addArg(b.fmt("--include-pattern={s},{s}", .{ b.pathFromRoot("lib"), b.pathFromRoot("src") }));
         kcov.addArg("kcov-out");
         kcov.addArtifactArg(lib_tests);
+
+        // macOS: kcov's mach engine calls task_for_pid, which needs the cs.debugger
+        // entitlement; ad-hoc sign the built binary before running it.
+        if (target.result.os.tag.isDarwin()) {
+            const entitlements = b.addWriteFiles().add("kcov-entitlements.plist",
+                \\<?xml version="1.0" encoding="UTF-8"?>
+                \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+                \\<plist version="1.0">
+                \\<dict>
+                \\    <key>com.apple.security.cs.debugger</key>
+                \\    <true/>
+                \\</dict>
+                \\</plist>
+                \\
+            );
+            const sign = b.addSystemCommand(&.{ "codesign", "-s", "-", "--entitlements" });
+            sign.addFileArg(entitlements);
+            sign.addArg("-f");
+            sign.addArtifactArg(kcov_exe);
+            kcov.step.dependOn(&sign.step);
+        }
+
         cov_step.dependOn(&kcov.step);
     }
 }
