@@ -58,15 +58,16 @@ pub fn build(b: *std.Build) void {
     const cov_step = b.step("coverage", "Run unit tests under kcov (writes kcov-out/)");
     if (b.lazyDependency("kcov", .{ .target = target, .optimize = .ReleaseFast })) |kcov_dep| {
         const kcov_exe = kcov_dep.artifact("kcov");
-        const include = b.fmt("--include-pattern={s},{s}", .{ b.pathFromRoot("lib"), b.pathFromRoot("src") });
+        const kcov = b.addRunArtifact(kcov_exe);
+        kcov.addArg("--clean");
+        kcov.addArg(b.fmt("--include-pattern={s},{s}", .{ b.pathFromRoot("lib"), b.pathFromRoot("src") }));
+        kcov.addArg("kcov-out");
+        kcov.addArtifactArg(lib_tests);
 
+        // macOS: kcov's mach engine calls task_for_pid, which needs the cs.debugger
+        // entitlement; ad-hoc sign the built binary before running it. (--verbose so the
+        // codesign outcome is visible in the CI log.)
         if (target.result.os.tag.isDarwin()) {
-            // kcov's mach engine calls task_for_pid, which needs the cs.debugger entitlement,
-            // so ad-hoc sign kcov. Sign a fresh copy rather than the build artifact in place: a
-            // re-sign cannot clear the SIP-protected com.apple.provenance xattr that makes
-            // AppleSystemPolicy stall a binary's first exec on a headless CI runner, but plain
-            // cp drops the xattr while preserving the embedded signature. Copy the test binary
-            // the same way so its launch under kcov is not stalled either.
             const entitlements = b.addWriteFiles().add("kcov-entitlements.plist",
                 \\<?xml version="1.0" encoding="UTF-8"?>
                 \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -78,30 +79,13 @@ pub fn build(b: *std.Build) void {
                 \\</plist>
                 \\
             );
-
-            const copy_kcov = b.addSystemCommand(&.{"cp"});
-            copy_kcov.addArtifactArg(kcov_exe);
-            const kcov_bin = copy_kcov.addOutputFileArg("kcov");
-
-            const sign = b.addSystemCommand(&.{ "codesign", "--force", "--sign", "-", "--timestamp=none", "--verbose", "--entitlements" });
+            const sign = b.addSystemCommand(&.{ "codesign", "-s", "-", "--verbose", "--entitlements" });
             sign.addFileArg(entitlements);
-            sign.addFileArg(kcov_bin);
-
-            const copy_tests = b.addSystemCommand(&.{"cp"});
-            copy_tests.addArtifactArg(lib_tests);
-            const tests_bin = copy_tests.addOutputFileArg("kcov-tests");
-
-            const kcov = std.Build.Step.Run.create(b, "run kcov coverage");
-            kcov.addFileArg(kcov_bin);
+            sign.addArg("-f");
+            sign.addArtifactArg(kcov_exe);
             kcov.step.dependOn(&sign.step);
-            kcov.addArgs(&.{ "--clean", include, "kcov-out" });
-            kcov.addFileArg(tests_bin);
-            cov_step.dependOn(&kcov.step);
-        } else {
-            const kcov = b.addRunArtifact(kcov_exe);
-            kcov.addArgs(&.{ "--clean", include, "kcov-out" });
-            kcov.addArtifactArg(lib_tests);
-            cov_step.dependOn(&kcov.step);
         }
+
+        cov_step.dependOn(&kcov.step);
     }
 }
