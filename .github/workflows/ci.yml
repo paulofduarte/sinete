@@ -52,7 +52,8 @@ jobs:
       - name: Run tests under kcov
         # `zig build coverage` builds kcov and its C dependencies from source via the Zig
         # build system (the dwarf-zig fork) and runs the test binary under it. Coverage runs
-        # the tests, so there is no separate test job. Only zig is required.
+        # the tests, so there is no separate test job. This build step needs only zig; the
+        # summary step below uses jq, which the GitHub runners preinstall.
         run: zig build coverage
       - name: Coverage summary
         run: |

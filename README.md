@@ -29,7 +29,7 @@ The repo builds with **`zig build` alone** — no nix needed if you have Zig 0.1
 zig build                 # → zig-out/bin/sinete
 zig build run -- version
 zig build test
-zig build coverage        # build kcov from source via Zig + run tests under it → kcov-out/ (Linux)
+zig build coverage        # build kcov from source via Zig + run tests under it → kcov-out/
 zig fmt .                 # format (enforced by the pre-commit hook)
 ```
 
@@ -45,9 +45,11 @@ Enable once with `git config core.hooksPath .githooks` (the devenv shell does th
 ## Continuous integration
 
 GitHub Actions (`.github/workflows/ci.yml`) gates every push and pull request on a `lint` job
-(`zig fmt`, [REUSE](https://reuse.software) compliance, shellcheck), then runs the test suite on a
-Linux + macOS matrix and a `coverage` job (`zig build coverage`, which builds kcov from source via
-Zig and uploads the report as an artifact). Every job needs only Zig -- no nix, no system packages.
+(`zig fmt`, [REUSE](https://reuse.software) compliance, shellcheck), then a `coverage` job that runs
+the tests under kcov (`zig build coverage`, which builds kcov from source via Zig) across a Linux +
+macOS matrix (x86_64 and arm64), uploading the report as an artifact. Coverage runs the tests, so
+there is no separate test job. The build needs only Zig and no nix; CI additionally runs
+shellcheck (lint) and jq (coverage summary), both preinstalled on the GitHub runners.
 
 ## License
 
