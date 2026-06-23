@@ -63,7 +63,8 @@ jobs:
         # build system (the dwarf-zig fork) and runs the test binary under it. Coverage runs
         # the tests, so there is no separate test job. This build step needs only zig; the
         # summary step below uses jq, which the GitHub runners preinstall.
-        run: zig build coverage
+        # macOS: -Dkcov-sudo runs kcov as root so task_for_pid does not block in taskgated.
+        run: zig build coverage ${{ runner.os == 'macOS' && '-Dkcov-sudo' || '' }}
       - name: Coverage summary
         run: |
           report=$(find kcov-out -name coverage.json | head -1)

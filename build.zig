@@ -56,9 +56,20 @@ pub fn build(b: *std.Build) void {
     // The include pattern is our absolute source directories, so kcov reports only our
     // files and not the standard library (which lives under the Zig installation prefix).
     const cov_step = b.step("coverage", "Run unit tests under kcov (writes kcov-out/)");
+    // On a headless CI runner kcov's task_for_pid blocks forever in the taskgated
+    // authorization path, even with the cs.debugger entitlement and developer mode enabled.
+    // Running kcov as root bypasses taskgated entirely; gate it so local runs are untouched.
+    const kcov_sudo = b.option(bool, "kcov-sudo", "Run kcov under sudo -n (needed on macOS CI)") orelse false;
     if (b.lazyDependency("kcov", .{ .target = target, .optimize = .ReleaseFast })) |kcov_dep| {
         const kcov_exe = kcov_dep.artifact("kcov");
-        const kcov = b.addRunArtifact(kcov_exe);
+        const is_darwin = target.result.os.tag.isDarwin();
+
+        const kcov = if (kcov_sudo) sudo: {
+            const sudo_run = std.Build.Step.Run.create(b, "run kcov coverage (sudo)");
+            sudo_run.addArgs(&.{ "sudo", "-n" });
+            sudo_run.addArtifactArg(kcov_exe);
+            break :sudo sudo_run;
+        } else b.addRunArtifact(kcov_exe);
         kcov.addArg("--clean");
         kcov.addArg(b.fmt("--include-pattern={s},{s}", .{ b.pathFromRoot("lib"), b.pathFromRoot("src") }));
         kcov.addArg("kcov-out");
@@ -67,7 +78,7 @@ pub fn build(b: *std.Build) void {
         // macOS: kcov's mach engine calls task_for_pid, which needs the cs.debugger
         // entitlement; ad-hoc sign the built binary before running it. (--verbose so the
         // codesign outcome is visible in the CI log.)
-        if (target.result.os.tag.isDarwin()) {
+        if (is_darwin) {
             const entitlements = b.addWriteFiles().add("kcov-entitlements.plist",
                 \\<?xml version="1.0" encoding="UTF-8"?>
                 \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
