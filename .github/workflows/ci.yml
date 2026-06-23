@@ -39,6 +39,9 @@ jobs:
 
   coverage:
     needs: lint
+    # kcov builds from source and runs the tests under it; a healthy run is minutes.
+    # Cap it so a stuck task_for_pid on macOS fails fast instead of burning the 6h default.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -49,6 +52,12 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      # kcov's mach engine calls task_for_pid; the cs.debugger entitlement we codesign
+      # into kcov only grants it once the user is in developer mode, otherwise the call
+      # blocks on an authorization prompt that never returns on a headless runner.
+      - name: Enable developer mode (macOS task_for_pid)
+        if: runner.os == 'macOS'
+        run: sudo DevToolsSecurity -enable
       - name: Run tests under kcov
         # `zig build coverage` builds kcov and its C dependencies from source via the Zig
         # build system (the dwarf-zig fork) and runs the test binary under it. Coverage runs
