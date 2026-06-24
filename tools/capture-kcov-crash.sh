@@ -24,28 +24,68 @@ cmds="/tmp/kcov-lldb.cmds"
 echo "==> Provoking the crash: zig build coverage (builds + signs kcov, runs it)"
 zig build coverage 2>&1 | tee "$log"
 
-# Zig prints the full failing argv when the child dies; pull the kcov command
-# out of the log, from the kcov path through the trailing test-binary argument.
-cmd="$(perl -ne 'print "$1\n" if m{(/\S+/kcov\s+.*?--include-pattern\S*\s+kcov-out\s+\S+)}' "$log" | tail -1)"
+# Zig's global cache dir also holds dependency build artifacts in some layouts.
+gcache="$(zig env 2>/dev/null | perl -ne 'print $1 if /"global_cache_dir":\s*"([^"]+)"/')"
+search_dirs=(".zig-cache")
+[ -n "$gcache" ] && [ -d "$gcache" ] && search_dirs+=("$gcache")
 
-if [ -z "$cmd" ]; then
-  echo "==> Could not parse the kcov argv from the log; scanning .zig-cache instead."
-  kcov_bin="$(find .zig-cache -type f -name kcov -perm +111 2>/dev/null | head -1)"
-  test_bin="$(find .zig-cache -type f -name test -perm +111 2>/dev/null | head -1)"
-  cmd="$kcov_bin --clean --include-pattern=$here/lib,$here/src kcov-out $test_bin"
+# Find an executable Mach-O artifact by name across the cache dirs (no -perm:
+# macOS find rejects "+111" on newer systems). Pick the most recent match.
+find_macho() {
+  local name="$1" f
+  for d in "${search_dirs[@]}"; do
+    while IFS= read -r f; do
+      [ -f "$f" ] || continue
+      case "$(file -b "$f" 2>/dev/null)" in
+        *Mach-O*executable*) echo "$f" ;;
+      esac
+    done < <(find "$d" -type f -name "$name" 2>/dev/null)
+  done | while IFS= read -r f; do printf '%s\t%s\n' "$(stat -f '%m' "$f" 2>/dev/null)" "$f"; done \
+       | sort -rn | head -1 | cut -f2-
+}
+
+# Preferred: lift the exact failing argv from the build log (the line carrying
+# the distinctive 'kcov-out' arg), trimmed to start at the kcov path.
+cmd="$(grep -F 'kcov-out' "$log" | grep -F 'include-pattern' | tail -1 \
+        | perl -pe 's{^.*?(/\S*/kcov\s)}{$1}')"
+
+kcov_bin=""
+kcov_args=()
+if [ -n "$cmd" ]; then
+  # Paths in this project carry no spaces, so word-splitting is safe.
+  # shellcheck disable=SC2206
+  parts=($cmd)
+  kcov_bin="${parts[0]}"
+  kcov_args=("${parts[@]:1}")
 fi
 
-# Paths in this project carry no spaces, so word-splitting the command is safe.
-# shellcheck disable=SC2206
-parts=($cmd)
-kcov_bin="${parts[0]}"
-kcov_args=("${parts[@]:1}")
+# Fall back to reconstructing the command from cache artifacts.
+if [ -z "$kcov_bin" ] || [ ! -x "$kcov_bin" ]; then
+  echo "==> Argv not parsed from log; reconstructing from cache artifacts."
+  kcov_bin="$(find_macho kcov)"
+  test_bin="$(find_macho test)"
+  kcov_args=( --clean "--include-pattern=$here/lib,$here/src" kcov-out "$test_bin" )
+fi
 
 echo "==> kcov binary: $kcov_bin"
 echo "==> kcov args:   ${kcov_args[*]}"
 
-if [ ! -x "$kcov_bin" ]; then
-  echo "ERROR: kcov binary not found/executable: $kcov_bin"
+if [ -z "$kcov_bin" ] || [ ! -x "$kcov_bin" ]; then
+  {
+    echo "# kcov crash post-mortem -- DISCOVERY FAILED"
+    echo "# Could not locate the kcov executable. Diagnostics follow; send this file."
+    echo
+    echo "## search dirs: ${search_dirs[*]}"
+    echo "## kcov candidates (name match, any type):"
+    for d in "${search_dirs[@]}"; do find "$d" -name kcov 2>/dev/null; done
+    echo "## test candidates:"
+    for d in "${search_dirs[@]}"; do find "$d" -name test -type f 2>/dev/null | head -20; done
+    echo
+    echo "## last 40 lines of 'zig build coverage':"
+    tail -40 "$log"
+  } | tee "$report"
+  echo
+  echo "==> Discovery failed; send me: $report"
   exit 1
 fi
 
