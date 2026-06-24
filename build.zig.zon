@@ -9,8 +9,8 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .kcov = .{
-            .url = "git+https://github.com/paulofduarte/kcov?ref=debug-hang#1b4a8250aba9df37c3c96b58377d76f86dc0240e",
-            .hash = "kcov-43.0.0-xUyX6ToJAQDMz-HUAkBjCRLMly0X1jam_Ckhsu6dn_Pp",
+            .url = "git+https://github.com/paulofduarte/kcov?ref=debug-hang#11455cb85a3610d3a6599bd6addda97a46ce03ab",
+            .hash = "kcov-43.0.0-xUyX6Vf_AABQ-MT3Hndc9UhBrTvxiFQZItId7sAS_pUM",
         },
     },
     .paths = .{
