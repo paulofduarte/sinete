@@ -60,7 +60,15 @@ pub fn build(b: *std.Build) void {
     // authorization path, even with the cs.debugger entitlement and developer mode enabled.
     // Running kcov as root bypasses taskgated entirely; gate it so local runs are untouched.
     const kcov_sudo = b.option(bool, "kcov-sudo", "Run kcov under sudo -n (needed on macOS CI)") orelse false;
-    if (b.lazyDependency("kcov", .{ .target = target, .optimize = .ReleaseFast })) |kcov_dep| {
+    // Zig 0.16's self-hosted Mach-O linker corrupts ~16 bytes of a function
+    // prologue in the large x86_64-macOS kcov link under ReleaseFast; drop that
+    // one target to ReleaseSafe to shift the layout and dodge the linker bug.
+    const kcov_optimize: std.builtin.OptimizeMode =
+        if (target.result.os.tag.isDarwin() and target.result.cpu.arch == .x86_64)
+            .ReleaseSafe
+        else
+            .ReleaseFast;
+    if (b.lazyDependency("kcov", .{ .target = target, .optimize = kcov_optimize })) |kcov_dep| {
         const kcov_exe = kcov_dep.artifact("kcov");
         const is_darwin = target.result.os.tag.isDarwin();
 
