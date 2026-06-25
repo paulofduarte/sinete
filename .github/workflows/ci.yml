@@ -80,7 +80,10 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           awk -v p="$pct" -v min="$COVERAGE_MIN" 'BEGIN { if (p + 0 < min + 0) { print "::error::coverage " p "% is below the required " min "%"; exit 1 } }'
       - name: Upload coverage report
+        # Upload even when the gate fails, so a coverage drop can be inspected line-by-line.
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: coverage-report-${{ matrix.os }}
+          if-no-files-found: ignore
           path: kcov-out
