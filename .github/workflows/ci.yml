@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+# Minimum per-platform line coverage (%); the coverage gate fails the job below this.
+env:
+  COVERAGE_MIN: "95"
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -59,23 +63,27 @@ jobs:
         # summary step below uses jq, which the GitHub runners preinstall.
         # macOS: -Dkcov-sudo runs kcov as root so task_for_pid does not block in taskgated.
         run: zig build coverage ${{ runner.os == 'macOS' && '-Dkcov-sudo' || '' }}
-      - name: Coverage summary
+      - name: Coverage summary & gate
         run: |
           report=$(find kcov-out -name coverage.json 2>/dev/null | head -1 || true)
-          if [ -n "$report" ]; then
-            pct=$(jq -r '.percent_covered' "$report")
-            cov=$(jq -r '.covered_lines' "$report")
-            tot=$(jq -r '.total_lines' "$report")
-            {
-              echo "## Coverage (${{ matrix.os }})"
-              echo ""
-              echo "Line coverage: **${pct}%** (${cov}/${tot} lines)"
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "no kcov report found" >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "$report" ]; then
+            echo "::error::no kcov coverage report found"
+            exit 1
           fi
+          pct=$(jq -r '.percent_covered' "$report")
+          cov=$(jq -r '.covered_lines' "$report")
+          tot=$(jq -r '.total_lines' "$report")
+          {
+            echo "## Coverage (${{ matrix.os }})"
+            echo ""
+            echo "Line coverage: **${pct}%** (${cov}/${tot} lines), minimum ${COVERAGE_MIN}%"
+          } >> "$GITHUB_STEP_SUMMARY"
+          awk -v p="$pct" -v min="$COVERAGE_MIN" 'BEGIN { if (p + 0 < min + 0) { print "::error::coverage " p "% is below the required " min "%"; exit 1 } }'
       - name: Upload coverage report
+        # Upload even when the gate fails, so a coverage drop can be inspected line-by-line.
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: coverage-report-${{ matrix.os }}
+          if-no-files-found: ignore
           path: kcov-out
