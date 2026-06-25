@@ -52,12 +52,6 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-      # kcov's mach engine calls task_for_pid; the cs.debugger entitlement we codesign
-      # into kcov only grants it once the user is in developer mode, otherwise the call
-      # blocks on an authorization prompt that never returns on a headless runner.
-      - name: Enable developer mode (macOS task_for_pid)
-        if: runner.os == 'macOS'
-        run: sudo DevToolsSecurity -enable
       - name: Run tests under kcov
         # `zig build coverage` builds kcov and its C dependencies from source via the Zig
         # build system (the dwarf-zig fork) and runs the test binary under it. Coverage runs
@@ -65,25 +59,9 @@ jobs:
         # summary step below uses jq, which the GitHub runners preinstall.
         # macOS: -Dkcov-sudo runs kcov as root so task_for_pid does not block in taskgated.
         run: zig build coverage ${{ runner.os == 'macOS' && '-Dkcov-sudo' || '' }}
-      - name: Collect macOS repro inputs (test binary + dSYM)
-        if: always() && runner.os == 'macOS'
-        run: |
-          base=$(find .zig-cache/o -type d -name '*.dSYM' 2>/dev/null | head -1)
-          echo "dSYM dir: $base"
-          mkdir -p repro
-          if [ -n "$base" ]; then
-            cp -R "$base" repro/
-            cp "${base%.dSYM}" repro/test 2>/dev/null || true
-          fi
-          ls -laR repro || true
-      - uses: actions/upload-artifact@v7
-        if: always() && runner.os == 'macOS'
-        with:
-          name: repro-${{ matrix.os }}
-          path: repro
       - name: Coverage summary
         run: |
-          report=$(find kcov-out -name coverage.json | head -1)
+          report=$(find kcov-out -name coverage.json 2>/dev/null | head -1 || true)
           if [ -n "$report" ]; then
             pct=$(jq -r '.percent_covered' "$report")
             cov=$(jq -r '.covered_lines' "$report")
