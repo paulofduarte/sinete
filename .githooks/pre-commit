@@ -9,10 +9,11 @@ set -eu
 
 fail=0
 
-# 1) Formatting — `zig fmt` is the source of truth.
+# 1) Formatting — `zig fmt` is the source of truth. Exclude zig-pkg: a local `zig build`
+# extracts vendored dependency sources there, which we neither own nor format.
 if command -v zig >/dev/null 2>&1; then
-  if ! zig fmt --check . >/dev/null 2>&1; then
-    echo "✗ zig fmt: files need formatting — run: zig fmt ." >&2
+  if ! zig fmt --check --exclude zig-pkg . >/dev/null 2>&1; then
+    echo "✗ zig fmt: files need formatting — run: zig fmt --exclude zig-pkg ." >&2
     fail=1
   fi
 else

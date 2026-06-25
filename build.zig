@@ -24,6 +24,11 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(lib);
 
+    // libxev: the cross-platform event loop (kqueue on macOS/BSD, epoll/io_uring on Linux) that
+    // drives the agent's unix-socket IPC. Imported by the executable only — lib/sinete stays
+    // OS- and dependency-free so it remains a pure, fake-driven, fully unit-tested core.
+    const libxev = b.dependency("libxev", .{ .target = target, .optimize = optimize });
+
     // the sinete executable: a thin CLI and wiring layer that imports the libsinete module.
     const exe = b.addExecutable(.{
         .name = "sinete",
@@ -31,7 +36,10 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "sinete", .module = lib_mod }},
+            .imports = &.{
+                .{ .name = "sinete", .module = lib_mod },
+                .{ .name = "xev", .module = libxev.module("xev") },
+            },
         }),
     });
     b.installArtifact(exe);

@@ -12,6 +12,10 @@
             .url = "git+https://github.com/paulofduarte/kcov?ref=zig-dwarf-backend#95b62d050755bec3d91cb21cf8ec3a7a7ee78a25",
             .hash = "kcov-43.0.0-xUyX6W72AAAmatajo7QEnp08jFE0Ug-wYMPnLQvL06FZ",
         },
+        .libxev = .{
+            .url = "git+https://github.com/mitchellh/libxev#9ce8e8e6ff89e583258a7f8e7adeeeaeae8611bf",
+            .hash = "libxev-0.0.0-86vtcwIRFADbH4hk-EjROXxlrKIRPQdA41XiTSytYO-F",
+        },
     },
     .paths = .{
         "build.zig",

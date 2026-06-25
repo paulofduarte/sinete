@@ -28,7 +28,8 @@ jobs:
         with:
           version: 0.16.0
       - name: zig fmt
-        run: zig fmt --check .
+        # Exclude zig-pkg (vendored dependency sources a local build may extract); matches the hook.
+        run: zig fmt --check --exclude zig-pkg .
       - name: REUSE compliance
         uses: fsfe/reuse-action@v5
       - name: shellcheck
