@@ -57,6 +57,11 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      - name: Build
+        # Compile the executable (main.zig + the libxev transport). `zig build coverage` below
+        # builds only the core test binary, so without this the exe plumbing is never type-checked
+        # in CI — this catches a per-OS compile error in the libxev callbacks.
+        run: zig build
       - name: Run tests under kcov
         # `zig build coverage` builds kcov and its C dependencies from source via the Zig
         # build system (the dwarf-zig fork) and runs the test binary under it. Coverage runs

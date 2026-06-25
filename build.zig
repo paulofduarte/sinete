@@ -56,21 +56,10 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_tests.step);
 
-    // transport tests: the libxev unix-socket framing (exe-side, so it imports xev). Run by
-    // `zig build test`, but kept out of the coverage run below — the 95% gate targets the
-    // OS-free core (lib); the transport's event-loop glue is verified by `ssh-add -l`.
-    const transport_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/transport.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "sinete", .module = lib_mod },
-                .{ .name = "xev", .module = libxev.module("xev") },
-            },
-        }),
-    });
-    test_step.dependOn(&b.addRunArtifact(transport_tests).step);
+    // Also compile the executable (main.zig + the libxev transport) under `zig build test`, so the
+    // exe-side plumbing is type-checked. Its logic lives in the core (`framing`, covered by the
+    // tests above); the event-loop glue itself is verified end to end by `ssh-add -l`.
+    test_step.dependOn(&exe.step);
 
     // coverage: build kcov via the Zig build system (a dwarf-zig fork that reads DWARF
     // line tables with std.debug.Dwarf, so the self-hosted backend's output is read
