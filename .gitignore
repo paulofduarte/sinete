@@ -5,6 +5,9 @@
 /zig-out/
 /.zig-cache/
 
+# kcov coverage output
+/kcov-out/
+
 # devenv / direnv (optional dev env; the repo builds with `zig build` alone)
 /.devenv/
 /.devenv.flake.nix
@@ -19,3 +22,6 @@
 
 # Editor / OS
 .DS_Store
+
+# stray local package mirror (zig uses the global cache)
+/zig-pkg/

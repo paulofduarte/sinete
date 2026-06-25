@@ -47,4 +47,56 @@ pub fn build(b: *std.Build) void {
     const run_lib_tests = b.addRunArtifact(lib_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_tests.step);
+
+    // coverage: build kcov via the Zig build system (a dwarf-zig fork that reads DWARF
+    // line tables with std.debug.Dwarf, so the self-hosted backend's output is read
+    // correctly) and run the test binary under it, writing kcov-out/. The dependency is
+    // lazy, so a normal `zig build` or `zig build test` neither fetches nor builds kcov.
+    //
+    // The include pattern is our absolute source directories, so kcov reports only our
+    // files and not the standard library (which lives under the Zig installation prefix).
+    const cov_step = b.step("coverage", "Run unit tests under kcov (writes kcov-out/)");
+    // On a headless CI runner kcov's task_for_pid blocks forever in the taskgated
+    // authorization path, even with the cs.debugger entitlement and developer mode enabled.
+    // Running kcov as root bypasses taskgated entirely; gate it so local runs are untouched.
+    const kcov_sudo = b.option(bool, "kcov-sudo", "Run kcov under sudo -n (needed on macOS CI)") orelse false;
+    if (b.lazyDependency("kcov", .{ .target = target, .optimize = .ReleaseFast })) |kcov_dep| {
+        const kcov_exe = kcov_dep.artifact("kcov");
+        const is_darwin = target.result.os.tag.isDarwin();
+
+        const kcov = if (kcov_sudo) sudo: {
+            const sudo_run = std.Build.Step.Run.create(b, "run kcov coverage (sudo)");
+            sudo_run.addArgs(&.{ "sudo", "-n" });
+            sudo_run.addArtifactArg(kcov_exe);
+            break :sudo sudo_run;
+        } else b.addRunArtifact(kcov_exe);
+        kcov.addArg("--clean");
+        kcov.addArg(b.fmt("--include-pattern={s},{s}", .{ b.pathFromRoot("lib"), b.pathFromRoot("src") }));
+        kcov.addArg("kcov-out");
+        kcov.addArtifactArg(lib_tests);
+
+        // macOS: kcov's mach engine calls task_for_pid, which needs the cs.debugger
+        // entitlement; ad-hoc sign the built binary before running it. (--verbose so the
+        // codesign outcome is visible in the CI log.)
+        if (is_darwin) {
+            const entitlements = b.addWriteFiles().add("kcov-entitlements.plist",
+                \\<?xml version="1.0" encoding="UTF-8"?>
+                \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+                \\<plist version="1.0">
+                \\<dict>
+                \\    <key>com.apple.security.cs.debugger</key>
+                \\    <true/>
+                \\</dict>
+                \\</plist>
+                \\
+            );
+            const sign = b.addSystemCommand(&.{ "codesign", "-s", "-", "--verbose", "--entitlements" });
+            sign.addFileArg(entitlements);
+            sign.addArg("-f");
+            sign.addArtifactArg(kcov_exe);
+            kcov.step.dependOn(&sign.step);
+        }
+
+        cov_step.dependOn(&kcov.step);
+    }
 }

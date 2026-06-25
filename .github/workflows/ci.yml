@@ -1,0 +1,81 @@
+# SPDX-FileCopyrightText: 2026 Paulo Duarte
+# SPDX-License-Identifier: Apache-2.0
+
+name: ci
+
+on:
+  push:
+    branches: [develop-zig, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: zig fmt
+        run: zig fmt --check .
+      - name: REUSE compliance
+        uses: fsfe/reuse-action@v5
+      - name: shellcheck
+        run: |
+          files=$(git ls-files '*.sh' '.githooks/*')
+          if [ -n "$files" ]; then
+            # shellcheck disable=SC2086
+            shellcheck $files
+          else
+            echo "no shell files to check"
+          fi
+
+  coverage:
+    needs: lint
+    # kcov builds from source and runs the tests under it; a healthy run is minutes.
+    # Cap it so a stuck task_for_pid on macOS fails fast instead of burning the 6h default.
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Run tests under kcov
+        # `zig build coverage` builds kcov and its C dependencies from source via the Zig
+        # build system (the dwarf-zig fork) and runs the test binary under it. Coverage runs
+        # the tests, so there is no separate test job. This build step needs only zig; the
+        # summary step below uses jq, which the GitHub runners preinstall.
+        # macOS: -Dkcov-sudo runs kcov as root so task_for_pid does not block in taskgated.
+        run: zig build coverage ${{ runner.os == 'macOS' && '-Dkcov-sudo' || '' }}
+      - name: Coverage summary
+        run: |
+          report=$(find kcov-out -name coverage.json 2>/dev/null | head -1 || true)
+          if [ -n "$report" ]; then
+            pct=$(jq -r '.percent_covered' "$report")
+            cov=$(jq -r '.covered_lines' "$report")
+            tot=$(jq -r '.total_lines' "$report")
+            {
+              echo "## Coverage (${{ matrix.os }})"
+              echo ""
+              echo "Line coverage: **${pct}%** (${cov}/${tot} lines)"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "no kcov report found" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report-${{ matrix.os }}
+          path: kcov-out
