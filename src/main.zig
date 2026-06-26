@@ -140,14 +140,17 @@ fn serveAgent(sock: []const u8, cp: sinete.crypto.Cryptoprocessor, az: sinete.au
 ///     NSString for kSecAttrLabel in the shim (whitespace, NUL, control, non-ASCII).
 fn keyLabel(buf: []u8) ![:0]const u8 {
     const max = 120;
-    const ok = arg_name.len > 0 and arg_name.len <= max and
-        !std.mem.eql(u8, arg_name, "_master") and validNameChars(arg_name);
+    // Accept both the bare name and the full label `list` prints: strip a leading "sinete-" so
+    // copy-pasting a listed name into export/remove doesn't become "sinete-sinete-...".
+    const name = if (std.mem.startsWith(u8, arg_name, "sinete-")) arg_name["sinete-".len..] else arg_name;
+    const ok = name.len > 0 and name.len <= max and
+        !std.mem.eql(u8, name, "_master") and validNameChars(name);
     if (!ok) {
         var e: [160]u8 = undefined;
         try stderrWrite(try std.fmt.bufPrint(&e, "error: invalid name (1-{d} chars from [A-Za-z0-9._@+-], not '_master')\n", .{max}));
         std.process.exit(2);
     }
-    return std.fmt.bufPrintZ(buf, "sinete-{s}", .{arg_name});
+    return std.fmt.bufPrintZ(buf, "sinete-{s}", .{name});
 }
 
 fn validNameChars(name: []const u8) bool {

@@ -16,18 +16,21 @@ scripts/bundle.sh /path/to/dev.provisionprofile
 - [ ] Build + codesign succeed; the verify output shows `TeamIdentifier=LDT534J26W` and the
       `keychain-access-groups` entitlement.
 
-## Key management (use a throwaway name; do NOT remove production keys)
+## Key management (presence-less; use a throwaway name; do NOT remove production keys)
+
+The keys are presence-less, so generate/list/export/remove run with **no Touch ID** — presence is
+gated only on the agent's sign path (below).
 
 ```sh
 BIN=./dist/sinete.app/Contents/MacOS/sinete
-"$BIN" generate ztest        # Touch ID prompt; prints an ecdsa-sha2-nistp256 authorized_keys line
+"$BIN" generate ztest        # no prompt; prints an ecdsa-sha2-nistp256 authorized_keys line
 "$BIN" list                  # lists ztest AND the existing production keys (SHA256 fingerprints)
 "$BIN" export ztest          # prints ztest's authorized_keys line again
 ```
 
-- [ ] `generate ztest` prompts Touch ID and prints a key (no `-34018`; entitlement + profile OK).
+- [ ] `generate ztest` prints a key with **no Touch ID** (no `-34018`; entitlement + profile OK).
 - [ ] `list` shows `sinete-ztest` and the pre-existing keys; the reserved master key is absent.
-- [ ] `export ztest` matches the generated line.
+- [ ] `export ztest` (and `export sinete-ztest`) match the generated line.
 
 ## Agent: real signing gated by Touch ID
 
