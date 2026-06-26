@@ -94,6 +94,13 @@ fn osUmask(mode: std.posix.mode_t) std.posix.mode_t {
     return @intCast(std.os.linux.syscall1(.umask, mode));
 }
 
+/// Whether a key filename is safe to surface as a single-line SSH key comment. A name with a newline
+/// or carriage return (valid on a Linux filesystem) could split list/export output into multiple
+/// records (e.g. injecting an extra authorized_keys line), so such files are ignored everywhere.
+fn safeKeyName(name: []const u8) bool {
+    return std.mem.indexOfAny(u8, name, "\n\r") == null;
+}
+
 /// CreatePrimary under the owner hierarchy: a deterministic ECC P-256 storage parent. Returns the
 /// transient handle (valid until the TPM is reset). Re-derived per session.
 fn createPrimary(t: *Tpm) !u32 {
@@ -160,6 +167,7 @@ pub const Linux = struct {
         var it = dir.iterate();
         while (try it.next(self.io)) |entry| {
             if (entry.kind != .file) continue;
+            if (!safeKeyName(entry.name)) continue; // never emit a multi-line key record
             // A file racing deletion mid-iteration is fine to skip; AccessDenied/I/O is surfaced.
             const pem = dir.readFileAlloc(self.io, entry.name, arena, .limited(max_keyfile)) catch |e| switch (e) {
                 error.FileNotFound => continue,
@@ -213,6 +221,7 @@ pub const Linux = struct {
         var it = dir.iterate();
         while (try it.next(self.io)) |entry| {
             if (entry.kind != .file) continue;
+            if (!safeKeyName(entry.name)) continue; // ignore uniformly with enumerate
             // A file racing deletion mid-iteration is fine to skip; AccessDenied/I/O is surfaced.
             const pem = dir.readFileAlloc(self.io, entry.name, self.gpa, .limited(max_keyfile)) catch |e| switch (e) {
                 error.FileNotFound => continue,
