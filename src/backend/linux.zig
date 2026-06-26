@@ -252,8 +252,11 @@ pub const Linux = struct {
         // than left behind with default permissions.
         const old_umask = osUmask(0o077);
         defer _ = osUmask(old_umask);
-        std.Io.Dir.cwd().createDirPath(self.io, self.keydir) catch {};
-        std.Io.Dir.cwd().setFilePermissions(self.io, self.keydir, @enumFromInt(0o700), .{ .follow_symlinks = false }) catch {};
+        // Fail fast if the key directory can't be created or locked to 0700: it governs who can list
+        // and replace key files, so a masked AccessDenied (or a left-permissive dir) is not acceptable.
+        // createDirPath is idempotent, so an already-present directory is not an error.
+        try std.Io.Dir.cwd().createDirPath(self.io, self.keydir);
+        try std.Io.Dir.cwd().setFilePermissions(self.io, self.keydir, @enumFromInt(0o700), .{ .follow_symlinks = false });
         var dir = try std.Io.Dir.cwd().openDir(self.io, self.keydir, .{});
         defer dir.close(self.io);
         try dir.writeFile(self.io, .{ .sub_path = name, .data = pem });
