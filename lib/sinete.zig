@@ -17,6 +17,7 @@ pub const agent_proto = @import("ssh/agent_proto.zig");
 pub const window = @import("agent/window.zig");
 pub const agent = @import("agent/core.zig");
 pub const server = @import("agent/server.zig");
+pub const framing = @import("agent/framing.zig");
 
 // Headline types, re-exported for convenience.
 pub const Authorizer = authz.Authorizer;
@@ -35,4 +36,5 @@ test {
     _ = window;
     _ = agent;
     _ = server;
+    _ = framing;
 }
