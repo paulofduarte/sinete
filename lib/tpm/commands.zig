@@ -370,6 +370,99 @@ test "paramsAfterHandles surfaces a TPM error code" {
     try testing.expectError(Error.TpmError, createPrimaryHandle(&resp));
 }
 
+test "create targets the parent; createKeyBlobs extracts the blobs" {
+    var buf: [256]u8 = undefined;
+    const c = try create(&buf, 0x80000000);
+    var u = wire.Unmarshal{ .data = c };
+    try testing.expectEqual(wire.st_sessions, try u.get16());
+    _ = try u.get32();
+    try testing.expectEqual(cc_create, try u.get32());
+    try testing.expectEqual(@as(u32, 0x80000000), try u.get32()); // parentHandle
+
+    // response params: parameterSize, outPrivate(2b), outPublic(2b)
+    const params = [_]u8{ 0, 0, 0, 0, 0, 2, 'A', 'A', 0, 3, 'B', 'B', 'B' };
+    const resp = [_]u8{ 0x80, 0x02, 0, 0, 0, @intCast(10 + params.len), 0, 0, 0, 0 } ++ params;
+    const b = try createKeyBlobs(&resp);
+    try testing.expectEqualStrings("AA", b.private);
+    try testing.expectEqualStrings("BBB", b.public);
+}
+
+test "load carries inPrivate/inPublic; loadHandle reads the handle" {
+    var buf: [128]u8 = undefined;
+    const c = try load(&buf, 0x80000000, "pp", "uuu");
+    var u = wire.Unmarshal{ .data = c };
+    _ = try u.get16();
+    _ = try u.get32();
+    try testing.expectEqual(cc_load, try u.get32());
+
+    // header(10) + objectHandle(4) + parameterSize(4)
+    const resp = [_]u8{ 0x80, 0x02, 0, 0, 0, 18, 0, 0, 0, 0, 0x80, 0x00, 0x00, 0x02, 0, 0, 0, 0 };
+    try testing.expectEqual(@as(u32, 0x80000002), try loadHandle(&resp));
+}
+
+test "sign command matches the swtpm-validated layout" {
+    var buf: [128]u8 = undefined;
+    const digest = [_]u8{0xAB} ** 32;
+    const c = try sign(&buf, 0x80000001, &digest);
+    // header(10) + keyHandle + auth(4+9) + digest(2+32) + inScheme(4) + validation(8) = 73
+    const want_head = [_]u8{
+        0x80, 0x02, 0, 0, 0, 73, 0x00, 0x00, 0x01, 0x5d, // ST_SESSIONS, size, TPM_CC_Sign (0x15d!)
+        0x80, 0x00, 0x00, 0x01, // keyHandle
+        0x00, 0x00, 0x00, 0x09, 0x40, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, // auth
+        0x00, 0x20, // digest size 32
+    };
+    try testing.expectEqualSlices(u8, &want_head, c[0..want_head.len]);
+    const tail = c[want_head.len + 32 ..];
+    try testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x18, 0x00, 0x0b, 0x80, 0x24, 0x40, 0x00, 0x00, 0x07, 0x00, 0x00 }, tail);
+}
+
+test "flushContext targets the handle with no auth/sessions" {
+    var buf: [32]u8 = undefined;
+    const c = try flushContext(&buf, 0x80000001);
+    try testing.expectEqualSlices(u8, &[_]u8{ 0x80, 0x01, 0, 0, 0, 14, 0x00, 0x00, 0x01, 0x65, 0x80, 0x00, 0x00, 0x01 }, c);
+}
+
+test "NV commands build and parse" {
+    var buf: [128]u8 = undefined;
+
+    const def = try nvDefineCounter(&buf, 0x018E7E7E);
+    var u = wire.Unmarshal{ .data = def };
+    _ = try u.get16();
+    _ = try u.get32();
+    try testing.expectEqual(cc_nv_define_space, try u.get32());
+    try testing.expectEqual(rh_owner, try u.get32());
+
+    const inc = try nvIncrement(&buf, 0x018E7E7E);
+    var ui = wire.Unmarshal{ .data = inc };
+    _ = try ui.get16();
+    _ = try ui.get32();
+    try testing.expectEqual(cc_nv_increment, try ui.get32());
+    try testing.expectEqual(rh_owner, try ui.get32());
+    try testing.expectEqual(@as(u32, 0x018E7E7E), try ui.get32()); // nvIndex after authHandle
+
+    const rd = try nvRead(&buf, 0x018E7E7E, 8, 0);
+    var ur = wire.Unmarshal{ .data = rd };
+    _ = try ur.get16();
+    _ = try ur.get32();
+    try testing.expectEqual(cc_nv_read, try ur.get32());
+
+    // NV_Read response: parameterSize + data(2b, 8 bytes = 0x0102030405060708)
+    const params = [_]u8{ 0, 0, 0, 0, 0, 8, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 };
+    const resp = [_]u8{ 0x80, 0x02, 0, 0, 0, @intCast(10 + params.len), 0, 0, 0, 0 } ++ params;
+    try testing.expectEqual(@as(u64, 0x0102030405060708), try nvReadU64(&resp));
+}
+
+test "checkOrDefined and expectOk classify response codes" {
+    const ok = [_]u8{ 0x80, 0x01, 0, 0, 0, 10, 0, 0, 0, 0 };
+    const defined = [_]u8{ 0x80, 0x01, 0, 0, 0, 10, 0, 0, 0x01, 0x4c }; // TPM_RC_NV_DEFINED
+    const fail = [_]u8{ 0x80, 0x01, 0, 0, 0, 10, 0, 0, 0x01, 0x00 };
+    try testing.expectEqual(DefineResult.ok, try checkOrDefined(&ok));
+    try testing.expectEqual(DefineResult.defined, try checkOrDefined(&defined));
+    try testing.expectError(Error.TpmError, checkOrDefined(&fail));
+    try expectOk(&ok);
+    try testing.expectError(Error.TpmError, expectOk(&fail));
+}
+
 test "pointFromPublic recovers the uncompressed point, right-aligning short coords" {
     var buf: [256]u8 = undefined;
     var m = wire.Marshal{ .buf = &buf };

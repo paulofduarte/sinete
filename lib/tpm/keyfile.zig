@@ -203,9 +203,10 @@ test "encoded DER has the expected TPMKey prefix (type + emptyAuth + parent)" {
     try testing.expectEqualSlices(u8, &want_prefix, der);
 }
 
-test "long-form length encodes a >127-byte octet string" {
+test "long-form lengths: 0x81 octet string under a 0x82 outer SEQUENCE" {
     var der_buf: [512]u8 = undefined;
-    const der = try encodeDer(&der_buf, &([_]u8{0x11} ** 200), "x");
+    // public=200 -> a 0x81 octet string; with private=100 the outer SEQUENCE exceeds 256 -> 0x82.
+    const der = try encodeDer(&der_buf, &([_]u8{0x11} ** 200), &([_]u8{0x22} ** 100));
     var r = DerReader{ .data = der };
     const seq = try r.elem();
     var b = DerReader{ .data = seq.value };
@@ -214,6 +215,8 @@ test "long-form length encodes a >127-byte octet string" {
     _ = try b.elem(); // parent
     const pub_el = try b.elem();
     try testing.expectEqual(@as(usize, 200), pub_el.value.len);
+    const priv_el = try b.elem();
+    try testing.expectEqual(@as(usize, 100), priv_el.value.len);
 }
 
 test "decode rejects garbage and missing guards" {

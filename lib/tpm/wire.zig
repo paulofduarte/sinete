@@ -175,6 +175,17 @@ test "marshal primitives: ints, bytes, tpm2b, sized" {
     }, m.bytes());
 }
 
+test "put64/get8/get64 round-trip" {
+    var buf: [9]u8 = undefined;
+    var m = Marshal{ .buf = &buf };
+    try m.put8(0x42);
+    try m.put64(0x0102030405060708);
+    var u = Unmarshal{ .data = m.bytes() };
+    try testing.expectEqual(@as(u8, 0x42), try u.get8());
+    try testing.expectEqual(@as(u64, 0x0102030405060708), try u.get64());
+    try testing.expect(u.done());
+}
+
 test "marshal fails closed when the buffer overflows" {
     var buf: [3]u8 = undefined;
     var m = Marshal{ .buf = &buf };
