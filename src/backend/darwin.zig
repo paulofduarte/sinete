@@ -78,7 +78,7 @@ pub const Darwin = struct {
         _ = ptr;
         const point = try ecdsa_key.pointFromPubBlob(key_id);
         var der: [80]u8 = undefined; // a P-256 DER ECDSA-Sig-Value is <= 72 bytes
-        const dn = sinete_se_sign(point.ptr, data.ptr, data.len, &der, der.len);
+        const dn = sinete_se_sign(point, data.ptr, data.len, &der, der.len);
         if (dn < 0) return mapStatus(dn);
         return ecdsa_sig.derP256ToSshBlob(der[0..@intCast(dn)], out);
     }

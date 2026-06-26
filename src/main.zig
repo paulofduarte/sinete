@@ -197,7 +197,7 @@ fn cmdRemove() !void {
         for (keys) |k| {
             if (!std.mem.eql(u8, k.comment, want)) continue;
             const point = try sinete.ecdsa_key.pointFromPubBlob(k.blob);
-            try be.remove(point[0..65]);
+            try be.remove(point);
             var msg: [192]u8 = undefined;
             return stdoutWrite(try std.fmt.bufPrint(&msg, "removed {s}\n", .{want}));
         }
