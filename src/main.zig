@@ -98,9 +98,9 @@ fn runAgent(init: std.process.Init) !void {
 }
 
 /// Per-OS default socket path (creating its parent directory). macOS:
-/// ~/Library/Caches/sinete/agent.sock; Linux/BSD: $XDG_RUNTIME_DIR/sinete/agent.sock, falling back
-/// to ~/.cache/sinete/agent.sock. The result is written into `buf`; the socket file itself is
-/// created by the transport.
+/// ~/Library/Caches/sinete/agent.sock; Linux: $XDG_RUNTIME_DIR/sinete/agent.sock, falling back to
+/// ~/.cache/sinete/agent.sock. The result is written into `buf`; the socket file itself is created
+/// by the transport.
 fn defaultSockPath(io: std.Io, env: *std.process.Environ.Map, buf: []u8) ![]const u8 {
     const home = env.get("HOME");
     var basebuf: [std.fs.max_path_bytes]u8 = undefined;

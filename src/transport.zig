@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! The agent's IPC transport: serve the ssh-agent protocol on an AF_UNIX socket, driven by a
-//! single-threaded libxev event loop (kqueue on macOS/BSD, epoll/io_uring on Linux). This is the
+//! single-threaded libxev event loop (kqueue on macOS, epoll/io_uring on Linux). This is the
 //! one piece that owns the OS — sockets and the event loop — so it lives in the executable, not in
 //! the OS-free `sinete` core. The message framing and protocol dispatch are pure and live in the
 //! core (`sinete.framing`); here we only feed it bytes from the socket and write its reply back.
@@ -15,11 +15,13 @@ const sinete = @import("sinete");
 const framing = sinete.framing;
 
 comptime {
-    // The transport is built on a POSIX unix-domain socket (AF_UNIX); Windows would need different
-    // IPC (a named pipe). sinete targets macOS, Linux, and BSDs only, so reject other targets with a
-    // clear message rather than a deep AF_UNIX-unavailable error.
-    if (builtin.os.tag == .windows)
-        @compileError("sinete's agent transport requires a POSIX unix-domain socket; Windows is not a supported target");
+    // sinete currently supports macOS and Linux (a BSD port is the Z9 follow-up). The transport is
+    // built on a POSIX unix-domain socket (AF_UNIX); other targets — notably Windows, which would
+    // need a named pipe — are rejected here with a clear message rather than a deep std error.
+    switch (builtin.os.tag) {
+        .linux, .macos => {},
+        else => @compileError("sinete's agent transport currently supports only macOS and Linux"),
+    }
 }
 
 /// One whole framed request fits in a 4-byte length + body. The per-connection read buffer grows on
@@ -86,8 +88,9 @@ fn clearStaleSocket(io: std.Io, sock_path: []const u8) !void {
     try std.Io.Dir.cwd().deleteFile(io, sock_path);
 }
 
-/// Best-effort unlink of our socket on shutdown. Skips silently if the path is gone or no longer a
-/// socket (something replaced it mid-run), so we never delete a file we did not create.
+/// Best-effort unlink of our socket on shutdown. Skips silently if the path is gone or is no longer
+/// a socket (something replaced it with a regular file), so we never delete a non-socket. (A racing
+/// process that rebound the path with its own socket could still be unlinked; that race is benign.)
 fn removeOwnSocket(io: std.Io, sock_path: []const u8) void {
     const st = std.Io.Dir.cwd().statFile(io, sock_path, .{ .follow_symlinks = false }) catch return;
     if (st.kind != .unix_domain_socket) return;
