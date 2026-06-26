@@ -11,7 +11,7 @@ const std = @import("std");
 const net = std.Io.net;
 const File = std.Io.File;
 
-pub const Error = error{ TpmClosed, TpmResponseTooBig };
+pub const Error = error{ TpmClosed, TpmResponseTooBig, TpmResponseTooSmall };
 
 pub const Device = struct {
     io: std.Io,
@@ -43,6 +43,7 @@ pub const Device = struct {
         // so a stream transport can't fold the start of a following response into this header.
         while (got < 10) got += try self.readSome(buf[got..10]);
         const size = std.mem.readInt(u32, buf[2..6], .big);
+        if (size < 10) return Error.TpmResponseTooSmall; // must cover at least the header just read
         if (size > buf.len) return Error.TpmResponseTooBig;
         while (got < size) got += try self.readSome(buf[got..size]);
         return buf[0..size];

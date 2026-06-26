@@ -53,11 +53,27 @@ pub const KeyBlobs = struct {
     public_len: usize = 0,
     point: [65]u8 = undefined,
 
+    pub const Error = error{BlobTooLarge};
+
     pub fn priv(self: *const KeyBlobs) []const u8 {
         return self.private[0..self.private_len];
     }
     pub fn pub_blob(self: *const KeyBlobs) []const u8 {
         return self.public[0..self.public_len];
+    }
+
+    /// Copy a TPM2B_PRIVATE blob in, rejecting anything that would overflow the fixed buffer (a
+    /// well-formed P-256 key is well under 256 bytes; this fails closed on a malformed/oversized one).
+    fn setPrivate(self: *KeyBlobs, b: []const u8) Error!void {
+        if (b.len > self.private.len) return Error.BlobTooLarge;
+        @memcpy(self.private[0..b.len], b);
+        self.private_len = b.len;
+    }
+    /// Copy a TPM2B_PUBLIC blob in, with the same overflow guard as setPrivate.
+    fn setPublic(self: *KeyBlobs, b: []const u8) Error!void {
+        if (b.len > self.public.len) return Error.BlobTooLarge;
+        @memcpy(self.public[0..b.len], b);
+        self.public_len = b.len;
     }
 };
 
@@ -80,10 +96,8 @@ fn createPrimary(t: *Tpm) !u32 {
 fn createKey(t: *Tpm, parent: u32, out: *KeyBlobs) !void {
     const c = try cmd.create(&t.cmdbuf, parent);
     const blobs = try cmd.createKeyBlobs(try t.transact(c));
-    out.private_len = blobs.private.len;
-    out.public_len = blobs.public.len;
-    @memcpy(out.private[0..blobs.private.len], blobs.private);
-    @memcpy(out.public[0..blobs.public.len], blobs.public);
+    try out.setPrivate(blobs.private);
+    try out.setPublic(blobs.public);
     try cmd.pointFromPublic(out.pub_blob(), &out.point);
 }
 
@@ -124,7 +138,12 @@ pub const Linux = struct {
 
     fn enumerate(ptr: *anyopaque, arena: std.mem.Allocator) anyerror![]const crypto.KeyInfo {
         const self: *Linux = @ptrCast(@alignCast(ptr));
-        var dir = std.Io.Dir.cwd().openDir(self.io, self.keydir, .{ .iterate = true }) catch return &.{};
+        // Only a missing key directory means "no keys"; surface AccessDenied/I/O errors so the agent
+        // doesn't silently behave as if the user has no keys.
+        var dir = std.Io.Dir.cwd().openDir(self.io, self.keydir, .{ .iterate = true }) catch |e| switch (e) {
+            error.FileNotFound => return &.{},
+            else => return e,
+        };
         defer dir.close(self.io);
 
         var list: std.ArrayList(crypto.KeyInfo) = .empty;
@@ -172,7 +191,10 @@ pub const Linux = struct {
 
     /// Find the key file whose public point equals `want`, copying its blobs into `out`.
     fn findKey(self: *Linux, want: *const [65]u8, out: *KeyBlobs) !bool {
-        var dir = std.Io.Dir.cwd().openDir(self.io, self.keydir, .{ .iterate = true }) catch return false;
+        var dir = std.Io.Dir.cwd().openDir(self.io, self.keydir, .{ .iterate = true }) catch |e| switch (e) {
+            error.FileNotFound => return false,
+            else => return e,
+        };
         defer dir.close(self.io);
         var it = dir.iterate();
         while (try it.next(self.io)) |entry| {
@@ -184,10 +206,8 @@ pub const Linux = struct {
             var point: [65]u8 = undefined;
             cmd.pointFromPublic(blobs.public, &point) catch continue;
             if (!std.mem.eql(u8, &point, want)) continue;
-            out.public_len = blobs.public.len;
-            out.private_len = blobs.private.len;
-            @memcpy(out.public[0..blobs.public.len], blobs.public);
-            @memcpy(out.private[0..blobs.private.len], blobs.private);
+            try out.setPublic(blobs.public);
+            try out.setPrivate(blobs.private);
             @memcpy(&out.point, &point);
             return true;
         }
@@ -207,9 +227,12 @@ pub const Linux = struct {
         var pem_buf: [max_keyfile]u8 = undefined;
         const pem = try keyfile.encode(&pem_buf, key.pub_blob(), key.priv());
         std.Io.Dir.cwd().createDirPath(self.io, self.keydir) catch {};
+        // Owner-only: the directory lists key names and each file holds TPM-wrapped private material.
+        std.Io.Dir.cwd().setFilePermissions(self.io, self.keydir, @enumFromInt(0o700), .{ .follow_symlinks = false }) catch {};
         var dir = try std.Io.Dir.cwd().openDir(self.io, self.keydir, .{});
         defer dir.close(self.io);
         try dir.writeFile(self.io, .{ .sub_path = name, .data = pem });
+        try dir.setFilePermissions(self.io, name, @enumFromInt(0o600), .{ .follow_symlinks = false });
         return key.point;
     }
 
