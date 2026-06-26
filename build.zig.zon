@@ -16,6 +16,10 @@
             .url = "git+https://github.com/mitchellh/libxev#9ce8e8e6ff89e583258a7f8e7adeeeaeae8611bf",
             .hash = "libxev-0.0.0-86vtcwIRFADbH4hk-EjROXxlrKIRPQdA41XiTSytYO-F",
         },
+        .cli = .{
+            .url = "git+https://github.com/sam701/zig-cli#f14e65411ed28c4ff07a997a126f2bd06fd16b6e",
+            .hash = "cli-0.11.0-2eKe_4oIAQBvb-yPOY0lKfAy_jrws58sjDq_uaYtccvS",
+        },
     },
     .paths = .{
         "build.zig",

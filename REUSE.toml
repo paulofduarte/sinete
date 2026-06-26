@@ -14,3 +14,10 @@ path = "devenv.lock"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Paulo Duarte"
 SPDX-License-Identifier = "Apache-2.0"
+
+# The manual checklist is plain Markdown.
+[[annotations]]
+path = "manual/z3-macos-se.md"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Paulo Duarte"
+SPDX-License-Identifier = "Apache-2.0"

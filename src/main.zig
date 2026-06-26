@@ -1,81 +1,116 @@
 // SPDX-FileCopyrightText: 2026 Paulo Duarte
 // SPDX-License-Identifier: Apache-2.0
 
-//! The `sinete` executable: a thin CLI that dispatches to libsinete + the platform backend.
-//! The portable logic lives in the `sinete` module (lib/); this file only parses argv, routes,
-//! and owns the executable-side glue (the libxev transport). Hardware-backed key generation and
-//! the real Secure Enclave/TPM backends arrive in later Z-phases; `agent` here runs the protocol
-//! over a fake backend so `ssh-add -l` works end-to-end with no hardware.
+//! The `sinete` executable: a thin CLI that dispatches to libsinete + the platform backend. The
+//! portable logic lives in the `sinete` module (lib/); this file parses argv (via zig-cli), routes,
+//! and owns the executable-side glue (the libxev transport and the macOS Secure Enclave backend).
+//! On macOS the agent serves real enclave keys gated by Touch ID; elsewhere it runs a fake backend
+//! so `ssh-add -l` works end-to-end with no hardware.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const sinete = @import("sinete");
+const cli = @import("cli");
 const transport = @import("transport.zig");
 
-const usage =
-    \\sinete - hardware-backed SSH key manager + agent
-    \\
-    \\usage: sinete <command> [args]
-    \\
-    \\commands:
-    \\  agent [--sock PATH]   serve the ssh-agent protocol on a unix socket (Z2: fake backend)
-    \\  version               print the version
-    \\  help                  show this help
-    \\
-;
+// The Secure Enclave backend exists only on macOS; elsewhere the agent runs the fake backend and
+// the key-management verbs report that they need macOS. Gating the import keeps Linux/CI builds
+// free of the Apple-framework shim.
+const darwin = if (builtin.os.tag == .macos) @import("backend/darwin.zig") else struct {};
+
+// zig-cli action callbacks are bare `fn() !void`, so the process context and the parsed argument
+// values live in file scope (the same pattern as zig-cli's own examples).
+var g_io: std.Io = undefined;
+var g_gpa: std.mem.Allocator = undefined;
+var g_env: *const std.process.Environ.Map = undefined;
+
+var opt_sock: []const u8 = ""; // agent --sock; empty means the per-OS default
+var arg_name: []const u8 = ""; // the <name> positional for generate/export/remove
 
 pub fn main(init: std.process.Init) !void {
-    const args = try init.minimal.args.toSlice(init.arena.allocator());
-    const cmd = if (args.len >= 2) args[1] else "help";
+    g_io = init.io;
+    g_gpa = init.gpa;
+    g_env = init.environ_map;
 
-    if (std.mem.eql(u8, cmd, "version")) {
-        try out(init, "sinete " ++ sinete.version ++ "\n");
-    } else if (std.mem.eql(u8, cmd, "agent")) {
-        try runAgent(init);
-    } else if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "-h") or std.mem.eql(u8, cmd, "--help")) {
-        try out(init, usage);
+    var r = cli.AppRunner.init(&init);
+    defer r.deinit();
+
+    const app = cli.App{
+        .version = sinete.version,
+        .command = .{
+            .name = "sinete",
+            .description = .{ .one_line = "hardware-backed SSH key manager + agent" },
+            .target = .{ .subcommands = try r.allocCommands(&.{
+                .{
+                    .name = "agent",
+                    .description = .{ .one_line = "serve the ssh-agent protocol on a unix socket" },
+                    .options = try r.allocOptions(&.{.{
+                        .long_name = "sock",
+                        .help = "socket path (default: the per-OS cache directory)",
+                        .value_ref = r.mkRef(&opt_sock),
+                        .value_name = "PATH",
+                    }}),
+                    .target = .{ .action = .{ .exec = cmdAgent } },
+                },
+                try nameCmd(&r, "generate", "create a Secure Enclave key and print its public key", cmdGenerate),
+                .{
+                    .name = "list",
+                    .description = .{ .one_line = "list the enclave keys" },
+                    .target = .{ .action = .{ .exec = cmdList } },
+                },
+                try nameCmd(&r, "export", "print a key's public key in authorized_keys form", cmdExport),
+                try nameCmd(&r, "remove", "delete an enclave key", cmdRemove),
+                .{
+                    .name = "version",
+                    .description = .{ .one_line = "print the version" },
+                    .target = .{ .action = .{ .exec = cmdVersion } },
+                },
+            }) },
+        },
+    };
+    return r.run(&app);
+}
+
+/// A subcommand taking a single required `<name>` positional bound to `arg_name`.
+fn nameCmd(r: *cli.AppRunner, name: []const u8, one_line: []const u8, exec: cli.ExecFn) !cli.Command {
+    return .{
+        .name = name,
+        .description = .{ .one_line = one_line },
+        .target = .{ .action = .{
+            .positional_args = .{ .required = try r.allocPositionalArgs(&.{.{
+                .name = "name",
+                .value_ref = r.mkRef(&arg_name),
+            }}) },
+            .exec = exec,
+        } },
+    };
+}
+
+// --- actions ---
+
+fn cmdAgent() !void {
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const sock = if (opt_sock.len > 0) opt_sock else try defaultSockPath(g_io, g_env, &path_buf);
+
+    if (builtin.os.tag == .macos) {
+        var be = darwin.Darwin{};
+        try serveAgent(sock, be.processor(), be.authorizer());
     } else {
-        // Unknown command is an error: usage goes to stderr so stdout stays clean for pipes.
-        try err(init, usage);
-        std.process.exit(2);
+        // No secure element: advertise one freshly generated identity so the protocol path works.
+        var arena = std.heap.ArenaAllocator.init(g_gpa);
+        defer arena.deinit();
+        const blob = try demoEcdsaBlob(g_io, arena.allocator());
+        const keys = [_]sinete.crypto.KeyInfo{.{ .blob = blob, .comment = "sinete demo (fake backend)" }};
+        var cp = sinete.crypto.Fake{ .keys = &keys };
+        var az = sinete.authz.Fake{};
+        try serveAgent(sock, cp.processor(), az.authorizer());
     }
 }
 
-/// Run the agent loop: a fake-backed `Agent` served over the libxev unix-socket transport. The
-/// fake advertises one real ecdsa-sha2-nistp256 identity, so a client's `ssh-add -l` lists it.
-fn runAgent(init: std.process.Init) !void {
-    const arena = init.arena.allocator(); // process-lifetime: argv + the demo key blob
-
-    const args = try init.minimal.args.toSlice(arena);
-    var sock_override: ?[]const u8 = null;
-    var i: usize = 2;
-    while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--sock")) {
-            if (i + 1 >= args.len) {
-                try err(init, "error: --sock needs a path\n");
-                std.process.exit(2);
-            }
-            sock_override = args[i + 1];
-            i += 1;
-        } else {
-            var ubuf: [std.fs.max_path_bytes + 64]u8 = undefined;
-            try err(init, try std.fmt.bufPrint(&ubuf, "error: unknown argument '{s}' (usage: sinete agent [--sock PATH])\n", .{args[i]}));
-            std.process.exit(2);
-        }
-    }
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const sock = sock_override orelse try defaultSockPath(init.io, init.environ_map, &path_buf);
-
-    const blob = try demoEcdsaBlob(init.io, arena);
-    const keys = [_]sinete.crypto.KeyInfo{.{ .blob = blob, .comment = "sinete demo (z2 fake)" }};
-    var cp = sinete.crypto.Fake{ .keys = &keys };
-    var az = sinete.authz.Fake{};
-
-    // A reclaiming allocator for the agent's window cache and the transport's per-connection state.
-    // An arena would never free a closed connection's buffers, so repeated connect/disconnect would
-    // grow RSS without bound; the process-lifetime arena above is only for argv + the demo blob.
-    // Leak-detecting DebugAllocator in safe builds, the fast general-purpose smp_allocator in release.
+/// Wire a Cryptoprocessor + Authorizer into an Agent and serve it over the libxev transport until
+/// the loop ends. A reclaiming allocator backs the per-connection state (leak-detecting in safe
+/// builds, the fast smp_allocator in release); an arena would grow RSS without bound.
+fn serveAgent(sock: []const u8, cp: sinete.crypto.Cryptoprocessor, az: sinete.authz.Authorizer) !void {
     var debug_alloc: std.heap.DebugAllocator(.{}) = .init;
     const gpa, const debug_gpa = switch (builtin.mode) {
         .Debug, .ReleaseSafe => .{ debug_alloc.allocator(), true },
@@ -85,23 +120,168 @@ fn runAgent(init: std.process.Init) !void {
         _ = debug_alloc.deinit();
     };
 
-    var agent = sinete.Agent.init(gpa, cp.processor(), az.authorizer(), .{
-        .idle_ms = 300_000, // 5 min idle TTL (moot: the fake authorizer never prompts)
+    var agent = sinete.Agent.init(gpa, cp, az, .{
+        .idle_ms = 300_000, // 5 min idle TTL
         .max_ms = 3_600_000, // 1 h absolute cap
     });
     defer agent.deinit();
 
     var msg_buf: [std.fs.max_path_bytes + 64]u8 = undefined;
-    try err(init, try std.fmt.bufPrint(&msg_buf, "sinete agent listening on {s}\n", .{sock}));
+    try stderrWrite(try std.fmt.bufPrint(&msg_buf, "sinete agent listening on {s}\n", .{sock}));
 
-    try transport.serve(gpa, init.io, &agent, sock, .{});
+    try transport.serve(gpa, g_io, &agent, sock, .{});
+}
+
+/// Strip a leading "sinete-" so a name copy-pasted from `list` (which prints the full label) works
+/// the same as the bare name, instead of becoming "sinete-sinete-...".
+fn bareName() []const u8 {
+    return if (std.mem.startsWith(u8, arg_name, "sinete-")) arg_name["sinete-".len..] else arg_name;
+}
+
+/// Build the `sinete-<name>` enclave label for a new key (the `generate` path only), validating the
+/// name. Rejects: empty, or longer than 120 bytes (the backend's 128-byte label buffer minus
+/// "sinete-"; a longer name would be truncated on enumeration); the reserved `_master` (its label
+/// is hidden from enumeration); and bytes outside [A-Za-z0-9._@+-] (whitespace, NUL, control,
+/// non-ASCII) -- invalid UTF-8 would make a nil kSecAttrLabel in the shim, and the name must be one
+/// unambiguous token since list/export/remove treat it as a single identifier.
+fn keyLabel(buf: []u8) ![:0]const u8 {
+    const max = 120;
+    const name = bareName();
+    const ok = name.len > 0 and name.len <= max and
+        !std.mem.eql(u8, name, "_master") and validNameChars(name);
+    if (!ok) {
+        var e: [160]u8 = undefined;
+        try stderrWrite(try std.fmt.bufPrint(&e, "error: invalid name (1-{d} chars from [A-Za-z0-9._@+-], not '_master')\n", .{max}));
+        std.process.exit(2);
+    }
+    return std.fmt.bufPrintZ(buf, "sinete-{s}", .{name});
+}
+
+/// Build the lookup label for export/remove. Unlike keyLabel (create) this does not re-apply the
+/// create-time validation: any enumerated key must be targetable, even one made outside this CLI,
+/// so we only build the comparison string. Returns null only if the name is too long to be a real
+/// label (so it can never match), which the caller reports as not-found.
+fn matchLabel(buf: []u8) ?[]const u8 {
+    return std.fmt.bufPrint(buf, "sinete-{s}", .{bareName()}) catch null;
+}
+
+fn validNameChars(name: []const u8) bool {
+    for (name) |ch| switch (ch) {
+        'A'...'Z', 'a'...'z', '0'...'9', '.', '_', '@', '+', '-' => {},
+        else => return false,
+    };
+    return true;
+}
+
+fn cmdGenerate() !void {
+    if (builtin.os.tag == .macos) {
+        var lbl_buf: [128]u8 = undefined;
+        const label = try keyLabel(&lbl_buf);
+        var be = darwin.Darwin{};
+        var point: [65]u8 = undefined;
+        try be.generate(label, &point);
+
+        var arena = std.heap.ArenaAllocator.init(g_gpa);
+        defer arena.deinit();
+        var enc = sinete.wire.Encoder.init(arena.allocator());
+        defer enc.deinit();
+        try sinete.ecdsa_key.writePubBlob(&enc, &point);
+        try printAuthKeys(enc.bytes(), label);
+    } else return macosOnly("generate");
+}
+
+fn cmdList() !void {
+    if (builtin.os.tag == .macos) {
+        var be = darwin.Darwin{};
+        var arena = std.heap.ArenaAllocator.init(g_gpa);
+        defer arena.deinit();
+        const keys = try be.processor().enumerate(arena.allocator());
+        for (keys) |k| try printListEntry(k.blob, k.comment);
+    } else return macosOnly("list");
+}
+
+fn cmdExport() !void {
+    if (builtin.os.tag == .macos) {
+        var be = darwin.Darwin{};
+        var arena = std.heap.ArenaAllocator.init(g_gpa);
+        defer arena.deinit();
+        var want_buf: [256]u8 = undefined;
+        const want = matchLabel(&want_buf) orelse return notFound(arg_name);
+        const keys = try be.processor().enumerate(arena.allocator());
+        for (keys) |k| {
+            if (std.mem.eql(u8, k.comment, want)) return printAuthKeys(k.blob, k.comment);
+        }
+        try notFound(arg_name);
+    } else return macosOnly("export");
+}
+
+fn cmdRemove() !void {
+    if (builtin.os.tag == .macos) {
+        var be = darwin.Darwin{};
+        var arena = std.heap.ArenaAllocator.init(g_gpa);
+        defer arena.deinit();
+        var want_buf: [256]u8 = undefined;
+        const want = matchLabel(&want_buf) orelse return notFound(arg_name);
+        const keys = try be.processor().enumerate(arena.allocator());
+        for (keys) |k| {
+            if (!std.mem.eql(u8, k.comment, want)) continue;
+            const point = try sinete.ecdsa_key.pointFromPubBlob(k.blob);
+            try be.remove(point);
+            var msg: [192]u8 = undefined;
+            return stdoutWrite(try std.fmt.bufPrint(&msg, "removed {s}\n", .{want}));
+        }
+        try notFound(arg_name);
+    } else return macosOnly("remove");
+}
+
+fn cmdVersion() !void {
+    try stdoutWrite("sinete " ++ sinete.version ++ "\n");
+}
+
+// --- output helpers ---
+
+fn stdoutWrite(bytes: []const u8) !void {
+    try std.Io.File.stdout().writeStreamingAll(g_io, bytes);
+}
+fn stderrWrite(bytes: []const u8) !void {
+    try std.Io.File.stderr().writeStreamingAll(g_io, bytes);
+}
+
+/// Print an authorized_keys line: `ecdsa-sha2-nistp256 <base64(blob)> <comment>`.
+fn printAuthKeys(blob: []const u8, comment: []const u8) !void {
+    var b64_buf: [256]u8 = undefined;
+    const b64 = std.base64.standard.Encoder.encode(&b64_buf, blob);
+    var line: [512]u8 = undefined;
+    try stdoutWrite(try std.fmt.bufPrint(&line, "{s} {s} {s}\n", .{ sinete.ecdsa_key.key_type, b64, comment }));
+}
+
+/// Print an `ssh-add -l` style line: `256 SHA256:<b64> <comment> (ECDSA)`.
+fn printListEntry(blob: []const u8, comment: []const u8) !void {
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(blob, &digest, .{});
+    var fp_buf: [44]u8 = undefined;
+    const fp = std.base64.standard_no_pad.Encoder.encode(&fp_buf, &digest);
+    var line: [256]u8 = undefined;
+    try stdoutWrite(try std.fmt.bufPrint(&line, "256 SHA256:{s} {s} (ECDSA)\n", .{ fp, comment }));
+}
+
+fn notFound(name: []const u8) !void {
+    var buf: [192]u8 = undefined;
+    try stderrWrite(try std.fmt.bufPrint(&buf, "error: no key named '{s}'\n", .{name}));
+    std.process.exit(1);
+}
+
+fn macosOnly(verb: []const u8) !void {
+    var buf: [160]u8 = undefined;
+    try stderrWrite(try std.fmt.bufPrint(&buf, "error: '{s}' needs the Secure Enclave and is only supported on macOS\n", .{verb}));
+    std.process.exit(2);
 }
 
 /// Per-OS default socket path (creating its parent directory). macOS:
 /// ~/Library/Caches/sinete/agent.sock; Linux: $XDG_RUNTIME_DIR/sinete/agent.sock, falling back to
 /// ~/.cache/sinete/agent.sock. The result is written into `buf`; the socket file itself is created
 /// by the transport.
-fn defaultSockPath(io: std.Io, env: *std.process.Environ.Map, buf: []u8) ![]const u8 {
+fn defaultSockPath(io: std.Io, env: *const std.process.Environ.Map, buf: []u8) ![]const u8 {
     const home = env.get("HOME");
     var basebuf: [std.fs.max_path_bytes]u8 = undefined;
     const base = if (builtin.os.tag.isDarwin())
@@ -121,9 +301,8 @@ fn defaultSockPath(io: std.Io, env: *std.process.Environ.Map, buf: []u8) ![]cons
     return std.fmt.bufPrint(buf, "{s}/agent.sock", .{dir});
 }
 
-/// Build a real ecdsa-sha2-nistp256 SSH public-key blob from a fresh P-256 key, so the advertised
-/// identity parses in `ssh-add -l`. The blob is: string("ecdsa-sha2-nistp256") || string("nistp256")
-/// || string(0x04 || X || Y). Owned by `gpa`.
+/// Build a real ecdsa-sha2-nistp256 SSH public-key blob from a fresh P-256 key, so the fake agent
+/// advertises an identity that parses in `ssh-add -l`. Owned by `gpa`.
 fn demoEcdsaBlob(io: std.Io, gpa: std.mem.Allocator) ![]const u8 {
     const Ecdsa = std.crypto.sign.ecdsa.EcdsaP256Sha256;
     const kp = Ecdsa.KeyPair.generate(io);
@@ -131,16 +310,6 @@ fn demoEcdsaBlob(io: std.Io, gpa: std.mem.Allocator) ![]const u8 {
 
     var enc = sinete.wire.Encoder.init(gpa);
     defer enc.deinit();
-    try enc.string("ecdsa-sha2-nistp256");
-    try enc.string("nistp256");
-    try enc.string(&point);
+    try sinete.ecdsa_key.writePubBlob(&enc, &point);
     return gpa.dupe(u8, enc.bytes());
-}
-
-fn out(init: std.process.Init, bytes: []const u8) !void {
-    try std.Io.File.stdout().writeStreamingAll(init.io, bytes);
-}
-
-fn err(init: std.process.Init, bytes: []const u8) !void {
-    try std.Io.File.stderr().writeStreamingAll(init.io, bytes);
 }
