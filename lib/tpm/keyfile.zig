@@ -58,10 +58,30 @@ const Der = struct {
         try self.len(value.len);
         try self.bytes(value);
     }
+    /// An OCTET STRING holding a marshaled TPM2B (a u16 big-endian length prefix then `contents`),
+    /// which is exactly what TSS2 stores for pubkey/privkey -- so the file loads in tpm2-tools etc.
+    /// The in-memory blobs are the unwrapped contents; the wrapper lives only on disk.
+    fn tpm2bOctet(self: *Der, contents: []const u8) Error!void {
+        if (contents.len > 0xffff) return Error.NoSpace;
+        try self.byte(0x04); // OCTET STRING
+        try self.len(contents.len + 2);
+        try self.byte(@intCast(contents.len >> 8));
+        try self.byte(@intCast(contents.len & 0xFF));
+        try self.bytes(contents);
+    }
     fn out(self: *const Der) []const u8 {
         return self.buf[0..self.pos];
     }
 };
+
+/// The contents of a marshaled TPM2B (a u16 length prefix then the bytes) carried in an OCTET STRING,
+/// validating the prefix matches. Inverse of `Der.tpm2bOctet`; also reads other tools' TSS2 files.
+fn tpm2bContents(v: []const u8) Error![]const u8 {
+    if (v.len < 2) return Error.BadKeyFile;
+    const n = (@as(usize, v[0]) << 8) | v[1];
+    if (n != v.len - 2) return Error.BadKeyFile;
+    return v[2..];
+}
 
 /// Build the DER TPMKey for a loadable key (owner parent, empty auth) into `out`.
 fn encodeDer(out: []u8, public: []const u8, private: []const u8) Error![]const u8 {
@@ -70,8 +90,8 @@ fn encodeDer(out: []u8, public: []const u8, private: []const u8) Error![]const u
     try body.tlv(0x06, &loadable_key_oid); // type
     try body.tlv(0xA0, &[_]u8{ 0x01, 0x01, 0xFF }); // [0] EXPLICIT BOOLEAN TRUE (emptyAuth)
     try body.tlv(0x02, &owner_parent); // parent INTEGER
-    try body.tlv(0x04, public); // pubkey OCTET STRING
-    try body.tlv(0x04, private); // privkey OCTET STRING
+    try body.tpm2bOctet(public); // pubkey OCTET STRING (marshaled TPM2B_PUBLIC)
+    try body.tpm2bOctet(private); // privkey OCTET STRING (marshaled TPM2B_PRIVATE)
 
     var der = Der{ .buf = out };
     try der.byte(0x30); // SEQUENCE
@@ -158,7 +178,8 @@ pub fn decode(pem: []const u8, scratch: []u8) Error!Parsed {
     const public = try r.elem();
     const private = try r.elem();
     if (public.tag != 0x04 or private.tag != 0x04) return Error.BadKeyFile;
-    return .{ .public = public.value, .private = private.value };
+    // The OCTET STRINGs carry marshaled TPM2Bs; hand back the unwrapped contents.
+    return .{ .public = try tpm2bContents(public.value), .private = try tpm2bContents(private.value) };
 }
 
 const testing = std.testing;
@@ -181,24 +202,15 @@ test "encode/decode round-trips the blobs" {
 test "encoded DER has the expected TPMKey prefix (type + emptyAuth + parent)" {
     var der_buf: [256]u8 = undefined;
     const der = try encodeDer(&der_buf, "pub", "priv");
-    // 0x30 <len> | 06 06 <oid> | A0 03 01 01 FF | 02 04 40 00 00 01 | 04 03 'pub' | 04 04 'priv'
+    // 0x30 <len> | 06 06 <oid> | A0 03 01 01 FF | 02 04 40 00 00 01 |
+    //   04 05 00 03 'pub' (OCTET STRING = TPM2B{len=3} + 'pub') | 04 06 00 04 'priv'
     const want_prefix = [_]u8{
-        0x30, 0x1e,
-        0x06, 0x06,
-        0x67, 0x81,
-        0x05, 0x0a,
-        0x01, 0x03,
-        0xa0, 0x03,
-        0x01, 0x01,
-        0xff, 0x02,
-        0x04, 0x40,
-        0x00, 0x00,
-        0x01, 0x04,
-        0x03, 'p',
-        'u',  'b',
-        0x04, 0x04,
-        'p',  'r',
-        'i',  'v',
+        0x30, 0x22, // SEQUENCE, len 34
+        0x06, 0x06, 0x67, 0x81, 0x05, 0x0a, 0x01, 0x03, // OID 2.23.133.10.1.3
+        0xa0, 0x03, 0x01, 0x01, 0xff, // [0] emptyAuth = TRUE
+        0x02, 0x04, 0x40, 0x00, 0x00, 0x01, // parent = TPM_RH_OWNER
+        0x04, 0x05, 0x00, 0x03, 'p', 'u', 'b', // pubkey: OCTET STRING { 00 03, "pub" }
+        0x04, 0x06, 0x00, 0x04, 'p', 'r', 'i', 'v', // privkey: OCTET STRING { 00 04, "priv" }
     };
     try testing.expectEqualSlices(u8, &want_prefix, der);
 }
@@ -214,13 +226,21 @@ test "long-form lengths: 0x81 octet string under a 0x82 outer SEQUENCE" {
     _ = try b.elem(); // emptyAuth
     _ = try b.elem(); // parent
     const pub_el = try b.elem();
-    try testing.expectEqual(@as(usize, 200), pub_el.value.len);
+    try testing.expectEqual(@as(usize, 202), pub_el.value.len); // 200 contents + 2-byte TPM2B prefix
+    try testing.expectEqual(@as(usize, 200), (try tpm2bContents(pub_el.value)).len);
     const priv_el = try b.elem();
-    try testing.expectEqual(@as(usize, 100), priv_el.value.len);
+    try testing.expectEqual(@as(usize, 102), priv_el.value.len);
+    try testing.expectEqual(@as(usize, 100), (try tpm2bContents(priv_el.value)).len);
 }
 
 test "decode rejects garbage and missing guards" {
     var scratch: [256]u8 = undefined;
     try testing.expectError(Error.BadKeyFile, decode("not a pem", &scratch));
     try testing.expectError(Error.BadKeyFile, decode("-----BEGIN TSS2 PRIVATE KEY-----\n!!!\n-----END TSS2 PRIVATE KEY-----\n", &scratch));
+}
+
+test "tpm2bContents validates the length prefix" {
+    try testing.expectError(Error.BadKeyFile, tpm2bContents(&[_]u8{0x00})); // shorter than the u16 prefix
+    try testing.expectError(Error.BadKeyFile, tpm2bContents(&[_]u8{ 0x00, 0x05, 0xAA })); // prefix says 5, has 1
+    try testing.expectEqualSlices(u8, &[_]u8{ 0xAA, 0xBB }, try tpm2bContents(&[_]u8{ 0x00, 0x02, 0xAA, 0xBB }));
 }
