@@ -22,6 +22,7 @@ const linux = if (builtin.os.tag == .linux) @import("backend/linux.zig") else st
 // the pure-Zig D-Bus client. Gated so non-Linux builds don't pull in the Linux-only socket code.
 const fprintd = if (builtin.os.tag == .linux) @import("backend/fprintd.zig") else struct {};
 const logind = if (builtin.os.tag == .linux) @import("backend/logind.zig") else struct {};
+const dbus_conn = if (builtin.os.tag == .linux) @import("backend/dbus_conn.zig") else struct {};
 
 // zig-cli action callbacks are bare `fn() !void`, so the process context and the parsed argument
 // values live in file scope (the same pattern as zig-cli's own examples).
@@ -74,6 +75,11 @@ pub fn main(init: std.process.Init) !void {
                     .name = "_tpm-selftest",
                     .description = .{ .one_line = "diagnostic: exercise the TPM path (Linux; SINETE_TPM=<swtpm sock>)" },
                     .target = .{ .action = .{ .exec = cmdTpmSelftest } },
+                },
+                .{
+                    .name = "_dbus-selftest",
+                    .description = .{ .one_line = "diagnostic: connect to the system D-Bus and Hello (Linux)" },
+                    .target = .{ .action = .{ .exec = cmdDbusSelftest } },
                 },
             }) },
         },
@@ -361,6 +367,16 @@ fn cmdTpmSelftest() !void {
         try linux.selftest(g_io, sock orelse "/dev/tpmrm0", sock != null);
     } else {
         try stderrWrite("error: _tpm-selftest is only supported on Linux\n");
+        std.process.exit(2);
+    }
+}
+
+fn cmdDbusSelftest() !void {
+    if (builtin.os.tag == .linux) {
+        try dbus_conn.Conn.selftest(g_io, g_gpa);
+        try stdoutWrite("DBUS SELFTEST PASS\n");
+    } else {
+        try stderrWrite("error: _dbus-selftest is only supported on Linux\n");
         std.process.exit(2);
     }
 }

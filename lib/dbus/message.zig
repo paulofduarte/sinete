@@ -223,3 +223,39 @@ test "frameView rejects an unknown order byte" {
     b[0] = 'x';
     try testing.expectError(error.BadMessage, frameView(&b));
 }
+
+test "parse reads reply_serial and error_name and skips unknown header fields" {
+    var enc = Encoder.init(testing.allocator);
+    defer enc.deinit();
+    // Hand-build an ERROR reply with REPLY_SERIAL (5, u), ERROR_NAME (4, s), and SENDER (7, s, skipped).
+    try enc.byte('l');
+    try enc.byte(msg_error);
+    try enc.byte(0);
+    try enc.byte(1);
+    try enc.put32(0); // empty body
+    try enc.put32(7); // serial
+    try enc.pad(4);
+    const lp = enc.mark();
+    try enc.raw(&[_]u8{ 0, 0, 0, 0 });
+    try enc.pad(8);
+    const ds = enc.mark();
+    try enc.pad(8); // REPLY_SERIAL
+    try enc.byte(5);
+    try enc.signature("u");
+    try enc.put32(99);
+    try enc.pad(8); // ERROR_NAME
+    try enc.byte(4);
+    try enc.signature("s");
+    try enc.string("org.example.Boom");
+    try enc.pad(8); // SENDER (code 7) -- not consumed; exercises the skipBasic path
+    try enc.byte(7);
+    try enc.signature("s");
+    try enc.string(":1.5");
+    enc.patchU32(lp, @intCast(enc.mark() - ds));
+    try enc.pad(8);
+
+    const p = try parse(enc.bytes());
+    try testing.expectEqual(msg_error, p.type);
+    try testing.expectEqual(@as(u32, 99), p.reply_serial.?);
+    try testing.expectEqualStrings("org.example.Boom", p.error_name.?);
+}

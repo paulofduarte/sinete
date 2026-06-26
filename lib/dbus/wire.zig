@@ -224,3 +224,21 @@ test "skipBasic steps over an unconsumed variant value" {
     try dec.skipBasic('u');
     try testing.expectEqualStrings("after", try dec.string());
 }
+
+test "skipBasic handles every basic type and rejects a container" {
+    var enc = Encoder.init(testing.allocator);
+    defer enc.deinit();
+    try enc.byte(1); // y
+    try enc.put16(2); // q (also covers n)
+    try enc.put32(3); // u (also covers b, i)
+    try enc.pad(8);
+    try enc.raw(&([_]u8{0} ** 8)); // x (also covers t, d): an 8-byte value
+    try enc.signature("g"); // g
+    try enc.string("s"); // s (also covers o)
+    var d = Decoder{ .data = enc.bytes() };
+    for ("yquxgs") |t| try d.skipBasic(t);
+    try testing.expect(d.done());
+
+    var d2 = Decoder{ .data = &[_]u8{0} };
+    try testing.expectError(error.BadMessage, d2.skipBasic('a')); // a container code is rejected
+}

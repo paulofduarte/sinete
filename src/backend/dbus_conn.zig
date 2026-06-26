@@ -102,13 +102,23 @@ pub const Conn = struct {
         }
         try self.writeAll("BEGIN\r\n");
 
-        // Hello establishes our unique name; we don't need the returned name, only a clean reply.
+        // Hello establishes our unique name; validating that the reply decodes as a unique name
+        // (":1.x") confirms the whole stack -- SASL, marshaling, framing, and string-body parsing.
         const s = self.nextSerial();
         var enc = wire.Encoder.init(self.gpa);
         defer enc.deinit();
         try sinete.dbus_calls.hello(&enc, s);
         try self.send(enc.bytes());
-        _ = try self.awaitReply(s);
+        const hello_reply = try self.awaitReply(s);
+        const name = sinete.dbus_calls.parsePathOrString(hello_reply.body, hello_reply.endian) catch return error.DbusProtocol;
+        if (name.len == 0 or name[0] != ':') return error.DbusProtocol;
+    }
+
+    /// Connect, handshake, and Hello, then close. Used by the `_dbus-selftest` diagnostic to confirm
+    /// the pure-Zig D-Bus stack works against a real bus before the fprintd/logind paths need it.
+    pub fn selftest(io: std.Io, gpa: std.mem.Allocator) Error!void {
+        var conn = try connectSystem(io, gpa);
+        conn.close();
     }
 
     fn writeAll(self: *Conn, bytes: []const u8) Error!void {
