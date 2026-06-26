@@ -66,6 +66,24 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, agent: *sinete.Agent, sock_path
     try loop.run(.until_done);
 }
 
+/// Read the connecting peer's credentials from the accepted socket. Linux uses SO_PEERCRED (the
+/// raw getsockopt syscall; std.posix.getsockopt does not exist in 0.16). Other platforms return null
+/// for now (macOS LOCAL_PEERPID is a later slice), which leaves the remote gate inactive there.
+fn peerCred(fd: std.posix.fd_t) ?sinete.session.Cred {
+    switch (builtin.os.tag) {
+        .linux => {
+            const ucred = extern struct { pid: i32, uid: u32, gid: u32 };
+            var uc: ucred = undefined;
+            var len: std.os.linux.socklen_t = @sizeOf(ucred);
+            const rc = std.os.linux.getsockopt(fd, std.os.linux.SOL.SOCKET, std.os.linux.SO.PEERCRED, @ptrCast(&uc), &len);
+            // A raw linux syscall returns 0 on success, or -errno encoded in the high bits.
+            if (@as(isize, @bitCast(rc)) != 0) return null;
+            return .{ .pid = uc.pid, .uid = uc.uid };
+        },
+        else => return null,
+    }
+}
+
 /// Set the process umask, returning the previous value. Linux issues the raw syscall (no libc);
 /// macOS uses libSystem (std.c.umask), which every Darwin binary always links, so it adds no new
 /// dependency. The BSD follow-up (Z9) will add its own branch and may need linkLibC for this call.
@@ -118,6 +136,7 @@ const Conn = struct {
     frame: sinete.wire.Encoder, // the framed response (u32 length + body) being written
     in: std.ArrayList(u8) = .empty, // request bytes; grows on demand up to in_cap, freed on close
     out_off: usize = 0, // bytes of `frame` already written (partial-write progress)
+    cred: ?sinete.session.Cred = null, // peer credentials (SO_PEERCRED), for the remote-session gate
 };
 
 fn onAccept(srv_opt: ?*Server, loop: *xev.Loop, _: *xev.Completion, r: xev.AcceptError!xev.TCP) xev.CallbackAction {
@@ -136,6 +155,7 @@ fn onAccept(srv_opt: ?*Server, loop: *xev.Loop, _: *xev.Completion, r: xev.Accep
         .arena = std.heap.ArenaAllocator.init(srv.gpa),
         .body = sinete.wire.Encoder.init(srv.gpa),
         .frame = sinete.wire.Encoder.init(srv.gpa),
+        .cred = peerCred(tcp.fd), // read once per connection; null where unsupported
     };
     _ = pump(conn);
     return .rearm; // keep accepting further connections
@@ -149,7 +169,7 @@ fn pump(conn: *Conn) xev.CallbackAction {
     const now: i64 = @intCast(@divFloor(std.Io.Clock.boot.now(conn.srv.io).nanoseconds, 1_000_000));
     _ = conn.arena.reset(.retain_capacity);
 
-    switch (framing.processOne(conn.srv.agent, conn.arena.allocator(), now, conn.in.items, &conn.body, &conn.frame)) {
+    switch (framing.processOne(conn.srv.agent, conn.cred, conn.arena.allocator(), now, conn.in.items, &conn.body, &conn.frame)) {
         .close => return closeConn(conn),
         .replied => |total| {
             // Carry any pipelined bytes after this request to the front of the buffer.

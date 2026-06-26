@@ -10,6 +10,7 @@
 const std = @import("std");
 const authz = @import("../authz.zig");
 const crypto = @import("../crypto.zig");
+const session = @import("../session.zig");
 const window = @import("window.zig");
 
 pub const Config = struct {
@@ -23,9 +24,9 @@ pub const Config = struct {
 
 /// Why a signature was refused, so the protocol layer can answer FAILURE and the CLI can
 /// explain. PresenceRefused wraps any Authorizer error; BackendError wraps any Cryptoprocessor
-/// error. Window bookkeeping cannot fail the call: a lost window just means one extra presence
-/// prompt next time.
-pub const SignError = error{ PresenceRefused, BackendError };
+/// error; RemoteRefused means the LocalSession check rejected a remote/forwarded caller. Window
+/// bookkeeping cannot fail the call: a lost window just means one extra presence prompt next time.
+pub const SignError = error{ PresenceRefused, BackendError, RemoteRefused };
 
 pub const Agent = struct {
     gpa: std.mem.Allocator,
@@ -33,6 +34,10 @@ pub const Agent = struct {
     az: authz.Authorizer,
     cfg: Config,
     windows: window.Cache,
+    /// Optional remote-session gate. When set, every signature requires a peer credential that the
+    /// LocalSession confirms is the agent's own local session. Left null on platforms/builds without
+    /// a peer-cred path (then no remote refusal happens); main.zig sets it after init on Linux.
+    session: ?session.LocalSession = null,
 
     pub fn init(gpa: std.mem.Allocator, cp: crypto.Cryptoprocessor, az: authz.Authorizer, cfg: Config) Agent {
         return .{ .gpa = gpa, .cp = cp, .az = az, .cfg = cfg, .windows = window.Cache.init(gpa) };
@@ -49,7 +54,14 @@ pub const Agent = struct {
     /// Sign data with the key whose public blob is key_id, writing the signature into out and
     /// returning its length. Runs the presence gesture only when the key's window is cold, and
     /// refreshes the window on success.
-    pub fn sign(self: *Agent, key_id: []const u8, data: []const u8, now_ms: i64, out: []u8) SignError!usize {
+    pub fn sign(self: *Agent, cred: ?session.Cred, key_id: []const u8, data: []const u8, now_ms: i64, out: []u8) SignError!usize {
+        // Remote gate first: a forwarded/remote caller is refused before any presence prompt or
+        // window check, and on every signature so a window warmed locally cannot be ridden remotely.
+        if (self.session) |s| {
+            const c = cred orelse return error.RemoteRefused;
+            if (!(s.isLocal(c) catch return error.RemoteRefused)) return error.RemoteRefused;
+        }
+
         // peek is non-mutating: require presence on a cold window, then commit the window only
         // after the signature succeeds, so a failed sign never primes a silent window.
         const warm = self.windows.peek(key_id, now_ms, self.cfg.idle_ms, self.cfg.max_ms);
@@ -78,9 +90,9 @@ test "first sign authenticates; signs within the idle TTL are silent" {
     defer agent.deinit();
 
     var out: [8]u8 = undefined;
-    _ = try agent.sign("key-1", "a", 1000, &out); // cold, presence runs
-    _ = try agent.sign("key-1", "b", 1500, &out); // warm within idle, silent
-    _ = try agent.sign("key-1", "c", 2200, &out); // idle slid forward by the prior sign, silent
+    _ = try agent.sign(null, "key-1", "a", 1000, &out); // cold, presence runs
+    _ = try agent.sign(null, "key-1", "b", 1500, &out); // warm within idle, silent
+    _ = try agent.sign(null, "key-1", "c", 2200, &out); // idle slid forward by the prior sign, silent
     try testing.expectEqual(@as(usize, 1), az.granted);
     try testing.expectEqual(@as(usize, 3), cp.signs);
 }
@@ -92,8 +104,8 @@ test "a lapsed idle window re-authenticates" {
     defer agent.deinit();
 
     var out: [8]u8 = undefined;
-    _ = try agent.sign("key-1", "a", 1000, &out); // presence runs
-    _ = try agent.sign("key-1", "b", 5000, &out); // idle lapsed (>1000 since last use), presence runs again
+    _ = try agent.sign(null, "key-1", "a", 1000, &out); // presence runs
+    _ = try agent.sign(null, "key-1", "b", 5000, &out); // idle lapsed (>1000 since last use), presence runs again
     try testing.expectEqual(@as(usize, 2), az.granted);
 }
 
@@ -104,9 +116,9 @@ test "the absolute cap forces re-authentication even with steady use" {
     defer agent.deinit();
 
     var out: [8]u8 = undefined;
-    _ = try agent.sign("key-1", "a", 1000, &out); // opens at t=1000, absolute cap at 3000
-    _ = try agent.sign("key-1", "b", 2500, &out); // within idle and cap, silent
-    _ = try agent.sign("key-1", "c", 3500, &out); // past the absolute cap, presence runs again
+    _ = try agent.sign(null, "key-1", "a", 1000, &out); // opens at t=1000, absolute cap at 3000
+    _ = try agent.sign(null, "key-1", "b", 2500, &out); // within idle and cap, silent
+    _ = try agent.sign(null, "key-1", "c", 3500, &out); // past the absolute cap, presence runs again
     try testing.expectEqual(@as(usize, 2), az.granted);
 }
 
@@ -117,7 +129,7 @@ test "a failed signature does not prime a silent window" {
     defer agent.deinit();
 
     var out: [8]u8 = undefined;
-    try testing.expectError(error.BackendError, agent.sign("ghost", "a", 1000, &out));
+    try testing.expectError(error.BackendError, agent.sign(null, "ghost", "a", 1000, &out));
     // presence ran, but because the sign failed the window must stay cold
     try testing.expectEqual(@as(usize, 1), az.granted);
     try testing.expect(!agent.windows.peek("ghost", 1100, 1000, 10_000));
@@ -130,8 +142,39 @@ test "a declined presence gesture refuses the signature and does not sign" {
     defer agent.deinit();
 
     var out: [8]u8 = undefined;
-    try testing.expectError(error.PresenceRefused, agent.sign("key-1", "a", 1000, &out));
+    try testing.expectError(error.PresenceRefused, agent.sign(null, "key-1", "a", 1000, &out));
     try testing.expectEqual(@as(usize, 0), cp.signs);
+}
+
+test "the remote gate refuses a non-local caller and a missing credential" {
+    var cp = crypto.Fake{ .keys = &.{.{ .blob = "key-1", .comment = "me@host" }} };
+    var az = authz.Fake{};
+    var sess = session.Fake{ .local = false };
+    var agent = Agent.init(testing.allocator, cp.processor(), az.authorizer(), .{ .idle_ms = 1000, .max_ms = 10_000 });
+    agent.session = sess.session();
+    defer agent.deinit();
+
+    var out: [8]u8 = undefined;
+    // remote session -> refused before presence or signing
+    try testing.expectError(error.RemoteRefused, agent.sign(.{ .pid = 9, .uid = 501 }, "key-1", "a", 1000, &out));
+    // session set but no credential available -> also refused
+    try testing.expectError(error.RemoteRefused, agent.sign(null, "key-1", "a", 1000, &out));
+    try testing.expectEqual(@as(usize, 0), cp.signs);
+    try testing.expectEqual(@as(usize, 0), az.granted);
+}
+
+test "the remote gate admits a confirmed local caller" {
+    var cp = crypto.Fake{ .keys = &.{.{ .blob = "key-1", .comment = "me@host" }} };
+    var az = authz.Fake{};
+    var sess = session.Fake{ .local = true };
+    var agent = Agent.init(testing.allocator, cp.processor(), az.authorizer(), .{ .idle_ms = 1000, .max_ms = 10_000 });
+    agent.session = sess.session();
+    defer agent.deinit();
+
+    var out: [8]u8 = undefined;
+    _ = try agent.sign(.{ .pid = 9, .uid = 501 }, "key-1", "a", 1000, &out);
+    try testing.expectEqual(@as(usize, 1), cp.signs);
+    try testing.expectEqual(@as(usize, 1), az.granted);
 }
 
 test "invalidate forces the next signature to re-authenticate" {
@@ -141,9 +184,9 @@ test "invalidate forces the next signature to re-authenticate" {
     defer agent.deinit();
 
     var out: [8]u8 = undefined;
-    _ = try agent.sign("key-1", "a", 1000, &out);
+    _ = try agent.sign(null, "key-1", "a", 1000, &out);
     agent.invalidate("key-1");
-    _ = try agent.sign("key-1", "b", 1100, &out); // would be silent, but invalidation forces presence again
+    _ = try agent.sign(null, "key-1", "b", 1100, &out); // would be silent, but invalidation forces presence again
     try testing.expectEqual(@as(usize, 2), az.granted);
 }
 

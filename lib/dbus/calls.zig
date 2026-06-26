@@ -24,7 +24,7 @@ const fprint_mgr_path = "/net/reactivated/Fprint/Manager";
 const fprint_mgr_iface = "net.reactivated.Fprint.Manager";
 pub const fprint_device_iface = "net.reactivated.Fprint.Device";
 
-const login1_dest = "org.freedesktop.login1";
+pub const login1_dest = "org.freedesktop.login1";
 const login1_path = "/org/freedesktop/login1";
 const login1_mgr_iface = "org.freedesktop.login1.Manager";
 pub const login1_session_iface = "org.freedesktop.login1.Session";
