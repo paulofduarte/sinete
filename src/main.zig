@@ -132,10 +132,23 @@ fn serveAgent(sock: []const u8, cp: sinete.crypto.Cryptoprocessor, az: sinete.au
     try transport.serve(gpa, g_io, &agent, sock, .{});
 }
 
+/// Build the `sinete-<name>` enclave label for `arg_name`, rejecting a name so long that the
+/// backend's 128-byte label buffer would truncate it (which would orphan the key: export/remove
+/// rebuild the full name and could never match the truncated enumerated comment).
+fn keyLabel(buf: []u8) ![:0]const u8 {
+    const max = 120; // 128-byte label buffer (incl NUL) minus the "sinete-" prefix
+    if (arg_name.len > max) {
+        var e: [96]u8 = undefined;
+        try stderrWrite(try std.fmt.bufPrint(&e, "error: name too long (max {d} bytes)\n", .{max}));
+        std.process.exit(2);
+    }
+    return std.fmt.bufPrintZ(buf, "sinete-{s}", .{arg_name});
+}
+
 fn cmdGenerate() !void {
     if (builtin.os.tag == .macos) {
-        var lbl_buf: [160]u8 = undefined;
-        const label = try std.fmt.bufPrintZ(&lbl_buf, "sinete-{s}", .{arg_name});
+        var lbl_buf: [128]u8 = undefined;
+        const label = try keyLabel(&lbl_buf);
         var be = darwin.Darwin{};
         var point: [65]u8 = undefined;
         try be.generate(label, &point);
@@ -163,8 +176,8 @@ fn cmdExport() !void {
         var be = darwin.Darwin{};
         var arena = std.heap.ArenaAllocator.init(g_gpa);
         defer arena.deinit();
-        var want_buf: [160]u8 = undefined;
-        const want = try std.fmt.bufPrint(&want_buf, "sinete-{s}", .{arg_name});
+        var want_buf: [128]u8 = undefined;
+        const want = try keyLabel(&want_buf);
         const keys = try be.processor().enumerate(arena.allocator());
         for (keys) |k| {
             if (std.mem.eql(u8, k.comment, want)) return printAuthKeys(k.blob, k.comment);
@@ -178,8 +191,8 @@ fn cmdRemove() !void {
         var be = darwin.Darwin{};
         var arena = std.heap.ArenaAllocator.init(g_gpa);
         defer arena.deinit();
-        var want_buf: [160]u8 = undefined;
-        const want = try std.fmt.bufPrint(&want_buf, "sinete-{s}", .{arg_name});
+        var want_buf: [128]u8 = undefined;
+        const want = try keyLabel(&want_buf);
         const keys = try be.processor().enumerate(arena.allocator());
         for (keys) |k| {
             if (!std.mem.eql(u8, k.comment, want)) continue;

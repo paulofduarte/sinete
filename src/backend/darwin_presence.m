@@ -28,6 +28,7 @@ int sinete_authenticate(const char *reason, char **err) {
                                        : "presence policy unavailable";
                 *err = strdup(m);
             }
+            [ctx release]; // MRC (compiled without ARC): alloc/init must be balanced
             return 0;
         }
 
@@ -60,6 +61,7 @@ int sinete_authenticate(const char *reason, char **err) {
             CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, true);
         }
         dispatch_release(sem);
+        [ctx release]; // MRC: release the alloc/init context now the reply has completed
 
         if (!ok) {
             if (err) *err = errmsg ? errmsg : strdup("user presence was not verified");
