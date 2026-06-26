@@ -32,6 +32,11 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, agent: *sinete.Agent, sock_path
     defer server.socket.close(io);
     defer std.Io.Dir.cwd().deleteFile(io, sock_path) catch {}; // our own socket; safe to remove
 
+    // Harden the socket to owner-only (0600). An ssh-agent socket must not be connectable by other
+    // local users, who could otherwise inject signing requests; the OS default leaves it world-wide.
+    // Chmod by path (fchmodat): fchmod on a socket fd is rejected with EINVAL on BSD/macOS.
+    try std.Io.Dir.cwd().setFilePermissions(io, sock_path, @enumFromInt(0o600), .{ .follow_symlinks = false });
+
     var loop = try xev.Loop.init(.{});
     defer loop.deinit();
 

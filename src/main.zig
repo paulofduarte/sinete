@@ -57,6 +57,10 @@ fn runAgent(init: std.process.Init) !void {
             }
             sock_override = args[i + 1];
             i += 1;
+        } else {
+            var ubuf: [std.fs.max_path_bytes + 64]u8 = undefined;
+            try err(init, try std.fmt.bufPrint(&ubuf, "error: unknown argument '{s}' (usage: sinete agent [--sock PATH])\n", .{args[i]}));
+            std.process.exit(2);
         }
     }
 

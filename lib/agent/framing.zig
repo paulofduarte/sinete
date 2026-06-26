@@ -46,6 +46,7 @@ pub fn processOne(
     server.respond(agent, in[4..total], arena, now_ms, body) catch return .close;
 
     frame_out.reset();
+    if (body.bytes().len > std.math.maxInt(u32)) return .close; // response too large to frame; fail closed
     frame_out.u32be(@intCast(body.bytes().len)) catch return .close;
     frame_out.raw(body.bytes()) catch return .close;
     return .{ .replied = total };
