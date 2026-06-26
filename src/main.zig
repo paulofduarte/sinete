@@ -203,19 +203,24 @@ fn validNameChars(name: []const u8) bool {
 /// The Linux TPM key directory ($XDG_DATA_HOME/sinete/keys, else ~/.local/share/sinete/keys),
 /// written into `buf`.
 fn linuxKeyDir(buf: []u8) ![]const u8 {
-    // An empty XDG_DATA_HOME counts as unset (per the XDG spec), so we don't build "/sinete/keys"
-    // under the filesystem root.
-    if (g_env.get("XDG_DATA_HOME")) |x| {
-        if (x.len > 0) return std.fmt.bufPrint(buf, "{s}/sinete/keys", .{x});
-    }
-    const home = g_env.get("HOME") orelse return error.NoHomeDir;
+    // envValue treats an empty value as unset for both, so neither XDG_DATA_HOME= nor HOME= builds a
+    // path off the filesystem root.
+    if (envValue("XDG_DATA_HOME")) |x| return std.fmt.bufPrint(buf, "{s}/sinete/keys", .{x});
+    const home = envValue("HOME") orelse return error.NoHomeDir;
     return std.fmt.bufPrint(buf, "{s}/.local/share/sinete/keys", .{home});
+}
+
+/// An environment variable's value, treating an empty string as unset (matches the XDG convention and
+/// avoids building a path off "" -- e.g. an empty SINETE_TPM must not select an empty socket path).
+fn envValue(name: []const u8) ?[]const u8 {
+    const v = g_env.get(name) orelse return null;
+    return if (v.len > 0) v else null;
 }
 
 /// Build the Linux TPM backend over `keydir` and the device (SINETE_TPM swtpm socket, else
 /// /dev/tpmrm0). `keydir` must outlive the returned value.
 fn linuxBackend(keydir: []const u8) linux.Linux {
-    const sock = g_env.get("SINETE_TPM");
+    const sock = envValue("SINETE_TPM"); // empty -> unset: fall back to the kernel device
     return .{
         .io = g_io,
         .gpa = g_gpa,
@@ -244,7 +249,14 @@ fn cmdGenerate() !void {
         if (!validName(name)) try invalidName();
         var kbuf: [std.fs.max_path_bytes]u8 = undefined;
         var be = linuxBackend(try linuxKeyDir(&kbuf));
-        var point = try be.generate(name);
+        var point = be.generate(name) catch |e| switch (e) {
+            error.KeyExists => {
+                var m: [192]u8 = undefined;
+                try stderrWrite(try std.fmt.bufPrint(&m, "error: key '{s}' already exists (remove it first to regenerate)\n", .{name}));
+                std.process.exit(2);
+            },
+            else => return e,
+        };
 
         var arena = std.heap.ArenaAllocator.init(g_gpa);
         defer arena.deinit();
@@ -337,7 +349,7 @@ fn cmdVersion() !void {
 
 fn cmdTpmSelftest() !void {
     if (builtin.os.tag == .linux) {
-        const sock = g_env.get("SINETE_TPM"); // a swtpm unix socket; else the kernel device
+        const sock = envValue("SINETE_TPM"); // a swtpm unix socket (empty -> unset); else the kernel device
         try linux.selftest(g_io, sock orelse "/dev/tpmrm0", sock != null);
     } else {
         try stderrWrite("error: _tpm-selftest is only supported on Linux\n");

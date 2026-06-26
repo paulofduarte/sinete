@@ -50,6 +50,10 @@ docker run --rm --security-opt seccomp=unconfined -v "$repo/zig-out/bin:/host:ro
   test "$(stat -c %a /root/.local/share/sinete/keys/ztest)" = 600
   echo "ok: key dir 0700, key file 0600"
 
+  # generate must never clobber an existing key (exclusive create)
+  if "$B" generate ztest >/dev/null 2>&1; then echo "FAIL: regenerate overwrote a key" >&2; exit 1; fi
+  echo "ok: generate refuses to overwrite an existing key"
+
   "$B" agent --sock /tmp/a.sock >/tmp/a.log 2>&1 &
   sleep 1
   SSH_AUTH_SOCK=/tmp/a.sock ssh-add -l | grep -q "ztest (ECDSA)"

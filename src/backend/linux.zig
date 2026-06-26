@@ -259,8 +259,15 @@ pub const Linux = struct {
         try std.Io.Dir.cwd().setFilePermissions(self.io, self.keydir, @enumFromInt(0o700), .{ .follow_symlinks = false });
         var dir = try std.Io.Dir.cwd().openDir(self.io, self.keydir, .{});
         defer dir.close(self.io);
-        try dir.writeFile(self.io, .{ .sub_path = name, .data = pem });
+        // Exclusive create: never silently overwrite an existing key file. Clobbering a live key would
+        // break that key's auth/signing; the caller must `remove` it first to regenerate under the name.
+        var file = dir.createFile(self.io, name, .{ .exclusive = true }) catch |e| switch (e) {
+            error.PathAlreadyExists => return error.KeyExists,
+            else => return e,
+        };
         errdefer dir.deleteFile(self.io, name) catch {};
+        defer file.close(self.io);
+        try file.writeStreamingAll(self.io, pem);
         try dir.setFilePermissions(self.io, name, @enumFromInt(0o600), .{ .follow_symlinks = false });
         return key.point;
     }
