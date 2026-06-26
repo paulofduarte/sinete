@@ -61,6 +61,13 @@ pub const KeyBlobs = struct {
     }
 };
 
+/// Best-effort flush of a transient TPM object, so primaries and loaded keys do not accumulate on a
+/// raw TPM (swtpm) across operations.
+fn flush(t: *Tpm, handle: u32) void {
+    const c = cmd.flushContext(&t.cmdbuf, handle) catch return;
+    _ = t.transact(c) catch {};
+}
+
 /// CreatePrimary under the owner hierarchy: a deterministic ECC P-256 storage parent. Returns the
 /// transient handle (valid until the TPM is reset). Re-derived per session.
 fn createPrimary(t: *Tpm) !u32 {
@@ -149,7 +156,9 @@ pub const Linux = struct {
         var t = try Tpm.open(self.io, self.tpm_path, self.tpm_is_socket);
         defer t.close();
         const primary = try createPrimary(&t);
+        defer flush(&t, primary);
         const handle = try loadKey(&t, primary, &key);
+        defer flush(&t, handle);
         var digest: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(data, &digest, .{});
         return signDigest(&t, handle, &digest, out);
@@ -191,6 +200,7 @@ pub const Linux = struct {
         var t = try Tpm.open(self.io, self.tpm_path, self.tpm_is_socket);
         defer t.close();
         const primary = try createPrimary(&t);
+        defer flush(&t, primary);
         var key: KeyBlobs = .{};
         try createKey(&t, primary, &key);
 
@@ -228,6 +238,7 @@ pub fn selftest(io: std.Io, path: []const u8, is_socket: bool) !void {
     }.p;
 
     const primary = try createPrimary(&t);
+    defer flush(&t, primary);
     note(out, io, &log_buf, "createPrimary -> handle 0x{x}", .{primary});
 
     var key: KeyBlobs = .{};
@@ -235,6 +246,7 @@ pub fn selftest(io: std.Io, path: []const u8, is_socket: bool) !void {
     note(out, io, &log_buf, "create -> {d}-byte priv, {d}-byte pub, point 0x{x:0>2}...", .{ key.private_len, key.public_len, key.point[1] });
 
     const handle = try loadKey(&t, primary, &key);
+    defer flush(&t, handle);
     note(out, io, &log_buf, "load -> handle 0x{x}", .{handle});
 
     const msg = "sinete z4 tpm selftest";

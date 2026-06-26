@@ -37,6 +37,7 @@ const cc_nv_define_space: u32 = 0x0000012A;
 const cc_nv_increment: u32 = 0x00000134;
 const cc_nv_read: u32 = 0x0000014E;
 const cc_nv_read_public: u32 = 0x00000169;
+const cc_flush_context: u32 = 0x00000165;
 
 // Object attributes (TPMA_OBJECT).
 const attr_fixed_tpm: u32 = 1 << 1;
@@ -227,6 +228,16 @@ pub fn pointFromPublic(public: []const u8, out: *[65]u8) Error!void {
     @memset(out.*[33..65], 0);
     @memcpy(out.*[1 + (32 - x.len) ..][0..x.len], x); // right-align (TPM may drop leading zeros)
     @memcpy(out.*[33 + (32 - y.len) ..][0..y.len], y);
+}
+
+/// Flush a transient object (primary or loaded key) so it does not accumulate in the TPM. The
+/// handle to flush is a parameter (FlushContext takes no handle area and no sessions). Necessary on
+/// a raw TPM like swtpm; the kernel /dev/tpmrm0 resource manager would otherwise virtualize it.
+pub fn flushContext(buf: []u8, handle: u32) wire.Error![]const u8 {
+    var m = try wire.startCommand(buf, wire.st_no_sessions, cc_flush_context);
+    try m.put32(handle);
+    wire.finishCommand(&m);
+    return m.bytes();
 }
 
 // --- NV monotonic counter (the replay epoch) ---
