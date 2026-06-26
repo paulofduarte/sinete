@@ -79,6 +79,7 @@ const Harness = struct {
         h.arena.deinit();
     }
     fn run(h: *Harness, in: []const u8) Outcome {
+        _ = h.arena.reset(.retain_capacity); // mirror the transport: the per-request arena resets each frame
         return processOne(&h.agent, h.arena.allocator(), 1000, in, &h.body, &h.frame);
     }
 };

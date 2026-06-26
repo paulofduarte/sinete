@@ -113,6 +113,10 @@ fn defaultSockPath(io: std.Io, env: *std.process.Environ.Map, buf: []u8) ![]cons
     var dirbuf: [std.fs.max_path_bytes]u8 = undefined;
     const dir = try std.fmt.bufPrint(&dirbuf, "{s}/sinete", .{base});
     std.Io.Dir.cwd().createDirPath(io, dir) catch {}; // best-effort; a real failure surfaces at bind
+    // Keep the agent directory owner-only (0700): on Linux connect() honors the socket path's
+    // permissions, so a private parent dir closes the brief window between bind and the socket's
+    // own chmod during which the socket could otherwise be world-connectable.
+    std.Io.Dir.cwd().setFilePermissions(io, dir, @enumFromInt(0o700), .{ .follow_symlinks = false }) catch {};
     return std.fmt.bufPrint(buf, "{s}/agent.sock", .{dir});
 }
 

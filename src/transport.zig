@@ -9,9 +9,18 @@
 //! Single-threaded by design: it is the seam where Z3's main-thread Touch ID prompt will dispatch.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const xev = @import("xev");
 const sinete = @import("sinete");
 const framing = sinete.framing;
+
+comptime {
+    // The transport is built on a POSIX unix-domain socket (AF_UNIX); Windows would need different
+    // IPC (a named pipe). sinete targets macOS, Linux, and BSDs only, so reject other targets with a
+    // clear message rather than a deep AF_UNIX-unavailable error.
+    if (builtin.os.tag == .windows)
+        @compileError("sinete's agent transport requires a POSIX unix-domain socket; Windows is not a supported target");
+}
 
 /// One whole framed request fits in a 4-byte length + body. The per-connection read buffer grows on
 /// demand from `in_init` up to this cap, so an idle connection doesn't reserve the full max_body.
