@@ -65,6 +65,7 @@ pub const Darwin = struct {
         const out = try arena.alloc(crypto.KeyInfo, count);
         for (buf[0..count], 0..) |k, i| {
             var enc = wire.Encoder.init(arena);
+            defer enc.deinit();
             try ecdsa_key.writePubBlob(&enc, &k.pub_point);
             out[i] = .{
                 .blob = try arena.dupe(u8, enc.bytes()),

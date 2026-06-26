@@ -26,8 +26,9 @@ pub fn writePubBlob(enc: *wire.Encoder, point: []const u8) !void {
 
 /// Return the 65-byte uncompressed point from an ecdsa-sha2-nistp256 public-key blob; the result
 /// is a pointer-to-array (so the length is guaranteed in the type) aliasing `blob`. Rejects a blob
-/// whose type or curve string is wrong, or whose point is not a 65-byte 0x04-prefixed point.
-/// Trailing bytes after the point are ignored, so a key_id need only begin with a well-formed blob.
+/// whose type or curve string is wrong, whose point is not a 65-byte 0x04-prefixed point, or that
+/// has trailing bytes: a key_id must be exactly the advertised blob so its identity (and the
+/// agent's per-key presence window) is unambiguous.
 pub fn pointFromPubBlob(blob: []const u8) !*const [point_len]u8 {
     var dec = wire.Decoder{ .data = blob };
     const t = dec.string() catch return Error.NotEcdsaP256;
@@ -36,6 +37,7 @@ pub fn pointFromPubBlob(blob: []const u8) !*const [point_len]u8 {
     if (!std.mem.eql(u8, c, curve_name)) return Error.NotEcdsaP256;
     const point = dec.string() catch return Error.BadPoint;
     if (point.len != point_len or point[0] != 0x04) return Error.BadPoint;
+    if (!dec.done()) return Error.BadPoint; // reject trailing bytes
     return point[0..point_len];
 }
 
@@ -96,4 +98,13 @@ test "pointFromPubBlob rejects a bad point and a truncated blob" {
     try testing.expectError(Error.BadPoint, pointFromPubBlob(enc.bytes()));
 
     try testing.expectError(Error.NotEcdsaP256, pointFromPubBlob(&[_]u8{ 0, 0, 0 })); // truncated header
+}
+
+test "pointFromPubBlob rejects trailing bytes (key_id must be canonical)" {
+    const point = samplePoint();
+    var enc = wire.Encoder.init(testing.allocator);
+    defer enc.deinit();
+    try writePubBlob(&enc, &point);
+    try enc.byte(0xFF); // one byte past a well-formed blob
+    try testing.expectError(Error.BadPoint, pointFromPubBlob(enc.bytes()));
 }

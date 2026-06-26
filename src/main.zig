@@ -172,6 +172,7 @@ fn cmdGenerate() !void {
         var arena = std.heap.ArenaAllocator.init(g_gpa);
         defer arena.deinit();
         var enc = sinete.wire.Encoder.init(arena.allocator());
+        defer enc.deinit();
         try sinete.ecdsa_key.writePubBlob(&enc, &point);
         try printAuthKeys(enc.bytes(), label);
     } else return macosOnly("generate");
