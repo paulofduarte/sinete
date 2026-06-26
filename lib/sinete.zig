@@ -13,6 +13,8 @@ pub const authz = @import("authz.zig");
 pub const crypto = @import("crypto.zig");
 pub const session = @import("session.zig");
 pub const wire = @import("ssh/wire.zig");
+pub const ecdsa_key = @import("ssh/ecdsa_key.zig");
+pub const ecdsa_sig = @import("ssh/ecdsa_sig.zig");
 pub const agent_proto = @import("ssh/agent_proto.zig");
 pub const window = @import("agent/window.zig");
 pub const agent = @import("agent/core.zig");
@@ -32,6 +34,8 @@ test {
     _ = crypto;
     _ = session;
     _ = wire;
+    _ = ecdsa_key;
+    _ = ecdsa_sig;
     _ = agent_proto;
     _ = window;
     _ = agent;
