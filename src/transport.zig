@@ -30,7 +30,7 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, agent: *sinete.Agent, sock_path
     const ua = try std.Io.net.UnixAddress.init(sock_path);
     const server = try ua.listen(io, .{ .kernel_backlog = opts.backlog });
     defer server.socket.close(io);
-    defer std.Io.Dir.cwd().deleteFile(io, sock_path) catch {}; // our own socket; safe to remove
+    defer removeOwnSocket(io, sock_path); // unlink our socket, but never a non-socket left in its place
 
     // Harden the socket to owner-only (0600). An ssh-agent socket must not be connectable by other
     // local users, who could otherwise inject signing requests; the OS default leaves it world-wide.
@@ -55,6 +55,14 @@ fn clearStaleSocket(io: std.Io, sock_path: []const u8) !void {
     };
     if (st.kind != .unix_domain_socket) return error.SocketPathNotASocket;
     try std.Io.Dir.cwd().deleteFile(io, sock_path);
+}
+
+/// Best-effort unlink of our socket on shutdown. Skips silently if the path is gone or no longer a
+/// socket (something replaced it mid-run), so we never delete a file we did not create.
+fn removeOwnSocket(io: std.Io, sock_path: []const u8) void {
+    const st = std.Io.Dir.cwd().statFile(io, sock_path, .{ .follow_symlinks = false }) catch return;
+    if (st.kind != .unix_domain_socket) return;
+    std.Io.Dir.cwd().deleteFile(io, sock_path) catch {};
 }
 
 const Server = struct {

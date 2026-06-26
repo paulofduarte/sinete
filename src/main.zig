@@ -75,9 +75,15 @@ fn runAgent(init: std.process.Init) !void {
     // A reclaiming allocator for the agent's window cache and the transport's per-connection state.
     // An arena would never free a closed connection's buffers, so repeated connect/disconnect would
     // grow RSS without bound; the process-lifetime arena above is only for argv + the demo blob.
-    var conn_alloc: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = conn_alloc.deinit();
-    const gpa = conn_alloc.allocator();
+    // Leak-detecting DebugAllocator in safe builds, the fast general-purpose smp_allocator in release.
+    var debug_alloc: std.heap.DebugAllocator(.{}) = .init;
+    const gpa, const debug_gpa = switch (builtin.mode) {
+        .Debug, .ReleaseSafe => .{ debug_alloc.allocator(), true },
+        .ReleaseFast, .ReleaseSmall => .{ std.heap.smp_allocator, false },
+    };
+    defer if (debug_gpa) {
+        _ = debug_alloc.deinit();
+    };
 
     var agent = sinete.Agent.init(gpa, cp.processor(), az.authorizer(), .{
         .idle_ms = 300_000, // 5 min idle TTL (moot: the fake authorizer never prompts)
