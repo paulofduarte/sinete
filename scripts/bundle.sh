@@ -32,13 +32,13 @@ contents="$app/Contents"
 fw="$(xcrun --show-sdk-path)/System/Library/Frameworks"
 zig build -Doptimize=ReleaseFast -Dframework-path="$fw"
 
-# Assemble the bundle tree.
+# Assemble the bundle tree. (The login-item launchd plist lands with the SMAppService work; Z3 runs
+# the agent directly, so the bundle needs only the binary, profile, and Info.plist.)
 rm -rf "$app"
-mkdir -p "$contents/MacOS" "$contents/Library/LaunchAgents"
+mkdir -p "$contents/MacOS"
 cp zig-out/bin/sinete "$contents/MacOS/sinete"
 chmod u+w "$contents/MacOS/sinete"
 cp "$profile" "$contents/embedded.provisionprofile"
-cp src/launchd/me.paulofduarte.sinete.agent.plist "$contents/Library/LaunchAgents/"
 
 cat >"$contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
