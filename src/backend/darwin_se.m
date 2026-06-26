@@ -34,7 +34,9 @@ typedef struct {
 // access group) is never advertised, signed with, or deleted through the agent/CLI.
 static int sinete_label_ok(const char *lbl) {
     if (!lbl) return 0;
-    if (strncmp(lbl, SINETE_LABEL_PREFIX, strlen(SINETE_LABEL_PREFIX)) != 0) return 0;
+    size_t plen = strlen(SINETE_LABEL_PREFIX);
+    if (strncmp(lbl, SINETE_LABEL_PREFIX, plen) != 0) return 0;
+    if (lbl[plen] == '\0') return 0; // empty suffix: a nameless "sinete-" key
     if (strcmp(lbl, SINETE_MASTER_LABEL) == 0) return 0;
     return 1;
 }

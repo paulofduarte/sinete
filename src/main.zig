@@ -132,17 +132,21 @@ fn serveAgent(sock: []const u8, cp: sinete.crypto.Cryptoprocessor, az: sinete.au
     try transport.serve(gpa, g_io, &agent, sock, .{});
 }
 
-/// Build the `sinete-<name>` enclave label for `arg_name`, after validating the name. Rejects:
-///   - empty, or longer than 120 bytes (the backend's 128-byte label buffer minus "sinete-"; a
-///     truncated label would orphan the key, since export/remove rebuild the full name);
-///   - the reserved `_master` (its label is excluded from enumeration);
-///   - bytes outside [A-Za-z0-9._@+-], which would break authorized_keys formatting or make a nil
-///     NSString for kSecAttrLabel in the shim (whitespace, NUL, control, non-ASCII).
+/// Strip a leading "sinete-" so a name copy-pasted from `list` (which prints the full label) works
+/// the same as the bare name, instead of becoming "sinete-sinete-...".
+fn bareName() []const u8 {
+    return if (std.mem.startsWith(u8, arg_name, "sinete-")) arg_name["sinete-".len..] else arg_name;
+}
+
+/// Build the `sinete-<name>` enclave label for a new key (the `generate` path only), validating the
+/// name. Rejects: empty, or longer than 120 bytes (the backend's 128-byte label buffer minus
+/// "sinete-"; a longer name would be truncated on enumeration); the reserved `_master` (its label
+/// is hidden from enumeration); and bytes outside [A-Za-z0-9._@+-] (whitespace, NUL, control,
+/// non-ASCII) -- invalid UTF-8 would make a nil kSecAttrLabel in the shim, and the name must be one
+/// unambiguous token since list/export/remove treat it as a single identifier.
 fn keyLabel(buf: []u8) ![:0]const u8 {
     const max = 120;
-    // Accept both the bare name and the full label `list` prints: strip a leading "sinete-" so
-    // copy-pasting a listed name into export/remove doesn't become "sinete-sinete-...".
-    const name = if (std.mem.startsWith(u8, arg_name, "sinete-")) arg_name["sinete-".len..] else arg_name;
+    const name = bareName();
     const ok = name.len > 0 and name.len <= max and
         !std.mem.eql(u8, name, "_master") and validNameChars(name);
     if (!ok) {
@@ -151,6 +155,14 @@ fn keyLabel(buf: []u8) ![:0]const u8 {
         std.process.exit(2);
     }
     return std.fmt.bufPrintZ(buf, "sinete-{s}", .{name});
+}
+
+/// Build the lookup label for export/remove. Unlike keyLabel (create) this does not re-apply the
+/// create-time validation: any enumerated key must be targetable, even one made outside this CLI,
+/// so we only build the comparison string. Returns null only if the name is too long to be a real
+/// label (so it can never match), which the caller reports as not-found.
+fn matchLabel(buf: []u8) ?[]const u8 {
+    return std.fmt.bufPrint(buf, "sinete-{s}", .{bareName()}) catch null;
 }
 
 fn validNameChars(name: []const u8) bool {
@@ -193,8 +205,8 @@ fn cmdExport() !void {
         var be = darwin.Darwin{};
         var arena = std.heap.ArenaAllocator.init(g_gpa);
         defer arena.deinit();
-        var want_buf: [128]u8 = undefined;
-        const want = try keyLabel(&want_buf);
+        var want_buf: [256]u8 = undefined;
+        const want = matchLabel(&want_buf) orelse return notFound(arg_name);
         const keys = try be.processor().enumerate(arena.allocator());
         for (keys) |k| {
             if (std.mem.eql(u8, k.comment, want)) return printAuthKeys(k.blob, k.comment);
@@ -208,8 +220,8 @@ fn cmdRemove() !void {
         var be = darwin.Darwin{};
         var arena = std.heap.ArenaAllocator.init(g_gpa);
         defer arena.deinit();
-        var want_buf: [128]u8 = undefined;
-        const want = try keyLabel(&want_buf);
+        var want_buf: [256]u8 = undefined;
+        const want = matchLabel(&want_buf) orelse return notFound(arg_name);
         const keys = try be.processor().enumerate(arena.allocator());
         for (keys) |k| {
             if (!std.mem.eql(u8, k.comment, want)) continue;
