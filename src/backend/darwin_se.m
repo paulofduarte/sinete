@@ -29,6 +29,16 @@ typedef struct {
     char    label[128];  // kSecAttrLabel, surfaced as the SSH key comment
 } sinete_se_key;
 
+// A label belongs to a sinete data key: it has the "sinete-" prefix and is not the reserved master
+// key. enumerate, sign, and remove all gate on this so the master (and any non-sinete key in the
+// access group) is never advertised, signed with, or deleted through the agent/CLI.
+static int sinete_label_ok(const char *lbl) {
+    if (!lbl) return 0;
+    if (strncmp(lbl, SINETE_LABEL_PREFIX, strlen(SINETE_LABEL_PREFIX)) != 0) return 0;
+    if (strcmp(lbl, SINETE_MASTER_LABEL) == 0) return 0;
+    return 1;
+}
+
 // Base query for sinete's Secure Enclave EC keys. kSecUseDataProtectionKeychain is mandatory on
 // macOS: access-group SE keys live in the data-protection keychain and are otherwise not found.
 static NSMutableDictionary *sinete_base_query(void) {
@@ -57,19 +67,24 @@ static int sinete_copy_point(SecKeyRef priv, uint8_t out[65]) {
     return ok;
 }
 
-// Find the sinete SE private key whose public point equals pub[65]. Returns a retained SecKeyRef
-// (the caller CFRelease's it) or NULL.
+// Find the sinete data key whose public point equals pub[65]. Returns a retained SecKeyRef (the
+// caller CFRelease's it) or NULL. Gates on sinete_label_ok, so signing/removal cannot reach the
+// reserved master key (or any other access-group key) even if a client presents its public blob.
 static SecKeyRef sinete_find_key(const uint8_t pub[65]) {
     NSMutableDictionary *q = sinete_base_query();
     q[(__bridge id)kSecReturnRef] = @YES;
+    q[(__bridge id)kSecReturnAttributes] = @YES;
     q[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitAll;
 
     CFTypeRef result = NULL;
     if (SecItemCopyMatching((__bridge CFDictionaryRef)q, &result) != errSecSuccess) return NULL;
     NSArray *items = (__bridge NSArray *)result;
     SecKeyRef found = NULL;
-    for (id obj in items) {
-        SecKeyRef priv = (__bridge SecKeyRef)obj;
+    for (NSDictionary *item in items) {
+        NSString *label = item[(__bridge id)kSecAttrLabel];
+        if (!sinete_label_ok(label ? [label UTF8String] : NULL)) continue;
+        SecKeyRef priv = (__bridge SecKeyRef)item[(__bridge id)kSecValueRef];
+        if (!priv) continue;
         uint8_t point[65];
         if (sinete_copy_point(priv, point) && memcmp(point, pub, 65) == 0) {
             found = (SecKeyRef)CFRetain(priv);
@@ -100,9 +115,7 @@ int32_t sinete_se_enumerate(sinete_se_key *out, int32_t max) {
             if (n >= max) break;
             NSString *label = item[(__bridge id)kSecAttrLabel];
             const char *lbl = label ? [label UTF8String] : NULL;
-            if (!lbl) continue;
-            if (strncmp(lbl, SINETE_LABEL_PREFIX, strlen(SINETE_LABEL_PREFIX)) != 0) continue;
-            if (strcmp(lbl, SINETE_MASTER_LABEL) == 0) continue;
+            if (!sinete_label_ok(lbl)) continue;
             SecKeyRef priv = (__bridge SecKeyRef)item[(__bridge id)kSecValueRef];
             if (!priv) continue;
             uint8_t point[65];

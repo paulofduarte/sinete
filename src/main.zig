@@ -132,17 +132,30 @@ fn serveAgent(sock: []const u8, cp: sinete.crypto.Cryptoprocessor, az: sinete.au
     try transport.serve(gpa, g_io, &agent, sock, .{});
 }
 
-/// Build the `sinete-<name>` enclave label for `arg_name`, rejecting a name so long that the
-/// backend's 128-byte label buffer would truncate it (which would orphan the key: export/remove
-/// rebuild the full name and could never match the truncated enumerated comment).
+/// Build the `sinete-<name>` enclave label for `arg_name`, after validating the name. Rejects:
+///   - empty, or longer than 120 bytes (the backend's 128-byte label buffer minus "sinete-"; a
+///     truncated label would orphan the key, since export/remove rebuild the full name);
+///   - the reserved `_master` (its label is excluded from enumeration);
+///   - bytes outside [A-Za-z0-9._@+-], which would break authorized_keys formatting or make a nil
+///     NSString for kSecAttrLabel in the shim (whitespace, NUL, control, non-ASCII).
 fn keyLabel(buf: []u8) ![:0]const u8 {
-    const max = 120; // 128-byte label buffer (incl NUL) minus the "sinete-" prefix
-    if (arg_name.len > max) {
-        var e: [96]u8 = undefined;
-        try stderrWrite(try std.fmt.bufPrint(&e, "error: name too long (max {d} bytes)\n", .{max}));
+    const max = 120;
+    const ok = arg_name.len > 0 and arg_name.len <= max and
+        !std.mem.eql(u8, arg_name, "_master") and validNameChars(arg_name);
+    if (!ok) {
+        var e: [160]u8 = undefined;
+        try stderrWrite(try std.fmt.bufPrint(&e, "error: invalid name (1-{d} chars from [A-Za-z0-9._@+-], not '_master')\n", .{max}));
         std.process.exit(2);
     }
     return std.fmt.bufPrintZ(buf, "sinete-{s}", .{arg_name});
+}
+
+fn validNameChars(name: []const u8) bool {
+    for (name) |ch| switch (ch) {
+        'A'...'Z', 'a'...'z', '0'...'9', '.', '_', '@', '+', '-' => {},
+        else => return false,
+    };
+    return true;
 }
 
 fn cmdGenerate() !void {
