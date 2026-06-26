@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Secure Enclave key access requires a registered App ID. The access group
+         defaults to this application-identifier. Reused from the Go sinete bundle so the
+         Zig agent shares the same enclave keys. -->
+    <key>com.apple.application-identifier</key>
+    <string>LDT534J26W.me.paulofduarte.sinete</string>
+    <key>keychain-access-groups</key>
+    <array>
+        <string>LDT534J26W.me.paulofduarte.sinete</string>
+    </array>
+</dict>
+</plist>

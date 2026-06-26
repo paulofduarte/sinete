@@ -5,6 +5,9 @@
 /zig-out/
 /.zig-cache/
 
+# Signed app bundle (scripts/bundle.sh output)
+/dist/
+
 # kcov coverage output
 /kcov-out/
 

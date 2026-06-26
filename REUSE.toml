@@ -14,3 +14,11 @@ path = "devenv.lock"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Paulo Duarte"
 SPDX-License-Identifier = "Apache-2.0"
+
+# Plists/entitlements carry no inline SPDX header so codesign/SMAppService parse them cleanly;
+# the manual checklist is plain Markdown.
+[[annotations]]
+path = ["sinete.entitlements", "src/launchd/me.paulofduarte.sinete.agent.plist", "manual/z3-macos-se.md"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Paulo Duarte"
+SPDX-License-Identifier = "Apache-2.0"
