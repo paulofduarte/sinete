@@ -225,17 +225,18 @@ fn cmdGenerate() !void {
         try sinete.ecdsa_key.writePubBlob(&enc, &point);
         try printAuthKeys(enc.bytes(), label);
     } else if (builtin.os.tag == .linux) {
-        if (!validName(arg_name)) try invalidName();
+        const name = bareName(); // treat a leading "sinete-" as optional, same as macOS
+        if (!validName(name)) try invalidName();
         var kbuf: [std.fs.max_path_bytes]u8 = undefined;
         var be = linuxBackend(try linuxKeyDir(&kbuf));
-        var point = try be.generate(arg_name);
+        var point = try be.generate(name);
 
         var arena = std.heap.ArenaAllocator.init(g_gpa);
         defer arena.deinit();
         var enc = sinete.wire.Encoder.init(arena.allocator());
         defer enc.deinit();
         try sinete.ecdsa_key.writePubBlob(&enc, &point);
-        try printAuthKeys(enc.bytes(), arg_name);
+        try printAuthKeys(enc.bytes(), name);
     } else return noSecureElement("generate");
 }
 
@@ -269,13 +270,14 @@ fn cmdExport() !void {
         }
         try notFound(arg_name);
     } else if (builtin.os.tag == .linux) {
+        const name = bareName(); // a leading "sinete-" is optional, same as macOS
         var kbuf: [std.fs.max_path_bytes]u8 = undefined;
         var be = linuxBackend(try linuxKeyDir(&kbuf));
         var arena = std.heap.ArenaAllocator.init(g_gpa);
         defer arena.deinit();
         const keys = try be.processor().enumerate(arena.allocator());
         for (keys) |k| {
-            if (std.mem.eql(u8, k.comment, arg_name)) return printAuthKeys(k.blob, k.comment);
+            if (std.mem.eql(u8, k.comment, name)) return printAuthKeys(k.blob, k.comment);
         }
         try notFound(arg_name);
     } else return noSecureElement("export");
@@ -298,6 +300,7 @@ fn cmdRemove() !void {
         }
         try notFound(arg_name);
     } else if (builtin.os.tag == .linux) {
+        const name = bareName(); // a leading "sinete-" is optional, same as macOS
         var kbuf: [std.fs.max_path_bytes]u8 = undefined;
         var be = linuxBackend(try linuxKeyDir(&kbuf));
         var arena = std.heap.ArenaAllocator.init(g_gpa);
@@ -306,10 +309,10 @@ fn cmdRemove() !void {
         // directly (a raw "../x" would otherwise escape the key directory). Mirrors export/macOS.
         const keys = try be.processor().enumerate(arena.allocator());
         for (keys) |k| {
-            if (!std.mem.eql(u8, k.comment, arg_name)) continue;
+            if (!std.mem.eql(u8, k.comment, name)) continue;
             try be.remove(k.comment);
             var msg: [192]u8 = undefined;
-            return stdoutWrite(try std.fmt.bufPrint(&msg, "removed {s}\n", .{arg_name}));
+            return stdoutWrite(try std.fmt.bufPrint(&msg, "removed {s}\n", .{name}));
         }
         try notFound(arg_name);
     } else return noSecureElement("remove");
