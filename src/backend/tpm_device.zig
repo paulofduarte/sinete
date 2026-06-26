@@ -11,7 +11,7 @@ const std = @import("std");
 const net = std.Io.net;
 const File = std.Io.File;
 
-pub const Error = error{ TpmClosed, TpmResponseTooBig, TpmResponseTooSmall };
+pub const Error = error{ TpmClosed, TpmResponseTooBig, TpmResponseTooSmall, TpmBufferTooSmall };
 
 pub const Device = struct {
     io: std.Io,
@@ -37,6 +37,7 @@ pub const Device = struct {
     /// the response size). Returns the response slice. A TPM response is bounded, so a few-KB buf
     /// suffices.
     pub fn transact(self: *Device, cmd: []const u8, buf: []u8) ![]const u8 {
+        if (buf.len < 10) return Error.TpmBufferTooSmall; // must hold at least the 10-byte header
         try self.file.writeStreamingAll(self.io, cmd);
         var got: usize = 0;
         // Cap the header read at 10 bytes: never consume past the size field before it is known,

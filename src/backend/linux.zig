@@ -155,9 +155,13 @@ pub const Linux = struct {
         var it = dir.iterate();
         while (try it.next(self.io)) |entry| {
             if (entry.kind != .file) continue;
-            const pem = dir.readFileAlloc(self.io, entry.name, arena, .limited(max_keyfile)) catch continue;
+            // A file racing deletion mid-iteration is fine to skip; AccessDenied/I/O is surfaced.
+            const pem = dir.readFileAlloc(self.io, entry.name, arena, .limited(max_keyfile)) catch |e| switch (e) {
+                error.FileNotFound => continue,
+                else => return e,
+            };
             var scratch: [max_keyfile]u8 = undefined;
-            const blobs = keyfile.decode(pem, &scratch) catch continue;
+            const blobs = keyfile.decode(pem, &scratch) catch continue; // not a valid key file: skip
             var point: [65]u8 = undefined;
             cmd.pointFromPublic(blobs.public, &point) catch continue;
             var enc = wire.Encoder.init(arena);
@@ -204,7 +208,11 @@ pub const Linux = struct {
         var it = dir.iterate();
         while (try it.next(self.io)) |entry| {
             if (entry.kind != .file) continue;
-            const pem = dir.readFileAlloc(self.io, entry.name, self.gpa, .limited(max_keyfile)) catch continue;
+            // A file racing deletion mid-iteration is fine to skip; AccessDenied/I/O is surfaced.
+            const pem = dir.readFileAlloc(self.io, entry.name, self.gpa, .limited(max_keyfile)) catch |e| switch (e) {
+                error.FileNotFound => continue,
+                else => return e,
+            };
             defer self.gpa.free(pem);
             var scratch: [max_keyfile]u8 = undefined;
             const blobs = keyfile.decode(pem, &scratch) catch continue;
