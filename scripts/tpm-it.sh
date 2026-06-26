@@ -57,6 +57,10 @@ docker run --rm --security-opt seccomp=unconfined -v "$repo/zig-out/bin:/host:ro
   ssh-keygen -Y verify -f /tmp/allowed -I ztest@tpm -n test -s /tmp/msg.sig < /tmp/msg | grep -q "Good"
   echo "ok: ssh-keygen -Y sign through the agent verifies"
 
+  # the optional "sinete-" prefix resolves to the bare key name (parity with macOS)
+  "$B" export sinete-ztest | grep -q "ztest"
+  echo "ok: export resolves the optional sinete- prefix"
+
   "$B" remove ztest
   echo "ALL OK"
 '

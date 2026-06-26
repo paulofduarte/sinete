@@ -161,16 +161,27 @@ fn keyLabel(buf: []u8) ![:0]const u8 {
 }
 
 /// Whether `name` is acceptable for a new key: 1-120 bytes, [A-Za-z0-9._@+-] only (a clean
-/// single-token identifier, a safe filename, and a valid SSH comment), and not the reserved
-/// `_master`.
+/// single-token identifier, a safe filename, and a valid SSH comment), not the reserved `_master`,
+/// and not the special path components `.` / `..` (which would name the key directory or its parent).
 fn validName(name: []const u8) bool {
     return name.len > 0 and name.len <= 120 and
-        !std.mem.eql(u8, name, "_master") and validNameChars(name);
+        !std.mem.eql(u8, name, "_master") and
+        !std.mem.eql(u8, name, ".") and !std.mem.eql(u8, name, "..") and
+        validNameChars(name);
 }
 
 fn invalidName() !void {
-    try stderrWrite("error: invalid name (1-120 chars from [A-Za-z0-9._@+-], not '_master')\n");
+    try stderrWrite("error: invalid name (1-120 chars from [A-Za-z0-9._@+-], not '_master', '.' or '..')\n");
     std.process.exit(2);
+}
+
+/// Whether an enumerated key `comment` is the one the user asked for: an exact match, or — when the
+/// argument carries the optional leading "sinete-" — a match on the stripped remainder. Exact-first
+/// keeps a key whose real name literally starts with "sinete-" targetable on Linux.
+fn nameMatches(comment: []const u8, typed: []const u8) bool {
+    if (std.mem.eql(u8, comment, typed)) return true;
+    if (std.mem.startsWith(u8, typed, "sinete-")) return std.mem.eql(u8, comment, typed["sinete-".len..]);
+    return false;
 }
 
 /// Build the lookup label for export/remove. Unlike keyLabel (create) this does not re-apply the
@@ -270,14 +281,13 @@ fn cmdExport() !void {
         }
         try notFound(arg_name);
     } else if (builtin.os.tag == .linux) {
-        const name = bareName(); // a leading "sinete-" is optional, same as macOS
         var kbuf: [std.fs.max_path_bytes]u8 = undefined;
         var be = linuxBackend(try linuxKeyDir(&kbuf));
         var arena = std.heap.ArenaAllocator.init(g_gpa);
         defer arena.deinit();
         const keys = try be.processor().enumerate(arena.allocator());
         for (keys) |k| {
-            if (std.mem.eql(u8, k.comment, name)) return printAuthKeys(k.blob, k.comment);
+            if (nameMatches(k.comment, arg_name)) return printAuthKeys(k.blob, k.comment);
         }
         try notFound(arg_name);
     } else return noSecureElement("export");
@@ -300,7 +310,6 @@ fn cmdRemove() !void {
         }
         try notFound(arg_name);
     } else if (builtin.os.tag == .linux) {
-        const name = bareName(); // a leading "sinete-" is optional, same as macOS
         var kbuf: [std.fs.max_path_bytes]u8 = undefined;
         var be = linuxBackend(try linuxKeyDir(&kbuf));
         var arena = std.heap.ArenaAllocator.init(g_gpa);
@@ -309,10 +318,10 @@ fn cmdRemove() !void {
         // directly (a raw "../x" would otherwise escape the key directory). Mirrors export/macOS.
         const keys = try be.processor().enumerate(arena.allocator());
         for (keys) |k| {
-            if (!std.mem.eql(u8, k.comment, name)) continue;
+            if (!nameMatches(k.comment, arg_name)) continue;
             try be.remove(k.comment);
             var msg: [192]u8 = undefined;
-            return stdoutWrite(try std.fmt.bufPrint(&msg, "removed {s}\n", .{name}));
+            return stdoutWrite(try std.fmt.bufPrint(&msg, "removed {s}\n", .{k.comment}));
         }
         try notFound(arg_name);
     } else return noSecureElement("remove");
