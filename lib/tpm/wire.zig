@@ -58,9 +58,10 @@ pub const Marshal = struct {
         try self.put16(0);
         return at;
     }
-    pub fn endSized(self: *Marshal, at: usize) void {
-        const n: u16 = @intCast(self.pos - (at + 2));
-        std.mem.writeInt(u16, self.buf[at..][0..2], n, .big);
+    pub fn endSized(self: *Marshal, at: usize) Error!void {
+        const n = self.pos - (at + 2);
+        if (n > 0xffff) return Error.NoSpace; // the wrapped region must fit in the u16 size field
+        std.mem.writeInt(u16, self.buf[at..][0..2], @intCast(n), .big);
     }
     pub fn bytes(self: *const Marshal) []const u8 {
         return self.buf[0..self.pos];
@@ -158,7 +159,7 @@ test "marshal primitives: ints, bytes, tpm2b, sized" {
     try m.put2b("hi"); // 00 02 'h' 'i'
     const at = try m.beginSized();
     try m.put16(0x0102);
-    m.endSized(at); // size = 2
+    try m.endSized(at); // size = 2
     try testing.expectEqualSlices(u8, &[_]u8{
         0xAB,
         0xDE,
@@ -198,6 +199,15 @@ test "put2b fails closed for a value too large for its u16 length prefix" {
     var m = Marshal{ .buf = &buf };
     var big: [0x10000]u8 = undefined; // 65536 > 0xffff
     try testing.expectError(Error.NoSpace, m.put2b(&big));
+}
+
+test "endSized fails closed when the wrapped region exceeds u16" {
+    var buf: [0x10003]u8 = undefined;
+    var m = Marshal{ .buf = &buf };
+    const at = try m.beginSized();
+    var body: [0x10000]u8 = undefined; // 65536 wrapped bytes > 0xffff
+    try m.putBytes(&body);
+    try testing.expectError(Error.NoSpace, m.endSized(at));
 }
 
 test "parse a response header and unmarshal params" {

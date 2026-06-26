@@ -105,7 +105,7 @@ pub fn createPrimary(buf: []u8) wire.Error![]const u8 {
     try putEmptySensitive(&m); // inSensitive
     const at = try m.beginSized(); // inPublic: TPM2B_PUBLIC
     try putEccTemplate(&m, true);
-    m.endSized(at);
+    try m.endSized(at);
     try m.put16(0); // outsideInfo: empty TPM2B_DATA
     try m.put32(0); // creationPCR: empty TPML_PCR_SELECTION (count 0)
     wire.finishCommand(&m);
@@ -140,7 +140,7 @@ pub fn create(buf: []u8, parent: u32) wire.Error![]const u8 {
     try putEmptySensitive(&m);
     const at = try m.beginSized(); // inPublic
     try putEccTemplate(&m, false);
-    m.endSized(at);
+    try m.endSized(at);
     try m.put16(0); // outsideInfo
     try m.put32(0); // creationPCR
     wire.finishCommand(&m);
@@ -258,7 +258,7 @@ pub fn nvDefineCounter(buf: []u8, index: u32) wire.Error![]const u8 {
     try m.put32(nv_counter_attrs); // attributes
     try m.put16(0); // authPolicy: empty
     try m.put16(8); // dataSize: a 64-bit counter
-    m.endSized(at);
+    try m.endSized(at);
     wire.finishCommand(&m);
     return m.bytes();
 }
