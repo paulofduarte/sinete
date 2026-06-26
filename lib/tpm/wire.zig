@@ -47,6 +47,7 @@ pub const Marshal = struct {
     }
     /// A TPM2B: a u16 byte count followed by that many bytes.
     pub fn put2b(self: *Marshal, s: []const u8) Error!void {
+        if (s.len > 0xffff) return Error.NoSpace; // a TPM2B length must fit in its u16 prefix
         try self.put16(@intCast(s.len));
         try self.putBytes(s);
     }
@@ -190,6 +191,13 @@ test "marshal fails closed when the buffer overflows" {
     var buf: [3]u8 = undefined;
     var m = Marshal{ .buf = &buf };
     try testing.expectError(Error.NoSpace, m.put32(1));
+}
+
+test "put2b fails closed for a value too large for its u16 length prefix" {
+    var buf: [4]u8 = undefined;
+    var m = Marshal{ .buf = &buf };
+    var big: [0x10000]u8 = undefined; // 65536 > 0xffff
+    try testing.expectError(Error.NoSpace, m.put2b(&big));
 }
 
 test "parse a response header and unmarshal params" {

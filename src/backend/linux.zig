@@ -39,7 +39,12 @@ pub const Tpm = struct {
         var tries: u8 = 0;
         while (true) : (tries += 1) {
             const resp = try self.dev.transact(command, &self.respbuf);
-            if (resp.len >= 10 and tries < 100 and std.mem.readInt(u32, resp[6..10], .big) == rc_retry) continue;
+            if (resp.len >= 10 and tries < 100 and std.mem.readInt(u32, resp[6..10], .big) == rc_retry) {
+                // Back off ~1ms between retries so a busy TPM (or swtpm running its self-test) is not
+                // hammered in a tight CPU-spinning loop; <=100ms total before we give up and return.
+                self.dev.io.sleep(.fromMilliseconds(1), .awake) catch {};
+                continue;
+            }
             return resp;
         }
     }
