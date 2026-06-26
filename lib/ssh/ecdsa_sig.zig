@@ -45,17 +45,30 @@ fn mpintLen(mag: []const u8) u32 {
     return 4 + pad + @as(u32, @intCast(mag.len));
 }
 
-/// Convert a DER ECDSA-Sig-Value into the SSH ecdsa-sha2-nistp256 signature blob, written into
-/// `out`. Returns the blob length (~101 bytes for P-256). out too small -> error.NoSpace.
+/// Convert a DER ECDSA-Sig-Value (SEQUENCE{INTEGER r, INTEGER s}, as a Secure Enclave returns) into
+/// the SSH ecdsa-sha2-nistp256 signature blob, written into `out`. Returns the blob length (~101
+/// bytes for P-256). out too small -> error.NoSpace.
 pub fn derP256ToSshBlob(der: []const u8, out: []u8) Error!usize {
     const seq = try parse(der, 0, 0x30);
     if (seq.end != der.len) return Error.TrailingData;
     const r_el = try parse(seq.content, 0, 0x02);
     const s_el = try parse(seq.content, r_el.end, 0x02);
     if (s_el.end != seq.content.len) return Error.TrailingData;
-    const r = try magnitude(r_el.content);
-    const s = try magnitude(s_el.content);
+    return writeRsBlob(r_el.content, s_el.content, out);
+}
 
+/// Convert a raw ECDSA P-256 signature -- `r` and `s` as big-endian integer octets, as the TPM's
+/// TPMT_SIGNATURE carries them (TPM2B_ECC_PARAMETER) -- into the SSH signature blob, written into
+/// `out`. The octets are canonicalized to mpints (the same path DER values take after parsing).
+pub fn rawRsToSshBlob(r: []const u8, s: []const u8, out: []u8) Error!usize {
+    return writeRsBlob(r, s, out);
+}
+
+/// Write `string("ecdsa-sha2-nistp256") || string(mpint(r) || mpint(s))` into `out` from r and s
+/// integer octets. Shared by the DER and raw conversions.
+fn writeRsBlob(r_octets: []const u8, s_octets: []const u8, out: []u8) Error!usize {
+    const r = try magnitude(r_octets);
+    const s = try magnitude(s_octets);
     var w = Writer{ .buf = out };
     try w.string(ecdsa_key.key_type);
     try w.u32be(mpintLen(r) + mpintLen(s)); // the inner blob is two mpints, of known total length
@@ -218,4 +231,37 @@ test "derP256ToSshBlob: a too-small output buffer fails closed" {
     const der = buildDer(&[_]u8{0x01} ** 32, &[_]u8{0x02} ** 32, &der_buf);
     var tiny: [10]u8 = undefined;
     try testing.expectError(Error.NoSpace, derP256ToSshBlob(der, &tiny));
+}
+
+test "rawRsToSshBlob: 32-byte r,s decode to two mpints" {
+    var r: [32]u8 = undefined;
+    var s: [32]u8 = undefined;
+    for (0..32) |i| {
+        r[i] = @intCast(i + 1); // first byte 0x01, high bit clear
+        s[i] = @intCast(0x7f - i);
+    }
+    var out: [256]u8 = undefined;
+    const n = try rawRsToSshBlob(&r, &s, &out);
+    var dec = wire.Decoder{ .data = out[0..n] };
+    try testing.expectEqualStrings(ecdsa_key.key_type, try dec.string());
+    var idec = wire.Decoder{ .data = try dec.string() };
+    try testing.expectEqualSlices(u8, &r, try idec.string());
+    try testing.expectEqualSlices(u8, &s, try idec.string());
+    try testing.expect(idec.done());
+}
+
+test "rawRsToSshBlob: high-bit-set r pads, leading-zero s strips" {
+    const r = [_]u8{0x80} ++ [_]u8{0x11} ** 31; // top bit set -> mpint gets a 0x00
+    const s = [_]u8{ 0x00, 0x00 } ++ [_]u8{0x22} ** 30; // leading zeros -> stripped to 30 bytes
+    var out: [256]u8 = undefined;
+    const n = try rawRsToSshBlob(&r, &s, &out);
+    var dec = wire.Decoder{ .data = out[0..n] };
+    _ = try dec.string(); // type
+    var idec = wire.Decoder{ .data = try dec.string() };
+    const mr = try idec.string();
+    try testing.expectEqual(@as(usize, 33), mr.len);
+    try testing.expectEqual(@as(u8, 0x00), mr[0]);
+    const ms = try idec.string();
+    try testing.expectEqual(@as(usize, 30), ms.len); // both leading zeros stripped
+    try testing.expectEqual(@as(u8, 0x22), ms[0]);
 }
