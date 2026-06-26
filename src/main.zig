@@ -17,6 +17,7 @@ const transport = @import("transport.zig");
 // the key-management verbs report that they need macOS. Gating the import keeps Linux/CI builds
 // free of the Apple-framework shim.
 const darwin = if (builtin.os.tag == .macos) @import("backend/darwin.zig") else struct {};
+const linux = if (builtin.os.tag == .linux) @import("backend/linux.zig") else struct {};
 
 // zig-cli action callbacks are bare `fn() !void`, so the process context and the parsed argument
 // values live in file scope (the same pattern as zig-cli's own examples).
@@ -52,18 +53,23 @@ pub fn main(init: std.process.Init) !void {
                     }}),
                     .target = .{ .action = .{ .exec = cmdAgent } },
                 },
-                try nameCmd(&r, "generate", "create a Secure Enclave key and print its public key", cmdGenerate),
+                try nameCmd(&r, "generate", "create a hardware-backed key and print its public key", cmdGenerate),
                 .{
                     .name = "list",
-                    .description = .{ .one_line = "list the enclave keys" },
+                    .description = .{ .one_line = "list the hardware-backed keys" },
                     .target = .{ .action = .{ .exec = cmdList } },
                 },
                 try nameCmd(&r, "export", "print a key's public key in authorized_keys form", cmdExport),
-                try nameCmd(&r, "remove", "delete an enclave key", cmdRemove),
+                try nameCmd(&r, "remove", "delete a hardware-backed key", cmdRemove),
                 .{
                     .name = "version",
                     .description = .{ .one_line = "print the version" },
                     .target = .{ .action = .{ .exec = cmdVersion } },
+                },
+                .{
+                    .name = "_tpm-selftest",
+                    .description = .{ .one_line = "diagnostic: exercise the TPM path (Linux; SINETE_TPM=<swtpm sock>)" },
+                    .target = .{ .action = .{ .exec = cmdTpmSelftest } },
                 },
             }) },
         },
@@ -94,6 +100,10 @@ fn cmdAgent() !void {
 
     if (builtin.os.tag == .macos) {
         var be = darwin.Darwin{};
+        try serveAgent(sock, be.processor(), be.authorizer());
+    } else if (builtin.os.tag == .linux) {
+        var kbuf: [std.fs.max_path_bytes]u8 = undefined;
+        var be = linuxBackend(try linuxKeyDir(&kbuf));
         try serveAgent(sock, be.processor(), be.authorizer());
     } else {
         // No secure element: advertise one freshly generated identity so the protocol path works.
@@ -145,16 +155,33 @@ fn bareName() []const u8 {
 /// non-ASCII) -- invalid UTF-8 would make a nil kSecAttrLabel in the shim, and the name must be one
 /// unambiguous token since list/export/remove treat it as a single identifier.
 fn keyLabel(buf: []u8) ![:0]const u8 {
-    const max = 120;
     const name = bareName();
-    const ok = name.len > 0 and name.len <= max and
-        !std.mem.eql(u8, name, "_master") and validNameChars(name);
-    if (!ok) {
-        var e: [160]u8 = undefined;
-        try stderrWrite(try std.fmt.bufPrint(&e, "error: invalid name (1-{d} chars from [A-Za-z0-9._@+-], not '_master')\n", .{max}));
-        std.process.exit(2);
-    }
+    if (!validName(name)) try invalidName();
     return std.fmt.bufPrintZ(buf, "sinete-{s}", .{name});
+}
+
+/// Whether `name` is acceptable for a new key: 1-120 bytes, [A-Za-z0-9._@+-] only (a clean
+/// single-token identifier, a safe filename, and a valid SSH comment), not the reserved `_master`,
+/// and not the special path components `.` / `..` (which would name the key directory or its parent).
+fn validName(name: []const u8) bool {
+    return name.len > 0 and name.len <= 120 and
+        !std.mem.eql(u8, name, "_master") and
+        !std.mem.eql(u8, name, ".") and !std.mem.eql(u8, name, "..") and
+        validNameChars(name);
+}
+
+fn invalidName() !void {
+    try stderrWrite("error: invalid name (1-120 chars from [A-Za-z0-9._@+-], not '_master', '.' or '..')\n");
+    std.process.exit(2);
+}
+
+/// Whether an enumerated key `comment` is the one the user asked for: an exact match, or — when the
+/// argument carries the optional leading "sinete-" — a match on the stripped remainder. Exact-first
+/// keeps a key whose real name literally starts with "sinete-" targetable on Linux.
+fn nameMatches(comment: []const u8, typed: []const u8) bool {
+    if (std.mem.eql(u8, comment, typed)) return true;
+    if (std.mem.startsWith(u8, typed, "sinete-")) return std.mem.eql(u8, comment, typed["sinete-".len..]);
+    return false;
 }
 
 /// Build the lookup label for export/remove. Unlike keyLabel (create) this does not re-apply the
@@ -173,6 +200,36 @@ fn validNameChars(name: []const u8) bool {
     return true;
 }
 
+/// The Linux TPM key directory ($XDG_DATA_HOME/sinete/keys, else ~/.local/share/sinete/keys),
+/// written into `buf`.
+fn linuxKeyDir(buf: []u8) ![]const u8 {
+    // envValue treats an empty value as unset for both, so neither XDG_DATA_HOME= nor HOME= builds a
+    // path off the filesystem root.
+    if (envValue("XDG_DATA_HOME")) |x| return std.fmt.bufPrint(buf, "{s}/sinete/keys", .{x});
+    const home = envValue("HOME") orelse return error.NoHomeDir;
+    return std.fmt.bufPrint(buf, "{s}/.local/share/sinete/keys", .{home});
+}
+
+/// An environment variable's value, treating an empty string as unset (matches the XDG convention and
+/// avoids building a path off "" -- e.g. an empty SINETE_TPM must not select an empty socket path).
+fn envValue(name: []const u8) ?[]const u8 {
+    const v = g_env.get(name) orelse return null;
+    return if (v.len > 0) v else null;
+}
+
+/// Build the Linux TPM backend over `keydir` and the device (SINETE_TPM swtpm socket, else
+/// /dev/tpmrm0). `keydir` must outlive the returned value.
+fn linuxBackend(keydir: []const u8) linux.Linux {
+    const sock = envValue("SINETE_TPM"); // empty -> unset: fall back to the kernel device
+    return .{
+        .io = g_io,
+        .gpa = g_gpa,
+        .keydir = keydir,
+        .tpm_path = sock orelse "/dev/tpmrm0",
+        .tpm_is_socket = sock != null,
+    };
+}
+
 fn cmdGenerate() !void {
     if (builtin.os.tag == .macos) {
         var lbl_buf: [128]u8 = undefined;
@@ -187,7 +244,27 @@ fn cmdGenerate() !void {
         defer enc.deinit();
         try sinete.ecdsa_key.writePubBlob(&enc, &point);
         try printAuthKeys(enc.bytes(), label);
-    } else return macosOnly("generate");
+    } else if (builtin.os.tag == .linux) {
+        const name = bareName(); // treat a leading "sinete-" as optional, same as macOS
+        if (!validName(name)) try invalidName();
+        var kbuf: [std.fs.max_path_bytes]u8 = undefined;
+        var be = linuxBackend(try linuxKeyDir(&kbuf));
+        var point = be.generate(name) catch |e| switch (e) {
+            error.KeyExists => {
+                var m: [192]u8 = undefined;
+                try stderrWrite(try std.fmt.bufPrint(&m, "error: key '{s}' already exists (remove it first to regenerate)\n", .{name}));
+                std.process.exit(2);
+            },
+            else => return e,
+        };
+
+        var arena = std.heap.ArenaAllocator.init(g_gpa);
+        defer arena.deinit();
+        var enc = sinete.wire.Encoder.init(arena.allocator());
+        defer enc.deinit();
+        try sinete.ecdsa_key.writePubBlob(&enc, &point);
+        try printAuthKeys(enc.bytes(), name);
+    } else return noSecureElement("generate");
 }
 
 fn cmdList() !void {
@@ -197,7 +274,14 @@ fn cmdList() !void {
         defer arena.deinit();
         const keys = try be.processor().enumerate(arena.allocator());
         for (keys) |k| try printListEntry(k.blob, k.comment);
-    } else return macosOnly("list");
+    } else if (builtin.os.tag == .linux) {
+        var kbuf: [std.fs.max_path_bytes]u8 = undefined;
+        var be = linuxBackend(try linuxKeyDir(&kbuf));
+        var arena = std.heap.ArenaAllocator.init(g_gpa);
+        defer arena.deinit();
+        const keys = try be.processor().enumerate(arena.allocator());
+        for (keys) |k| try printListEntry(k.blob, k.comment);
+    } else return noSecureElement("list");
 }
 
 fn cmdExport() !void {
@@ -212,7 +296,17 @@ fn cmdExport() !void {
             if (std.mem.eql(u8, k.comment, want)) return printAuthKeys(k.blob, k.comment);
         }
         try notFound(arg_name);
-    } else return macosOnly("export");
+    } else if (builtin.os.tag == .linux) {
+        var kbuf: [std.fs.max_path_bytes]u8 = undefined;
+        var be = linuxBackend(try linuxKeyDir(&kbuf));
+        var arena = std.heap.ArenaAllocator.init(g_gpa);
+        defer arena.deinit();
+        const keys = try be.processor().enumerate(arena.allocator());
+        for (keys) |k| {
+            if (nameMatches(k.comment, arg_name)) return printAuthKeys(k.blob, k.comment);
+        }
+        try notFound(arg_name);
+    } else return noSecureElement("export");
 }
 
 fn cmdRemove() !void {
@@ -231,11 +325,36 @@ fn cmdRemove() !void {
             return stdoutWrite(try std.fmt.bufPrint(&msg, "removed {s}\n", .{want}));
         }
         try notFound(arg_name);
-    } else return macosOnly("remove");
+    } else if (builtin.os.tag == .linux) {
+        var kbuf: [std.fs.max_path_bytes]u8 = undefined;
+        var be = linuxBackend(try linuxKeyDir(&kbuf));
+        var arena = std.heap.ArenaAllocator.init(g_gpa);
+        defer arena.deinit();
+        // Delete by a name that enumeration actually returned, so arg_name is never used as a path
+        // directly (a raw "../x" would otherwise escape the key directory). Mirrors export/macOS.
+        const keys = try be.processor().enumerate(arena.allocator());
+        for (keys) |k| {
+            if (!nameMatches(k.comment, arg_name)) continue;
+            try be.remove(k.comment);
+            var msg: [192]u8 = undefined;
+            return stdoutWrite(try std.fmt.bufPrint(&msg, "removed {s}\n", .{k.comment}));
+        }
+        try notFound(arg_name);
+    } else return noSecureElement("remove");
 }
 
 fn cmdVersion() !void {
     try stdoutWrite("sinete " ++ sinete.version ++ "\n");
+}
+
+fn cmdTpmSelftest() !void {
+    if (builtin.os.tag == .linux) {
+        const sock = envValue("SINETE_TPM"); // a swtpm unix socket (empty -> unset); else the kernel device
+        try linux.selftest(g_io, sock orelse "/dev/tpmrm0", sock != null);
+    } else {
+        try stderrWrite("error: _tpm-selftest is only supported on Linux\n");
+        std.process.exit(2);
+    }
 }
 
 // --- output helpers ---
@@ -271,9 +390,9 @@ fn notFound(name: []const u8) !void {
     std.process.exit(1);
 }
 
-fn macosOnly(verb: []const u8) !void {
+fn noSecureElement(verb: []const u8) !void {
     var buf: [160]u8 = undefined;
-    try stderrWrite(try std.fmt.bufPrint(&buf, "error: '{s}' needs the Secure Enclave and is only supported on macOS\n", .{verb}));
+    try stderrWrite(try std.fmt.bufPrint(&buf, "error: '{s}' needs a secure element (macOS Secure Enclave or Linux TPM)\n", .{verb}));
     std.process.exit(2);
 }
 
