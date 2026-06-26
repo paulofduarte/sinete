@@ -300,9 +300,18 @@ fn cmdRemove() !void {
     } else if (builtin.os.tag == .linux) {
         var kbuf: [std.fs.max_path_bytes]u8 = undefined;
         var be = linuxBackend(try linuxKeyDir(&kbuf));
-        be.remove(arg_name) catch return notFound(arg_name);
-        var msg: [192]u8 = undefined;
-        return stdoutWrite(try std.fmt.bufPrint(&msg, "removed {s}\n", .{arg_name}));
+        var arena = std.heap.ArenaAllocator.init(g_gpa);
+        defer arena.deinit();
+        // Delete by a name that enumeration actually returned, so arg_name is never used as a path
+        // directly (a raw "../x" would otherwise escape the key directory). Mirrors export/macOS.
+        const keys = try be.processor().enumerate(arena.allocator());
+        for (keys) |k| {
+            if (!std.mem.eql(u8, k.comment, arg_name)) continue;
+            try be.remove(k.comment);
+            var msg: [192]u8 = undefined;
+            return stdoutWrite(try std.fmt.bufPrint(&msg, "removed {s}\n", .{arg_name}));
+        }
+        try notFound(arg_name);
     } else return noSecureElement("remove");
 }
 

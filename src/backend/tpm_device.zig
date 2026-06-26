@@ -39,7 +39,9 @@ pub const Device = struct {
     pub fn transact(self: *Device, cmd: []const u8, buf: []u8) ![]const u8 {
         try self.file.writeStreamingAll(self.io, cmd);
         var got: usize = 0;
-        while (got < 10) got += try self.readSome(buf[got..]);
+        // Cap the header read at 10 bytes: never consume past the size field before it is known,
+        // so a stream transport can't fold the start of a following response into this header.
+        while (got < 10) got += try self.readSome(buf[got..10]);
         const size = std.mem.readInt(u32, buf[2..6], .big);
         if (size > buf.len) return Error.TpmResponseTooBig;
         while (got < size) got += try self.readSome(buf[got..size]);
