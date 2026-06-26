@@ -13,8 +13,10 @@ const xev = @import("xev");
 const sinete = @import("sinete");
 const framing = sinete.framing;
 
-/// The connection read buffer holds one whole framed request (4-byte length + body at most).
+/// One whole framed request fits in a 4-byte length + body. The per-connection read buffer grows on
+/// demand from `in_init` up to this cap, so an idle connection doesn't reserve the full max_body.
 const in_cap = 4 + framing.max_body;
+const in_init = 512; // initial per-connection read buffer; typical agent requests fit in one read
 
 pub const Options = struct {
     backlog: u31 = 64,
@@ -69,8 +71,7 @@ const Conn = struct {
     arena: std.heap.ArenaAllocator,
     body: sinete.wire.Encoder, // the response body from respond
     frame: sinete.wire.Encoder, // the framed response (u32 length + body) being written
-    in: [in_cap]u8 = undefined, // accumulates request bytes across partial reads
-    in_len: usize = 0,
+    in: std.ArrayList(u8) = .empty, // request bytes; grows on demand up to in_cap, freed on close
     out_off: usize = 0, // bytes of `frame` already written (partial-write progress)
 };
 
@@ -78,9 +79,11 @@ fn onAccept(srv_opt: ?*Server, loop: *xev.Loop, _: *xev.Completion, r: xev.Accep
     const srv = srv_opt.?;
     const tcp = r catch return .rearm; // accept error: keep listening
     const conn = srv.gpa.create(Conn) catch {
-        // Out of memory: close the just-accepted socket so its fd isn't leaked, and keep listening.
-        tcp.close(loop, &srv.discard_c, void, null, onDiscardClose);
-        return .rearm;
+        // Out of memory: close the just-accepted socket so its fd isn't leaked, then resume
+        // accepting once the close completes (onDiscardClose re-arms). Disarming accept here keeps
+        // discard_c single-use: no second OOM-close can reuse the still-in-flight completion.
+        tcp.close(loop, &srv.discard_c, Server, srv, onDiscardClose);
+        return .disarm;
     };
     conn.* = .{
         .srv = srv,
@@ -101,21 +104,26 @@ fn pump(conn: *Conn) xev.CallbackAction {
     const now: i64 = @intCast(@divFloor(std.Io.Clock.boot.now(conn.srv.io).nanoseconds, 1_000_000));
     _ = conn.arena.reset(.retain_capacity);
 
-    switch (framing.processOne(conn.srv.agent, conn.arena.allocator(), now, conn.in[0..conn.in_len], &conn.body, &conn.frame)) {
+    switch (framing.processOne(conn.srv.agent, conn.arena.allocator(), now, conn.in.items, &conn.body, &conn.frame)) {
         .close => return closeConn(conn),
         .replied => |total| {
             // Carry any pipelined bytes after this request to the front of the buffer.
-            const leftover = conn.in_len - total;
-            if (leftover != 0) std.mem.copyForwards(u8, conn.in[0..leftover], conn.in[total..conn.in_len]);
-            conn.in_len = leftover;
+            const leftover = conn.in.items.len - total;
+            if (leftover != 0) std.mem.copyForwards(u8, conn.in.items[0..leftover], conn.in.items[total..]);
+            conn.in.items.len = leftover;
 
             conn.out_off = 0;
             conn.tcp.write(loop, &conn.c, .{ .slice = conn.frame.bytes() }, Conn, conn, onWrite);
             return .disarm;
         },
         .need_more => {
-            if (conn.in_len >= conn.in.len) return closeConn(conn); // request overran the cap
-            conn.tcp.read(loop, &conn.c, .{ .slice = conn.in[conn.in_len..] }, Conn, conn, onRead);
+            if (conn.in.items.len >= in_cap) return closeConn(conn); // request overran the cap
+            if (conn.in.items.len == conn.in.capacity) { // buffer full: grow toward the cap
+                const next = @min(in_cap, @max(in_init, conn.in.capacity * 2));
+                conn.in.ensureTotalCapacityPrecise(conn.srv.gpa, next) catch return closeConn(conn);
+            }
+            const tail = conn.in.allocatedSlice()[conn.in.items.len..];
+            conn.tcp.read(loop, &conn.c, .{ .slice = tail }, Conn, conn, onRead);
             return .disarm;
         },
     }
@@ -125,7 +133,7 @@ fn onRead(conn_opt: ?*Conn, _: *xev.Loop, _: *xev.Completion, _: xev.TCP, _: xev
     const conn = conn_opt.?;
     const n = r catch return closeConn(conn); // peer reset / error
     if (n == 0) return closeConn(conn); // EOF: peer closed
-    conn.in_len += n;
+    conn.in.items.len += n;
     return pump(conn);
 }
 
@@ -149,6 +157,7 @@ fn closeConn(conn: *Conn) xev.CallbackAction {
 fn onClose(conn_opt: ?*Conn, _: *xev.Loop, _: *xev.Completion, _: xev.TCP, _: xev.CloseError!void) xev.CallbackAction {
     const conn = conn_opt.?;
     const gpa = conn.srv.gpa;
+    conn.in.deinit(gpa);
     conn.frame.deinit();
     conn.body.deinit();
     conn.arena.deinit();
@@ -156,7 +165,10 @@ fn onClose(conn_opt: ?*Conn, _: *xev.Loop, _: *xev.Completion, _: xev.TCP, _: xe
     return .disarm;
 }
 
-/// Close completion for a socket we accepted but couldn't allocate a Conn for: just reclaim the fd.
-fn onDiscardClose(_: ?*void, _: *xev.Loop, _: *xev.Completion, _: xev.TCP, _: xev.CloseError!void) xev.CallbackAction {
+/// Close completion for a socket we accepted but couldn't allocate a Conn for: reclaim the fd, then
+/// resume accepting (onAccept disarmed itself, so discard_c stays single-use until this fires).
+fn onDiscardClose(srv_opt: ?*Server, _: *xev.Loop, _: *xev.Completion, _: xev.TCP, _: xev.CloseError!void) xev.CallbackAction {
+    const srv = srv_opt.?;
+    srv.listener.accept(srv.loop, &srv.accept_c, Server, srv, onAccept);
     return .disarm;
 }
