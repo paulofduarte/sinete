@@ -29,19 +29,45 @@ pub fn build(b: *std.Build) void {
     // OS- and dependency-free so it remains a pure, fake-driven, fully unit-tested core.
     const libxev = b.dependency("libxev", .{ .target = target, .optimize = optimize });
 
+    // zig-cli: command/option/subcommand parsing for the executable's CLI. Exe-only, like libxev,
+    // so lib/sinete stays dependency-free.
+    const zigcli = b.dependency("cli", .{ .target = target, .optimize = optimize });
+
     // the sinete executable: a thin CLI and wiring layer that imports the libsinete module.
-    const exe = b.addExecutable(.{
-        .name = "sinete",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "sinete", .module = lib_mod },
-                .{ .name = "xev", .module = libxev.module("xev") },
-            },
-        }),
+    const exe_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "sinete", .module = lib_mod },
+            .{ .name = "xev", .module = libxev.module("xev") },
+            .{ .name = "cli", .module = zigcli.module("cli") },
+        },
     });
+
+    // macOS: the Secure Enclave + Touch ID backend is an Objective-C shim against Apple frameworks,
+    // compiled into the executable only. The lib module stays framework- and C-free, so the
+    // coverage build (lib_tests) and Linux builds are untouched.
+    if (target.result.os.tag == .macos) {
+        exe_mod.link_libc = true; // the Objective-C runtime + std.c.free
+        exe_mod.addCSourceFiles(.{
+            .files = &.{ "src/backend/darwin_se.m", "src/backend/darwin_presence.m" },
+            .flags = &.{ "-Wall", "-Wextra" },
+        });
+        exe_mod.linkFramework("Security", .{});
+        exe_mod.linkFramework("LocalAuthentication", .{});
+        exe_mod.linkFramework("Foundation", .{});
+        exe_mod.linkFramework("CoreFoundation", .{});
+
+        // CI's macOS runners auto-detect the Xcode SDK, so frameworks resolve with no extra path.
+        // A bare `nix-shell -p zig` does not, so allow pointing at the SDK frameworks explicitly,
+        // e.g. -Dframework-path="$(xcrun --show-sdk-path)/System/Library/Frameworks". Default: none.
+        if (b.option([]const u8, "framework-path", "Extra framework search dir for SDK-less shells")) |fw| {
+            exe_mod.addSystemFrameworkPath(.{ .cwd_relative = fw });
+        }
+    }
+
+    const exe = b.addExecutable(.{ .name = "sinete", .root_module = exe_mod });
     b.installArtifact(exe);
 
     const run = b.addRunArtifact(exe);
