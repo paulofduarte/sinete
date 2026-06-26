@@ -84,6 +84,11 @@ fn flush(t: *Tpm, handle: u32) void {
     _ = t.transact(c) catch {};
 }
 
+/// Set the process umask, returning the previous value (raw Linux syscall; this file is linux-only).
+fn osUmask(mode: std.posix.mode_t) std.posix.mode_t {
+    return @intCast(std.os.linux.syscall1(.umask, mode));
+}
+
 /// CreatePrimary under the owner hierarchy: a deterministic ECC P-256 storage parent. Returns the
 /// transient handle (valid until the TPM is reset). Re-derived per session.
 fn createPrimary(t: *Tpm) !u32 {
@@ -226,12 +231,20 @@ pub const Linux = struct {
 
         var pem_buf: [max_keyfile]u8 = undefined;
         const pem = try keyfile.encode(&pem_buf, key.pub_blob(), key.priv());
+
+        // Owner-only from birth: a restrictive umask means the directory and key file are never even
+        // momentarily group/world-readable (the file holds TPM-wrapped private material). Restored on
+        // every path; the CLI generate flow is single-threaded. The explicit chmods below still pin the
+        // mode regardless of the inherited umask, and on a failed lock-down the file is removed rather
+        // than left behind with default permissions.
+        const old_umask = osUmask(0o077);
+        defer _ = osUmask(old_umask);
         std.Io.Dir.cwd().createDirPath(self.io, self.keydir) catch {};
-        // Owner-only: the directory lists key names and each file holds TPM-wrapped private material.
         std.Io.Dir.cwd().setFilePermissions(self.io, self.keydir, @enumFromInt(0o700), .{ .follow_symlinks = false }) catch {};
         var dir = try std.Io.Dir.cwd().openDir(self.io, self.keydir, .{});
         defer dir.close(self.io);
         try dir.writeFile(self.io, .{ .sub_path = name, .data = pem });
+        errdefer dir.deleteFile(self.io, name) catch {};
         try dir.setFilePermissions(self.io, name, @enumFromInt(0o600), .{ .follow_symlinks = false });
         return key.point;
     }

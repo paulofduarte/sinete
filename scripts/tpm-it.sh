@@ -45,6 +45,11 @@ docker run --rm --security-opt seccomp=unconfined -v "$repo/zig-out/bin:/host:ro
   "$B" list | grep -q "ztest (ECDSA)"
   echo "ok: generate + list"
 
+  # the key file holds TPM-wrapped private material: directory 0700, file 0600
+  test "$(stat -c %a /root/.local/share/sinete/keys)" = 700
+  test "$(stat -c %a /root/.local/share/sinete/keys/ztest)" = 600
+  echo "ok: key dir 0700, key file 0600"
+
   "$B" agent --sock /tmp/a.sock >/tmp/a.log 2>&1 &
   sleep 1
   SSH_AUTH_SOCK=/tmp/a.sock ssh-add -l | grep -q "ztest (ECDSA)"
