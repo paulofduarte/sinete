@@ -44,9 +44,9 @@ pub fn main(init: std.process.Init) !void {
 /// Run the agent loop: a fake-backed `Agent` served over the libxev unix-socket transport. The
 /// fake advertises one real ecdsa-sha2-nistp256 identity, so a client's `ssh-add -l` lists it.
 fn runAgent(init: std.process.Init) !void {
-    const gpa = init.arena.allocator(); // process-lifetime arena: the agent runs until killed
+    const arena = init.arena.allocator(); // process-lifetime: argv + the demo key blob
 
-    const args = try init.minimal.args.toSlice(gpa);
+    const args = try init.minimal.args.toSlice(arena);
     var sock_override: ?[]const u8 = null;
     var i: usize = 2;
     while (i < args.len) : (i += 1) {
@@ -63,10 +63,18 @@ fn runAgent(init: std.process.Init) !void {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const sock = sock_override orelse try defaultSockPath(init.io, init.environ_map, &path_buf);
 
-    const blob = try demoEcdsaBlob(init.io, gpa);
+    const blob = try demoEcdsaBlob(init.io, arena);
     const keys = [_]sinete.crypto.KeyInfo{.{ .blob = blob, .comment = "sinete demo (z2 fake)" }};
     var cp = sinete.crypto.Fake{ .keys = &keys };
     var az = sinete.authz.Fake{};
+
+    // A reclaiming allocator for the agent's window cache and the transport's per-connection state.
+    // An arena would never free a closed connection's buffers, so repeated connect/disconnect would
+    // grow RSS without bound; the process-lifetime arena above is only for argv + the demo blob.
+    var conn_alloc: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = conn_alloc.deinit();
+    const gpa = conn_alloc.allocator();
+
     var agent = sinete.Agent.init(gpa, cp.processor(), az.authorizer(), .{
         .idle_ms = 300_000, // 5 min idle TTL (moot: the fake authorizer never prompts)
         .max_ms = 3_600_000, // 1 h absolute cap

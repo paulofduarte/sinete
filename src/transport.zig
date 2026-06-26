@@ -20,14 +20,15 @@ pub const Options = struct {
     backlog: u31 = 64,
 };
 
-/// Serve the ssh-agent protocol on an AF_UNIX socket at `sock_path` until the loop ends. Any stale
-/// socket file at the path is removed first; the socket is unlinked on return. Blocks the caller.
+/// Serve the ssh-agent protocol on an AF_UNIX socket at `sock_path` until the loop ends. A stale
+/// socket left at the path is removed first (but a non-socket file there is refused, not deleted);
+/// the socket is unlinked on return. Blocks the caller.
 pub fn serve(gpa: std.mem.Allocator, io: std.Io, agent: *sinete.Agent, sock_path: []const u8, opts: Options) !void {
-    std.Io.Dir.cwd().deleteFile(io, sock_path) catch {}; // clear a stale socket file from a previous run
+    try clearStaleSocket(io, sock_path);
     const ua = try std.Io.net.UnixAddress.init(sock_path);
     const server = try ua.listen(io, .{ .kernel_backlog = opts.backlog });
     defer server.socket.close(io);
-    defer std.Io.Dir.cwd().deleteFile(io, sock_path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(io, sock_path) catch {}; // our own socket; safe to remove
 
     var loop = try xev.Loop.init(.{});
     defer loop.deinit();
@@ -38,6 +39,17 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, agent: *sinete.Agent, sock_path
     try loop.run(.until_done);
 }
 
+/// Remove a stale socket left by a previous run. Refuses to touch a path that exists but is not a
+/// socket, so a mistyped `--sock` pointing at a regular file (or a symlink) is reported, not deleted.
+fn clearStaleSocket(io: std.Io, sock_path: []const u8) !void {
+    const st = std.Io.Dir.cwd().statFile(io, sock_path, .{ .follow_symlinks = false }) catch |e| switch (e) {
+        error.FileNotFound => return, // nothing in the way
+        else => return e,
+    };
+    if (st.kind != .unix_domain_socket) return error.SocketPathNotASocket;
+    try std.Io.Dir.cwd().deleteFile(io, sock_path);
+}
+
 const Server = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -45,6 +57,7 @@ const Server = struct {
     agent: *sinete.Agent,
     listener: xev.TCP,
     accept_c: xev.Completion = undefined,
+    discard_c: xev.Completion = undefined, // closes a socket accepted when we couldn't allocate its Conn
 };
 
 /// Per-connection state. Heap-allocated on accept, freed on close; it outlives every callback. One
@@ -61,10 +74,14 @@ const Conn = struct {
     out_off: usize = 0, // bytes of `frame` already written (partial-write progress)
 };
 
-fn onAccept(srv_opt: ?*Server, _: *xev.Loop, _: *xev.Completion, r: xev.AcceptError!xev.TCP) xev.CallbackAction {
+fn onAccept(srv_opt: ?*Server, loop: *xev.Loop, _: *xev.Completion, r: xev.AcceptError!xev.TCP) xev.CallbackAction {
     const srv = srv_opt.?;
     const tcp = r catch return .rearm; // accept error: keep listening
-    const conn = srv.gpa.create(Conn) catch return .rearm; // backpressure: drop, keep listening
+    const conn = srv.gpa.create(Conn) catch {
+        // Out of memory: close the just-accepted socket so its fd isn't leaked, and keep listening.
+        tcp.close(loop, &srv.discard_c, void, null, onDiscardClose);
+        return .rearm;
+    };
     conn.* = .{
         .srv = srv,
         .tcp = tcp,
@@ -136,5 +153,10 @@ fn onClose(conn_opt: ?*Conn, _: *xev.Loop, _: *xev.Completion, _: xev.TCP, _: xe
     conn.body.deinit();
     conn.arena.deinit();
     gpa.destroy(conn);
+    return .disarm;
+}
+
+/// Close completion for a socket we accepted but couldn't allocate a Conn for: just reclaim the fd.
+fn onDiscardClose(_: ?*void, _: *xev.Loop, _: *xev.Completion, _: xev.TCP, _: xev.CloseError!void) xev.CallbackAction {
     return .disarm;
 }
