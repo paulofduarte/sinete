@@ -53,14 +53,14 @@ pub fn main(init: std.process.Init) !void {
                     }}),
                     .target = .{ .action = .{ .exec = cmdAgent } },
                 },
-                try nameCmd(&r, "generate", "create a Secure Enclave key and print its public key", cmdGenerate),
+                try nameCmd(&r, "generate", "create a hardware-backed key and print its public key", cmdGenerate),
                 .{
                     .name = "list",
-                    .description = .{ .one_line = "list the enclave keys" },
+                    .description = .{ .one_line = "list the hardware-backed keys" },
                     .target = .{ .action = .{ .exec = cmdList } },
                 },
                 try nameCmd(&r, "export", "print a key's public key in authorized_keys form", cmdExport),
-                try nameCmd(&r, "remove", "delete an enclave key", cmdRemove),
+                try nameCmd(&r, "remove", "delete a hardware-backed key", cmdRemove),
                 .{
                     .name = "version",
                     .description = .{ .one_line = "print the version" },
@@ -203,7 +203,11 @@ fn validNameChars(name: []const u8) bool {
 /// The Linux TPM key directory ($XDG_DATA_HOME/sinete/keys, else ~/.local/share/sinete/keys),
 /// written into `buf`.
 fn linuxKeyDir(buf: []u8) ![]const u8 {
-    if (g_env.get("XDG_DATA_HOME")) |x| return std.fmt.bufPrint(buf, "{s}/sinete/keys", .{x});
+    // An empty XDG_DATA_HOME counts as unset (per the XDG spec), so we don't build "/sinete/keys"
+    // under the filesystem root.
+    if (g_env.get("XDG_DATA_HOME")) |x| {
+        if (x.len > 0) return std.fmt.bufPrint(buf, "{s}/sinete/keys", .{x});
+    }
     const home = g_env.get("HOME") orelse return error.NoHomeDir;
     return std.fmt.bufPrint(buf, "{s}/.local/share/sinete/keys", .{home});
 }
