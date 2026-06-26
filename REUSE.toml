@@ -15,10 +15,9 @@ precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Paulo Duarte"
 SPDX-License-Identifier = "Apache-2.0"
 
-# The entitlements plist carries no inline SPDX header so codesign parses it cleanly; the manual
-# checklist is plain Markdown.
+# The manual checklist is plain Markdown.
 [[annotations]]
-path = ["sinete.entitlements", "manual/z3-macos-se.md"]
+path = "manual/z3-macos-se.md"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Paulo Duarte"
 SPDX-License-Identifier = "Apache-2.0"

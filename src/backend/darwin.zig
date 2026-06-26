@@ -26,7 +26,7 @@ extern fn sinete_se_generate(label: [*:0]const u8, pub_out: [*]u8) i32;
 extern fn sinete_se_remove(point: [*]const u8) i32;
 extern fn sinete_authenticate(reason: [*:0]const u8, err: *?[*:0]u8) c_int;
 
-pub const Error = error{ UnknownKey, MissingEntitlement, PresenceDeclined, BackendError };
+pub const Error = error{ UnknownKey, MissingEntitlement, PresenceDeclined, PresenceUnavailable, BackendError };
 
 /// The most keys we read in one enumeration. A personal agent holds a handful; extra keys beyond
 /// this are simply not advertised (the shim stops at `max`).
@@ -90,9 +90,11 @@ pub const Darwin = struct {
         var rbuf: [256]u8 = undefined;
         const r: [:0]const u8 = std.fmt.bufPrintZ(&rbuf, "{s}", .{reason}) catch "authenticate to use a sinete key";
         var err_msg: ?[*:0]u8 = null;
-        if (sinete_authenticate(r.ptr, &err_msg) == 1) return;
+        const rc = sinete_authenticate(r.ptr, &err_msg);
         if (err_msg) |m| std.c.free(m);
-        return Error.PresenceDeclined;
+        if (rc == 1) return;
+        // 0 = user declined/canceled; anything else (-1) = the policy can't be evaluated at all.
+        return if (rc == 0) Error.PresenceDeclined else Error.PresenceUnavailable;
     }
 
     /// Create a new presence-less Secure Enclave key, writing its uncompressed point to point_out.

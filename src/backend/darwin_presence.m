@@ -14,8 +14,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Returns 1 on a verified presence, 0 otherwise. On failure, when err is non-NULL it receives a
-// malloc'd, NUL-terminated message the caller must free.
+// Returns 1 on a verified presence, 0 when the user declined/canceled, and -1 when the policy
+// cannot be evaluated at all (e.g. no Touch ID/passcode configured) -- a distinct "unavailable"
+// outcome so callers can tell a refusal from a system that can't authenticate. On a non-success
+// result, when err is non-NULL it receives a malloc'd, NUL-terminated message the caller must free.
 int sinete_authenticate(const char *reason, char **err) {
     @autoreleasepool {
         LAContext *ctx = [[LAContext alloc] init];
@@ -29,7 +31,7 @@ int sinete_authenticate(const char *reason, char **err) {
                 *err = strdup(m);
             }
             [ctx release]; // MRC (compiled without ARC): alloc/init must be balanced
-            return 0;
+            return -1;     // policy unavailable, distinct from a user decline
         }
 
         dispatch_semaphore_t sem = dispatch_semaphore_create(0);

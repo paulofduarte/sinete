@@ -4,8 +4,10 @@ The Secure Enclave and Touch ID paths cannot run in CI (no enclave, no signed bu
 Objective-C shims (`src/backend/darwin_se.m`, `src/backend/darwin_presence.m`) and the agent's real
 sign path are verified by this checklist on an Apple-silicon Mac with Touch ID.
 
-Prerequisites: an Apple Development signing identity, a provisioning profile for App ID
-`me.paulofduarte.sinete` on this device, and `sinete.entitlements` (in the repo root).
+Prerequisites: an Apple Development signing identity and a provisioning profile for App ID
+`me.paulofduarte.sinete` on this device. `scripts/bundle.sh` generates the entitlements from
+`SINETE_TEAM` / `SINETE_BUNDLE_ID` (defaulting to this project's), so a fork signs with its own
+team via those env vars, no tracked-file edits.
 
 ## Build + sign the bundle
 
