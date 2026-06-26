@@ -64,12 +64,14 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, agent: *sinete.Agent, sock_path
     try loop.run(.until_done);
 }
 
-/// Set the process umask, returning the previous value. No libc dependency: Linux issues the raw
-/// syscall; Darwin/BSD go through libSystem, which a Zig binary always links there.
+/// Set the process umask, returning the previous value. Linux issues the raw syscall (no libc);
+/// macOS uses libSystem (std.c.umask), which every Darwin binary always links, so it adds no new
+/// dependency. The BSD follow-up (Z9) will add its own branch and may need linkLibC for this call.
 fn osUmask(mode: std.posix.mode_t) std.posix.mode_t {
     return switch (builtin.os.tag) {
         .linux => @intCast(std.os.linux.syscall1(.umask, mode)),
-        else => @intCast(std.c.umask(@intCast(mode))),
+        .macos => @intCast(std.c.umask(@intCast(mode))),
+        else => @compileError("osUmask: no umask path for this target"),
     };
 }
 

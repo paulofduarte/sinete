@@ -97,9 +97,10 @@ fn runAgent(init: std.process.Init) !void {
     try transport.serve(gpa, init.io, &agent, sock, .{});
 }
 
-/// Per-OS default socket path, creating its parent directory. macOS: ~/Library/Caches/sinete;
-/// Linux/BSD: $XDG_RUNTIME_DIR/sinete, falling back to ~/.cache/sinete. The result is written into
-/// `buf`; the socket file itself is created by the transport.
+/// Per-OS default socket path (creating its parent directory). macOS:
+/// ~/Library/Caches/sinete/agent.sock; Linux/BSD: $XDG_RUNTIME_DIR/sinete/agent.sock, falling back
+/// to ~/.cache/sinete/agent.sock. The result is written into `buf`; the socket file itself is
+/// created by the transport.
 fn defaultSockPath(io: std.Io, env: *std.process.Environ.Map, buf: []u8) ![]const u8 {
     const home = env.get("HOME");
     var basebuf: [std.fs.max_path_bytes]u8 = undefined;
@@ -113,9 +114,9 @@ fn defaultSockPath(io: std.Io, env: *std.process.Environ.Map, buf: []u8) ![]cons
     var dirbuf: [std.fs.max_path_bytes]u8 = undefined;
     const dir = try std.fmt.bufPrint(&dirbuf, "{s}/sinete", .{base});
     std.Io.Dir.cwd().createDirPath(io, dir) catch {}; // best-effort; a real failure surfaces at bind
-    // Keep the agent directory owner-only (0700): on Linux connect() honors the socket path's
-    // permissions, so a private parent dir closes the brief window between bind and the socket's
-    // own chmod during which the socket could otherwise be world-connectable.
+    // Keep the agent directory owner-only (0700) as defense in depth. The socket itself is already
+    // created 0600 (umask around bind, plus an explicit chmod, in the transport); a private parent
+    // dir additionally stops other local users from listing or replacing the socket path.
     std.Io.Dir.cwd().setFilePermissions(io, dir, @enumFromInt(0o700), .{ .follow_symlinks = false }) catch {};
     return std.fmt.bufPrint(buf, "{s}/agent.sock", .{dir});
 }
