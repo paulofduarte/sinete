@@ -119,8 +119,9 @@ fn paramsAfterHandles(resp: []const u8, handles: usize) Error!struct { handles: 
     if (r.code != 0) return Error.TpmError;
     var u = wire.Unmarshal{ .data = r.params };
     const h = try u.getBytes(handles * 4);
-    _ = try u.get32(); // parameterSize
-    return .{ .handles = h, .u = u };
+    const psize = try u.get32(); // parameterSize: the parameter area length, excluding the auth area
+    const params = try u.getBytes(psize); // bound the parser so it can't read into the trailing auth area
+    return .{ .handles = h, .u = wire.Unmarshal{ .data = params } };
 }
 
 /// The object handle returned by CreatePrimary (the transient primary). Other returned fields
@@ -354,14 +355,14 @@ test "createPrimary command header + handle + auth" {
 }
 
 test "signResult parses r,s and rejects non-ECDSA" {
-    // params: parameterSize(4)=... then TPMT_SIGNATURE: ECDSA, SHA256, r(2 bytes), s(2 bytes)
-    const params = [_]u8{ 0, 0, 0, 0x0A, 0x00, 0x18, 0x00, 0x0B, 0x00, 0x02, 0xAA, 0xBB, 0x00, 0x02, 0xCC, 0xDD };
+    // params: parameterSize(4)=12 then TPMT_SIGNATURE: ECDSA, SHA256, r(2b), s(2b)
+    const params = [_]u8{ 0, 0, 0, 0x0C, 0x00, 0x18, 0x00, 0x0B, 0x00, 0x02, 0xAA, 0xBB, 0x00, 0x02, 0xCC, 0xDD };
     const resp = [_]u8{ 0x80, 0x02, 0, 0, 0, @intCast(10 + params.len), 0, 0, 0, 0 } ++ params;
     const sig = try signResult(&resp);
     try testing.expectEqualSlices(u8, &[_]u8{ 0xAA, 0xBB }, sig.r);
     try testing.expectEqualSlices(u8, &[_]u8{ 0xCC, 0xDD }, sig.s);
 
-    const bad = [_]u8{ 0x80, 0x02, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 4, 0x00, 0x16 }; // sigAlg != ECDSA
+    const bad = [_]u8{ 0x80, 0x02, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 2, 0x00, 0x16 }; // parameterSize=2; sigAlg != ECDSA
     try testing.expectError(Error.Unsupported, signResult(&bad));
 }
 
@@ -379,9 +380,19 @@ test "create targets the parent; createKeyBlobs extracts the blobs" {
     try testing.expectEqual(cc_create, try u.get32());
     try testing.expectEqual(@as(u32, 0x80000000), try u.get32()); // parentHandle
 
-    // response params: parameterSize, outPrivate(2b), outPublic(2b)
-    const params = [_]u8{ 0, 0, 0, 0, 0, 2, 'A', 'A', 0, 3, 'B', 'B', 'B' };
+    // response params: parameterSize(4)=9, outPrivate(2b "AA"), outPublic(2b "BBB")
+    const params = [_]u8{ 0, 0, 0, 9, 0, 2, 'A', 'A', 0, 3, 'B', 'B', 'B' };
     const resp = [_]u8{ 0x80, 0x02, 0, 0, 0, @intCast(10 + params.len), 0, 0, 0, 0 } ++ params;
+    const b = try createKeyBlobs(&resp);
+    try testing.expectEqualStrings("AA", b.private);
+    try testing.expectEqualStrings("BBB", b.public);
+}
+
+test "paramsAfterHandles bounds the parser to parameterSize, excluding the auth area" {
+    // 9 parameter bytes (outPrivate "AA" + outPublic "BBB"), then a bogus auth area that must be ignored.
+    const params = [_]u8{ 0, 0, 0, 9, 0, 2, 'A', 'A', 0, 3, 'B', 'B', 'B' };
+    const auth = [_]u8{ 0xFF, 0xFF, 0xFF, 0xFF };
+    const resp = [_]u8{ 0x80, 0x02, 0, 0, 0, @intCast(10 + params.len + auth.len), 0, 0, 0, 0 } ++ params ++ auth;
     const b = try createKeyBlobs(&resp);
     try testing.expectEqualStrings("AA", b.private);
     try testing.expectEqualStrings("BBB", b.public);
@@ -446,8 +457,8 @@ test "NV commands build and parse" {
     _ = try ur.get32();
     try testing.expectEqual(cc_nv_read, try ur.get32());
 
-    // NV_Read response: parameterSize + data(2b, 8 bytes = 0x0102030405060708)
-    const params = [_]u8{ 0, 0, 0, 0, 0, 8, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 };
+    // NV_Read response: parameterSize(4)=10, data(2b, 8 bytes = 0x0102030405060708)
+    const params = [_]u8{ 0, 0, 0, 10, 0, 8, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 };
     const resp = [_]u8{ 0x80, 0x02, 0, 0, 0, @intCast(10 + params.len), 0, 0, 0, 0 } ++ params;
     try testing.expectEqual(@as(u64, 0x0102030405060708), try nvReadU64(&resp));
 }
