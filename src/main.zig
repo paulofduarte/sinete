@@ -101,6 +101,10 @@ fn cmdAgent() !void {
     if (builtin.os.tag == .macos) {
         var be = darwin.Darwin{};
         try serveAgent(sock, be.processor(), be.authorizer());
+    } else if (builtin.os.tag == .linux) {
+        var kbuf: [std.fs.max_path_bytes]u8 = undefined;
+        var be = linuxBackend(try linuxKeyDir(&kbuf));
+        try serveAgent(sock, be.processor(), be.authorizer());
     } else {
         // No secure element: advertise one freshly generated identity so the protocol path works.
         var arena = std.heap.ArenaAllocator.init(g_gpa);
@@ -151,16 +155,22 @@ fn bareName() []const u8 {
 /// non-ASCII) -- invalid UTF-8 would make a nil kSecAttrLabel in the shim, and the name must be one
 /// unambiguous token since list/export/remove treat it as a single identifier.
 fn keyLabel(buf: []u8) ![:0]const u8 {
-    const max = 120;
     const name = bareName();
-    const ok = name.len > 0 and name.len <= max and
-        !std.mem.eql(u8, name, "_master") and validNameChars(name);
-    if (!ok) {
-        var e: [160]u8 = undefined;
-        try stderrWrite(try std.fmt.bufPrint(&e, "error: invalid name (1-{d} chars from [A-Za-z0-9._@+-], not '_master')\n", .{max}));
-        std.process.exit(2);
-    }
+    if (!validName(name)) try invalidName();
     return std.fmt.bufPrintZ(buf, "sinete-{s}", .{name});
+}
+
+/// Whether `name` is acceptable for a new key: 1-120 bytes, [A-Za-z0-9._@+-] only (a clean
+/// single-token identifier, a safe filename, and a valid SSH comment), and not the reserved
+/// `_master`.
+fn validName(name: []const u8) bool {
+    return name.len > 0 and name.len <= 120 and
+        !std.mem.eql(u8, name, "_master") and validNameChars(name);
+}
+
+fn invalidName() !void {
+    try stderrWrite("error: invalid name (1-120 chars from [A-Za-z0-9._@+-], not '_master')\n");
+    std.process.exit(2);
 }
 
 /// Build the lookup label for export/remove. Unlike keyLabel (create) this does not re-apply the
@@ -179,6 +189,27 @@ fn validNameChars(name: []const u8) bool {
     return true;
 }
 
+/// The Linux TPM key directory ($XDG_DATA_HOME/sinete/keys, else ~/.local/share/sinete/keys),
+/// written into `buf`.
+fn linuxKeyDir(buf: []u8) ![]const u8 {
+    if (g_env.get("XDG_DATA_HOME")) |x| return std.fmt.bufPrint(buf, "{s}/sinete/keys", .{x});
+    const home = g_env.get("HOME") orelse return error.NoHomeDir;
+    return std.fmt.bufPrint(buf, "{s}/.local/share/sinete/keys", .{home});
+}
+
+/// Build the Linux TPM backend over `keydir` and the device (SINETE_TPM swtpm socket, else
+/// /dev/tpmrm0). `keydir` must outlive the returned value.
+fn linuxBackend(keydir: []const u8) linux.Linux {
+    const sock = g_env.get("SINETE_TPM");
+    return .{
+        .io = g_io,
+        .gpa = g_gpa,
+        .keydir = keydir,
+        .tpm_path = sock orelse "/dev/tpmrm0",
+        .tpm_is_socket = sock != null,
+    };
+}
+
 fn cmdGenerate() !void {
     if (builtin.os.tag == .macos) {
         var lbl_buf: [128]u8 = undefined;
@@ -193,7 +224,19 @@ fn cmdGenerate() !void {
         defer enc.deinit();
         try sinete.ecdsa_key.writePubBlob(&enc, &point);
         try printAuthKeys(enc.bytes(), label);
-    } else return macosOnly("generate");
+    } else if (builtin.os.tag == .linux) {
+        if (!validName(arg_name)) try invalidName();
+        var kbuf: [std.fs.max_path_bytes]u8 = undefined;
+        var be = linuxBackend(try linuxKeyDir(&kbuf));
+        var point = try be.generate(arg_name);
+
+        var arena = std.heap.ArenaAllocator.init(g_gpa);
+        defer arena.deinit();
+        var enc = sinete.wire.Encoder.init(arena.allocator());
+        defer enc.deinit();
+        try sinete.ecdsa_key.writePubBlob(&enc, &point);
+        try printAuthKeys(enc.bytes(), arg_name);
+    } else return noSecureElement("generate");
 }
 
 fn cmdList() !void {
@@ -203,7 +246,14 @@ fn cmdList() !void {
         defer arena.deinit();
         const keys = try be.processor().enumerate(arena.allocator());
         for (keys) |k| try printListEntry(k.blob, k.comment);
-    } else return macosOnly("list");
+    } else if (builtin.os.tag == .linux) {
+        var kbuf: [std.fs.max_path_bytes]u8 = undefined;
+        var be = linuxBackend(try linuxKeyDir(&kbuf));
+        var arena = std.heap.ArenaAllocator.init(g_gpa);
+        defer arena.deinit();
+        const keys = try be.processor().enumerate(arena.allocator());
+        for (keys) |k| try printListEntry(k.blob, k.comment);
+    } else return noSecureElement("list");
 }
 
 fn cmdExport() !void {
@@ -218,7 +268,17 @@ fn cmdExport() !void {
             if (std.mem.eql(u8, k.comment, want)) return printAuthKeys(k.blob, k.comment);
         }
         try notFound(arg_name);
-    } else return macosOnly("export");
+    } else if (builtin.os.tag == .linux) {
+        var kbuf: [std.fs.max_path_bytes]u8 = undefined;
+        var be = linuxBackend(try linuxKeyDir(&kbuf));
+        var arena = std.heap.ArenaAllocator.init(g_gpa);
+        defer arena.deinit();
+        const keys = try be.processor().enumerate(arena.allocator());
+        for (keys) |k| {
+            if (std.mem.eql(u8, k.comment, arg_name)) return printAuthKeys(k.blob, k.comment);
+        }
+        try notFound(arg_name);
+    } else return noSecureElement("export");
 }
 
 fn cmdRemove() !void {
@@ -237,7 +297,13 @@ fn cmdRemove() !void {
             return stdoutWrite(try std.fmt.bufPrint(&msg, "removed {s}\n", .{want}));
         }
         try notFound(arg_name);
-    } else return macosOnly("remove");
+    } else if (builtin.os.tag == .linux) {
+        var kbuf: [std.fs.max_path_bytes]u8 = undefined;
+        var be = linuxBackend(try linuxKeyDir(&kbuf));
+        be.remove(arg_name) catch return notFound(arg_name);
+        var msg: [192]u8 = undefined;
+        return stdoutWrite(try std.fmt.bufPrint(&msg, "removed {s}\n", .{arg_name}));
+    } else return noSecureElement("remove");
 }
 
 fn cmdVersion() !void {
@@ -287,9 +353,9 @@ fn notFound(name: []const u8) !void {
     std.process.exit(1);
 }
 
-fn macosOnly(verb: []const u8) !void {
+fn noSecureElement(verb: []const u8) !void {
     var buf: [160]u8 = undefined;
-    try stderrWrite(try std.fmt.bufPrint(&buf, "error: '{s}' needs the Secure Enclave and is only supported on macOS\n", .{verb}));
+    try stderrWrite(try std.fmt.bufPrint(&buf, "error: '{s}' needs a secure element (macOS Secure Enclave or Linux TPM)\n", .{verb}));
     std.process.exit(2);
 }
 

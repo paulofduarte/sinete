@@ -17,6 +17,7 @@ pub const ecdsa_key = @import("ssh/ecdsa_key.zig");
 pub const ecdsa_sig = @import("ssh/ecdsa_sig.zig");
 pub const tpm_wire = @import("tpm/wire.zig");
 pub const tpm_commands = @import("tpm/commands.zig");
+pub const tpm_keyfile = @import("tpm/keyfile.zig");
 pub const agent_proto = @import("ssh/agent_proto.zig");
 pub const window = @import("agent/window.zig");
 pub const agent = @import("agent/core.zig");
@@ -40,6 +41,7 @@ test {
     _ = ecdsa_sig;
     _ = tpm_wire;
     _ = tpm_commands;
+    _ = tpm_keyfile;
     _ = agent_proto;
     _ = window;
     _ = agent;

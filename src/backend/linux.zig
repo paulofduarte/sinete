@@ -10,7 +10,15 @@ const std = @import("std");
 const sinete = @import("sinete");
 const cmd = sinete.tpm_commands;
 const ecdsa_sig = sinete.ecdsa_sig;
+const ecdsa_key = sinete.ecdsa_key;
+const wire = sinete.wire;
+const keyfile = sinete.tpm_keyfile;
+const crypto = sinete.crypto;
+const authz = sinete.authz;
 const device = @import("tpm_device.zig");
+
+/// The largest TSS2 key file we read (PEM); a P-256 loadable key is a few hundred bytes.
+const max_keyfile = 8192;
 
 /// A TPM session: the device plus scratch buffers for one command and its response. The response
 /// slice is invalidated by the next transact, so callers copy out anything they need to keep.
@@ -84,6 +92,124 @@ fn signDigest(t: *Tpm, key: u32, digest: []const u8, out: []u8) !usize {
     const sig = try cmd.signResult(try t.transact(c));
     return ecdsa_sig.rawRsToSshBlob(sig.r, sig.s, out);
 }
+
+// --- the Cryptoprocessor backend: file-backed TPM keys ---
+
+/// The Linux TPM backend. Keys live as TSS2 key files in `keydir`, loaded into the TPM on demand;
+/// the device is /dev/tpmrm0 or a swtpm socket. Mirrors the macOS Darwin backend behind the same
+/// vtables. v1 is presence-less, so the Authorizer is a no-op (Z5 adds the fprintd/FIDO2 gesture).
+pub const Linux = struct {
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    keydir: []const u8,
+    tpm_path: []const u8,
+    tpm_is_socket: bool,
+
+    pub fn processor(self: *Linux) crypto.Cryptoprocessor {
+        return .{ .ptr = self, .vtable = &cp_vt };
+    }
+    pub fn authorizer(self: *Linux) authz.Authorizer {
+        return .{ .ptr = self, .vtable = &az_vt };
+    }
+
+    const cp_vt = crypto.Cryptoprocessor.VTable{ .enumerate = enumerate, .sign = sign };
+    const az_vt = authz.Authorizer.VTable{ .authorize = authorize };
+
+    fn enumerate(ptr: *anyopaque, arena: std.mem.Allocator) anyerror![]const crypto.KeyInfo {
+        const self: *Linux = @ptrCast(@alignCast(ptr));
+        var dir = std.Io.Dir.cwd().openDir(self.io, self.keydir, .{ .iterate = true }) catch return &.{};
+        defer dir.close(self.io);
+
+        var list: std.ArrayList(crypto.KeyInfo) = .empty;
+        var it = dir.iterate();
+        while (try it.next(self.io)) |entry| {
+            if (entry.kind != .file) continue;
+            const pem = dir.readFileAlloc(self.io, entry.name, arena, .limited(max_keyfile)) catch continue;
+            var scratch: [max_keyfile]u8 = undefined;
+            const blobs = keyfile.decode(pem, &scratch) catch continue;
+            var point: [65]u8 = undefined;
+            cmd.pointFromPublic(blobs.public, &point) catch continue;
+            var enc = wire.Encoder.init(arena);
+            defer enc.deinit();
+            ecdsa_key.writePubBlob(&enc, &point) catch continue;
+            try list.append(arena, .{
+                .blob = try arena.dupe(u8, enc.bytes()),
+                .comment = try arena.dupe(u8, entry.name),
+            });
+        }
+        return list.toOwnedSlice(arena);
+    }
+
+    fn sign(ptr: *anyopaque, key_id: []const u8, data: []const u8, out: []u8) anyerror!usize {
+        const self: *Linux = @ptrCast(@alignCast(ptr));
+        const want = try ecdsa_key.pointFromPubBlob(key_id);
+        var key: KeyBlobs = .{};
+        if (!try self.findKey(want, &key)) return error.UnknownKey;
+
+        var t = try Tpm.open(self.io, self.tpm_path, self.tpm_is_socket);
+        defer t.close();
+        const primary = try createPrimary(&t);
+        const handle = try loadKey(&t, primary, &key);
+        var digest: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(data, &digest, .{});
+        return signDigest(&t, handle, &digest, out);
+    }
+
+    fn authorize(ptr: *anyopaque, key_id: []const u8, reason: []const u8) anyerror!void {
+        _ = ptr;
+        _ = key_id;
+        _ = reason; // presence-less on Linux for Z4; Z5 binds a fprintd/FIDO2 gesture here
+    }
+
+    /// Find the key file whose public point equals `want`, copying its blobs into `out`.
+    fn findKey(self: *Linux, want: *const [65]u8, out: *KeyBlobs) !bool {
+        var dir = std.Io.Dir.cwd().openDir(self.io, self.keydir, .{ .iterate = true }) catch return false;
+        defer dir.close(self.io);
+        var it = dir.iterate();
+        while (try it.next(self.io)) |entry| {
+            if (entry.kind != .file) continue;
+            const pem = dir.readFileAlloc(self.io, entry.name, self.gpa, .limited(max_keyfile)) catch continue;
+            defer self.gpa.free(pem);
+            var scratch: [max_keyfile]u8 = undefined;
+            const blobs = keyfile.decode(pem, &scratch) catch continue;
+            var point: [65]u8 = undefined;
+            cmd.pointFromPublic(blobs.public, &point) catch continue;
+            if (!std.mem.eql(u8, &point, want)) continue;
+            out.public_len = blobs.public.len;
+            out.private_len = blobs.private.len;
+            @memcpy(out.public[0..blobs.public.len], blobs.public);
+            @memcpy(out.private[0..blobs.private.len], blobs.private);
+            @memcpy(&out.point, &point);
+            return true;
+        }
+        return false;
+    }
+
+    /// Generate a new ECDSA P-256 key, persist it as a TSS2 key file named `name`, and return its
+    /// public point.
+    pub fn generate(self: *Linux, name: []const u8) ![65]u8 {
+        var t = try Tpm.open(self.io, self.tpm_path, self.tpm_is_socket);
+        defer t.close();
+        const primary = try createPrimary(&t);
+        var key: KeyBlobs = .{};
+        try createKey(&t, primary, &key);
+
+        var pem_buf: [max_keyfile]u8 = undefined;
+        const pem = try keyfile.encode(&pem_buf, key.pub_blob(), key.priv());
+        std.Io.Dir.cwd().createDirPath(self.io, self.keydir) catch {};
+        var dir = try std.Io.Dir.cwd().openDir(self.io, self.keydir, .{});
+        defer dir.close(self.io);
+        try dir.writeFile(self.io, .{ .sub_path = name, .data = pem });
+        return key.point;
+    }
+
+    /// Delete the key file named `name`.
+    pub fn remove(self: *Linux, name: []const u8) !void {
+        var dir = try std.Io.Dir.cwd().openDir(self.io, self.keydir, .{});
+        defer dir.close(self.io);
+        try dir.deleteFile(self.io, name);
+    }
+};
 
 /// A self-test exercising the whole TPM path against a real (or software) TPM: create a key, sign a
 /// known message, verify the signature with std.crypto, and round-trip the NV epoch counter. Prints
