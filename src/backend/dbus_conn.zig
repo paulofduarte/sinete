@@ -174,8 +174,9 @@ pub const Conn = struct {
     }
 };
 
-/// Best-effort SO_RCVTIMEO so a stuck daemon cannot block the agent forever. timeval is two longs.
+/// Best-effort SO_RCVTIMEO so a stuck daemon cannot block the agent forever. Uses the platform
+/// timeval (its `sec` is isize, so the layout is correct on both 32- and 64-bit Linux ABIs).
 fn setRecvTimeout(fd: i32, seconds: i64) void {
-    const tv = extern struct { sec: i64, usec: i64 }{ .sec = seconds, .usec = 0 };
+    const tv = linux.timeval{ .sec = @intCast(seconds), .usec = 0 };
     _ = linux.setsockopt(fd, linux.SOL.SOCKET, linux.SO.RCVTIMEO, std.mem.asBytes(&tv), @sizeOf(@TypeOf(tv)));
 }
