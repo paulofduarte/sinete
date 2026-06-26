@@ -37,13 +37,22 @@ pub const Options = struct {
 pub fn serve(gpa: std.mem.Allocator, io: std.Io, agent: *sinete.Agent, sock_path: []const u8, opts: Options) !void {
     try clearStaleSocket(io, sock_path);
     const ua = try std.Io.net.UnixAddress.init(sock_path);
-    const server = try ua.listen(io, .{ .kernel_backlog = opts.backlog });
+
+    // Create the socket owner-only from birth: a restrictive umask during bind means it is never
+    // momentarily world-connectable, even for a --sock path in a world-traversable dir like /tmp
+    // (where a private parent dir can't help). Restored immediately; startup is single-threaded.
+    const old_umask = osUmask(0o177);
+    const server = ua.listen(io, .{ .kernel_backlog = opts.backlog }) catch |e| {
+        _ = osUmask(old_umask);
+        return e;
+    };
+    _ = osUmask(old_umask);
     defer server.socket.close(io);
     defer removeOwnSocket(io, sock_path); // unlink our socket, but never a non-socket left in its place
 
-    // Harden the socket to owner-only (0600). An ssh-agent socket must not be connectable by other
-    // local users, who could otherwise inject signing requests; the OS default leaves it world-wide.
-    // Chmod by path (fchmodat): fchmod on a socket fd is rejected with EINVAL on BSD/macOS.
+    // Enforce owner-only (0600) explicitly too: the umask above already achieves this on POSIX, but
+    // an ssh-agent socket must never be connectable by other users (who could inject signing
+    // requests), so guarantee it. Chmod by path (fchmodat): fchmod on a socket fd is EINVAL on BSD.
     try std.Io.Dir.cwd().setFilePermissions(io, sock_path, @enumFromInt(0o600), .{ .follow_symlinks = false });
 
     var loop = try xev.Loop.init(.{});
@@ -53,6 +62,15 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, agent: *sinete.Agent, sock_path
     var srv = Server{ .gpa = gpa, .io = io, .loop = &loop, .agent = agent, .listener = xev.TCP.initFd(server.socket.handle) };
     srv.listener.accept(&loop, &srv.accept_c, Server, &srv, onAccept);
     try loop.run(.until_done);
+}
+
+/// Set the process umask, returning the previous value. No libc dependency: Linux issues the raw
+/// syscall; Darwin/BSD go through libSystem, which a Zig binary always links there.
+fn osUmask(mode: std.posix.mode_t) std.posix.mode_t {
+    return switch (builtin.os.tag) {
+        .linux => @intCast(std.os.linux.syscall1(.umask, mode)),
+        else => @intCast(std.c.umask(@intCast(mode))),
+    };
 }
 
 /// Remove a stale socket left by a previous run. Refuses to touch a path that exists but is not a
