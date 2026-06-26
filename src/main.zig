@@ -17,6 +17,7 @@ const transport = @import("transport.zig");
 // the key-management verbs report that they need macOS. Gating the import keeps Linux/CI builds
 // free of the Apple-framework shim.
 const darwin = if (builtin.os.tag == .macos) @import("backend/darwin.zig") else struct {};
+const linux = if (builtin.os.tag == .linux) @import("backend/linux.zig") else struct {};
 
 // zig-cli action callbacks are bare `fn() !void`, so the process context and the parsed argument
 // values live in file scope (the same pattern as zig-cli's own examples).
@@ -64,6 +65,11 @@ pub fn main(init: std.process.Init) !void {
                     .name = "version",
                     .description = .{ .one_line = "print the version" },
                     .target = .{ .action = .{ .exec = cmdVersion } },
+                },
+                .{
+                    .name = "_tpm-selftest",
+                    .description = .{ .one_line = "diagnostic: exercise the TPM path (Linux; SINETE_TPM=<swtpm sock>)" },
+                    .target = .{ .action = .{ .exec = cmdTpmSelftest } },
                 },
             }) },
         },
@@ -236,6 +242,16 @@ fn cmdRemove() !void {
 
 fn cmdVersion() !void {
     try stdoutWrite("sinete " ++ sinete.version ++ "\n");
+}
+
+fn cmdTpmSelftest() !void {
+    if (builtin.os.tag == .linux) {
+        const sock = g_env.get("SINETE_TPM"); // a swtpm unix socket; else the kernel device
+        try linux.selftest(g_io, sock orelse "/dev/tpmrm0", sock != null);
+    } else {
+        try stderrWrite("error: _tpm-selftest is only supported on Linux\n");
+        std.process.exit(2);
+    }
 }
 
 // --- output helpers ---
