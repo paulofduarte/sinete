@@ -218,7 +218,7 @@ pub fn pointFromPublic(public: []const u8, out: *[65]u8) Error!void {
     }
     const scheme = try u.get16();
     if (scheme != alg_null) _ = try u.get16(); // scheme hashAlg
-    _ = try u.get16(); // curveID
+    if (try u.get16() != ecc_nist_p256) return Error.Unsupported; // curveID: only P-256 maps to nistp256
     const kdf = try u.get16();
     if (kdf != alg_null) _ = try u.get16(); // kdf hashAlg
     const x = try u.get2b();
@@ -495,4 +495,22 @@ test "pointFromPublic recovers the uncompressed point, right-aligning short coor
     try testing.expectEqual(@as(u8, 0x11), point[1]); // X starts immediately
     try testing.expectEqual(@as(u8, 0x00), point[33]); // Y padded with one leading zero
     try testing.expectEqual(@as(u8, 0x22), point[34]);
+}
+
+test "pointFromPublic rejects a non-P256 curve" {
+    var buf: [256]u8 = undefined;
+    var m = wire.Marshal{ .buf = &buf };
+    try m.put16(alg_ecc);
+    try m.put16(alg_sha256);
+    try m.put32(sign_attrs);
+    try m.put16(0);
+    try m.put16(alg_null);
+    try m.put16(alg_ecdsa);
+    try m.put16(alg_sha256);
+    try m.put16(0x0001); // TPM_ECC_NIST_P192, not P-256
+    try m.put16(alg_null);
+    try m.put2b(&([_]u8{0x11} ** 24));
+    try m.put2b(&([_]u8{0x22} ** 24));
+    var point: [65]u8 = undefined;
+    try testing.expectError(Error.Unsupported, pointFromPublic(m.bytes(), &point));
 }
