@@ -54,10 +54,10 @@ pub const Canvas = struct {
         while (true) : (gy += 1) {
             var gx: u3 = 0;
             while (true) : (gx += 1) {
-                if (font.pixel(c, gx, gy)) self.plot(x + gx, y + gy, color);
-                if (gx == font.width - 1) break;
+                if (font.pixel(c, gx, gy)) self.plot(x + @as(i32, gx), y + @as(i32, gy), color);
+                if (gx == @as(u3, font.width - 1)) break;
             }
-            if (gy == font.height - 1) break;
+            if (gy == @as(u4, font.height - 1)) break;
         }
     }
 
@@ -66,13 +66,13 @@ pub const Canvas = struct {
         var cx = x;
         for (s) |c| {
             self.glyph(c, cx, y, color);
-            cx += font.width;
+            cx += @as(i32, font.width);
         }
     }
 
     /// The pixel width a string occupies (for centering).
     pub fn textWidth(s: []const u8) u32 {
-        return @as(u32, @intCast(s.len)) * font.width;
+        return @as(u32, @intCast(s.len)) * @as(u32, font.width);
     }
 
     fn plot(self: Canvas, x: i32, y: i32, color: u32) void {

@@ -428,7 +428,8 @@ fn xauthPath(buf: []u8) []const u8 {
             return buf[0..x.len];
         }
     }
-    const home = g_env.get("HOME") orelse return "";
+    const home = g_env.get("HOME") orelse "";
+    if (home.len == 0) return ""; // unset or empty HOME -> no path (avoid a bare "/.Xauthority")
     const suffix = "/.Xauthority";
     if (home.len + suffix.len > buf.len) return "";
     @memcpy(buf[0..home.len], home);

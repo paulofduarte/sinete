@@ -57,7 +57,7 @@ pub const Modal = struct {
         // The message, left-aligned at the top margin, truncated to the panel width. Compute the
         // available width in u32, then a usize cap for slicing (avoid a signed/unsigned mix).
         const avail: u32 = width - 2 * @as(u32, @intCast(margin));
-        const max_chars: usize = avail / font.width;
+        const max_chars: usize = avail / @as(u32, font.width);
         const msg = if (self.message.len > max_chars) self.message[0..max_chars] else self.message;
         c.text(msg, margin, margin + 6, col_fg);
 
@@ -95,7 +95,7 @@ fn button(c: Canvas, b: Button, label: []const u8, bg: u32) void {
     c.rect(b.x, b.y, b.w, b.h, bg);
     c.border(b.x, b.y, b.w, b.h, col_border);
     const tx = b.x + @as(i32, @intCast((b.w -| Canvas.textWidth(label)) / 2));
-    const ty = b.y + @as(i32, @intCast((b.h -| font.height) / 2));
+    const ty = b.y + @as(i32, @intCast((b.h -| @as(u32, font.height)) / 2));
     c.text(label, tx, ty, col_btn_fg);
 }
 
