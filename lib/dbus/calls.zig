@@ -29,6 +29,10 @@ const login1_path = "/org/freedesktop/login1";
 const login1_mgr_iface = "org.freedesktop.login1.Manager";
 pub const login1_session_iface = "org.freedesktop.login1.Session";
 
+/// The error GetSessionByPID returns when the pid is not in any logind session scope (a graphical
+/// terminal, a systemd --user service): the signal to fall back to the user's sessions.
+pub const login1_no_session_for_pid = "org.freedesktop.login1.NoSessionForPID";
+
 // --- bus daemon ---
 
 /// org.freedesktop.DBus.Hello() -> s (our unique bus name). The first message after BEGIN.
@@ -86,6 +90,13 @@ pub fn getSessionByPID(enc: *Encoder, serial: u32, pid: u32) !void {
     try message.encodeMethodCall(enc, serial, login1_dest, login1_path, login1_mgr_iface, "GetSessionByPID", "u", body.bytes());
 }
 
+/// org.freedesktop.login1.Manager.ListSessions() -> a(susso): one struct per session,
+/// (s session_id, u uid, s user_name, s seat_id, o session_path). Used by the remote gate to
+/// answer "does this user have a session, and is any of them remote?" for a sessionless peer.
+pub fn listSessions(enc: *Encoder, serial: u32) !void {
+    try message.encodeMethodCall(enc, serial, login1_dest, login1_path, login1_mgr_iface, "ListSessions", "", "");
+}
+
 /// org.freedesktop.DBus.Properties.Get(s interface, s property) -> v, on `dest`/`obj_path`.
 pub fn propertiesGet(enc: *Encoder, serial: u32, dest: []const u8, obj_path: []const u8, iface: []const u8, prop: []const u8) !void {
     var body = Encoder.init(enc.gpa);
@@ -119,6 +130,69 @@ pub fn parseVerifyStatus(body: []const u8, endian: std.builtin.Endian) ParseErro
     const result = try d.string();
     const done = try d.boolean();
     return .{ .result = result, .done = done };
+}
+
+/// One element of a ListSessions reply. The slices alias the reply body.
+pub const Session = struct {
+    id: []const u8,
+    uid: u32,
+    user: []const u8,
+    seat: []const u8,
+    path: []const u8,
+};
+
+/// A streaming decoder over a ListSessions reply body (a(susso)) -- yields one Session per struct
+/// element without allocating. The D-Bus array is a 4-aligned u32 byte-count followed by the
+/// element data padded to the struct's 8-byte boundary; each struct is 8-aligned in turn.
+pub const SessionIter = struct {
+    d: wire.Decoder,
+    end: usize,
+
+    pub fn init(body: []const u8, endian: std.builtin.Endian) ParseError!SessionIter {
+        var d = wire.Decoder{ .data = body, .endian = endian };
+        const len: usize = @intCast(try d.get32());
+        if (len == 0) { // empty array: no element-alignment padding, nothing to read
+            d.data = body[0..d.pos];
+            return .{ .d = d, .end = d.pos };
+        }
+        try d.alignTo(8); // padding to the struct element boundary precedes the first element
+        const end = std.math.add(usize, d.pos, len) catch return error.UnexpectedType;
+        if (end > body.len) return error.UnexpectedType;
+        // Cap the decoder to the array's declared byte length so a malformed/short length cannot let
+        // a struct field read into bytes past the array; the decoder otherwise bounds only against
+        // body.len. Past `end`, string()/get32() then fail with Truncated (fail closed).
+        d.data = body[0..end];
+        return .{ .d = d, .end = end };
+    }
+
+    pub fn next(self: *SessionIter) ParseError!?Session {
+        if (self.d.pos >= self.end) return null;
+        try self.d.alignTo(8); // each (susso) struct starts on an 8-byte boundary
+        if (self.d.pos >= self.end) return null;
+        const id = try self.d.string();
+        const uid = try self.d.get32();
+        const user = try self.d.string();
+        const seat = try self.d.string();
+        const path = try self.d.string(); // an object path decodes like a string
+        return .{ .id = id, .uid = uid, .user = user, .seat = seat, .path = path };
+    }
+};
+
+/// One session reduced to the fields the local-only decision needs.
+pub const SessionRemote = struct { uid: u32, remote: bool };
+
+/// The security decision for a sessionless peer, factored pure for testing: true iff `uid` owns at
+/// least one session and NONE of uid's sessions is remote. A sessionless process cannot be pinned
+/// to a specific session, so a uid that is ALSO logged in remotely is ambiguous and refused;
+/// another user's remote session is irrelevant. Mirrors the validated Go localsession.localOnlyForUID.
+pub fn localOnlyForUser(sessions: []const SessionRemote, uid: u32) bool {
+    var has_local = false;
+    for (sessions) |s| {
+        if (s.uid != uid) continue;
+        if (s.remote) return false; // a remote session for this user => ambiguous => refuse
+        has_local = true;
+    }
+    return has_local;
 }
 
 const testing = std.testing;
@@ -180,4 +254,76 @@ test "parseVerifyStatus reads (result, done)" {
     const s = try parseVerifyStatus(enc.bytes(), .little);
     try testing.expectEqualStrings("verify-match", s.result);
     try testing.expectEqual(true, s.done);
+}
+
+/// Marshal one (susso) struct element, 8-aligned as D-Bus requires for a struct.
+fn appendSession(enc: *Encoder, id: []const u8, uid: u32, user: []const u8, seat: []const u8, path: []const u8) !void {
+    try enc.pad(8);
+    try enc.string(id);
+    try enc.put32(uid);
+    try enc.string(user);
+    try enc.string(seat);
+    try enc.string(path); // an object path marshals like a string
+}
+
+test "SessionIter walks a(susso) and yields uid + path per session" {
+    var enc = Encoder.init(testing.allocator);
+    defer enc.deinit();
+    // Hand-build the array body: a 4-aligned u32 byte-length, padding to the 8-byte struct
+    // boundary, then the struct elements; the length counts only the element bytes.
+    const lp = enc.mark();
+    try enc.raw(&[_]u8{ 0, 0, 0, 0 }); // length placeholder, backpatched below
+    try enc.pad(8);
+    const ds = enc.mark();
+    try appendSession(&enc, "1", 1000, "alice", "seat0", "/org/freedesktop/login1/session/_31");
+    try appendSession(&enc, "2", 1000, "alice", "", "/org/freedesktop/login1/session/_32");
+    try appendSession(&enc, "c1", 0, "root", "", "/org/freedesktop/login1/session/c1");
+    enc.patchU32(lp, @intCast(enc.mark() - ds));
+
+    var it = try SessionIter.init(enc.bytes(), .little);
+    const a = (try it.next()).?;
+    try testing.expectEqual(@as(u32, 1000), a.uid);
+    try testing.expectEqualStrings("/org/freedesktop/login1/session/_31", a.path);
+    const b = (try it.next()).?;
+    try testing.expectEqual(@as(u32, 1000), b.uid);
+    try testing.expectEqualStrings("/org/freedesktop/login1/session/_32", b.path);
+    const c = (try it.next()).?;
+    try testing.expectEqual(@as(u32, 0), c.uid);
+    try testing.expectEqualStrings("root", c.user);
+    try testing.expect((try it.next()) == null);
+}
+
+test "SessionIter on an empty array yields nothing" {
+    var enc = Encoder.init(testing.allocator);
+    defer enc.deinit();
+    try enc.put32(0); // zero-length array: no element-alignment padding follows
+    var it = try SessionIter.init(enc.bytes(), .little);
+    try testing.expect((try it.next()) == null);
+}
+
+test "SessionIter fails closed when a struct runs past the declared array length" {
+    var enc = Encoder.init(testing.allocator);
+    defer enc.deinit();
+    const lp = enc.mark();
+    try enc.raw(&[_]u8{ 0, 0, 0, 0 });
+    try enc.pad(8);
+    try appendSession(&enc, "1", 1000, "alice", "seat0", "/org/freedesktop/login1/session/_31");
+    // Declare an array length (4) far shorter than the struct actually occupies: with the decoder
+    // capped to `end`, the struct's fields read past it and fail with Truncated rather than
+    // wandering into the bytes after the array.
+    enc.patchU32(lp, 4);
+    var it = try SessionIter.init(enc.bytes(), .little);
+    try testing.expectError(error.Truncated, it.next());
+}
+
+test "localOnlyForUser: local iff the user has a session and none is remote" {
+    const u: u32 = 1000;
+    try testing.expect(!localOnlyForUser(&.{}, u)); // no sessions at all -> cannot confirm
+    try testing.expect(!localOnlyForUser(&.{.{ .uid = 0, .remote = false }}, u)); // only another user's
+    try testing.expect(localOnlyForUser(&.{.{ .uid = u, .remote = false }}, u)); // one local session
+    try testing.expect(localOnlyForUser(&.{ .{ .uid = u, .remote = false }, .{ .uid = u, .remote = false } }, u));
+    // a remote session for this user makes a sessionless peer ambiguous -> refuse
+    try testing.expect(!localOnlyForUser(&.{ .{ .uid = u, .remote = false }, .{ .uid = u, .remote = true } }, u));
+    // another user's remote session is irrelevant and ignored
+    try testing.expect(localOnlyForUser(&.{ .{ .uid = u, .remote = false }, .{ .uid = 0, .remote = true } }, u));
 }
