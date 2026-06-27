@@ -36,10 +36,15 @@ pub const LogPresenter = struct {
     }
     fn showError(ptr: *anyopaque, cred: ?session.Cred, reason: pres.Reason, detail: []const u8) void {
         _ = cred;
-        _ = detail;
         const self: *LogPresenter = @ptrCast(@alignCast(ptr));
         var f = std.Io.File.stderr();
         f.writeStreamingAll(self.io, pres.message(reason)) catch return;
+        // Append any extra context (e.g. an underlying backend error name) so it is not lost in logs.
+        if (detail.len > 0) {
+            f.writeStreamingAll(self.io, " (") catch return;
+            f.writeStreamingAll(self.io, detail) catch return;
+            f.writeStreamingAll(self.io, ")") catch return;
+        }
         f.writeStreamingAll(self.io, "\n") catch return;
     }
 };
