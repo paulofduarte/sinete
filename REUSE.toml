@@ -17,7 +17,15 @@ SPDX-License-Identifier = "Apache-2.0"
 
 # The manual checklists are plain Markdown.
 [[annotations]]
-path = ["manual/z3-macos-se.md", "manual/z4-linux-tpm.md", "manual/z5-linux-presence.md", "manual/z5-linux-policy.md"]
+path = ["manual/z3-macos-se.md", "manual/z4-linux-tpm.md", "manual/z5-linux-presence.md", "manual/z5-linux-policy.md", "manual/z5-linux-presenter.md"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Paulo Duarte"
 SPDX-License-Identifier = "Apache-2.0"
+
+# The built-in modal's bitmap font: the printable-ASCII glyphs of Spleen 8x16, extracted from its
+# BDF into a raw blob. Spleen is (c) 2018-2024 Frederic Cambus, released under BSD-2-Clause.
+[[annotations]]
+path = "lib/modal/spleen-8x16-ascii.bin"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2018-2024 Frederic Cambus"
+SPDX-License-Identifier = "BSD-2-Clause"

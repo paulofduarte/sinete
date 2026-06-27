@@ -65,6 +65,12 @@ pub fn verifyStart(enc: *Encoder, serial: u32, dev_path: []const u8, finger: []c
     try deviceCallS(enc, serial, dev_path, "VerifyStart", finger);
 }
 
+/// net.reactivated.Fprint.Device.ListEnrolledFingers(s username) -> as. Empty username = the
+/// caller's own user. The reply is an array of finger names; sinete only needs whether it is empty.
+pub fn listEnrolledFingers(enc: *Encoder, serial: u32, dev_path: []const u8, username: []const u8) !void {
+    try deviceCallS(enc, serial, dev_path, "ListEnrolledFingers", username);
+}
+
 pub fn verifyStop(enc: *Encoder, serial: u32, dev_path: []const u8) !void {
     try message.encodeMethodCall(enc, serial, fprint_dest, dev_path, fprint_device_iface, "VerifyStop", "", "");
 }
@@ -122,6 +128,26 @@ pub fn parseVariantBool(body: []const u8, endian: std.builtin.Endian) ParseError
     const sig = try d.signature();
     if (!std.mem.eql(u8, sig, "b")) return error.UnexpectedType;
     return d.boolean();
+}
+
+/// A reply whose body is a single string array (as): the leading 4-aligned u32 is the array's byte
+/// length. Returns whether it is non-empty -- used for ListEnrolledFingers (is any finger enrolled?).
+/// Validates that the declared length is actually present (a truncated reply is Truncated, not a
+/// spurious "non-empty" that could wrongly report a user as enrolled).
+pub fn parseStringArrayNonEmpty(body: []const u8, endian: std.builtin.Endian) ParseError!bool {
+    var d = wire.Decoder{ .data = body, .endian = endian };
+    const len = try d.get32();
+    if (len > d.data.len - d.pos) return error.Truncated; // declared array bytes not present
+    return len > 0;
+}
+
+/// org.freedesktop.DBus.Properties.Get reply: a variant (v) wrapping a string (s) or object path
+/// (o) -- used to read login1 Session string properties (Type, TTY, Display). The slice aliases body.
+pub fn parseVariantString(body: []const u8, endian: std.builtin.Endian) ParseError![]const u8 {
+    var d = wire.Decoder{ .data = body, .endian = endian };
+    const sig = try d.signature();
+    if (!std.mem.eql(u8, sig, "s") and !std.mem.eql(u8, sig, "o")) return error.UnexpectedType;
+    return d.string();
 }
 
 /// net.reactivated.Fprint.Device.VerifyStatus signal body: (s result, b done).
@@ -244,6 +270,40 @@ test "parseVariantBool reads a Properties.Get(Remote) reply" {
     try enc.signature("s"); // wrong inner type
     try enc.string("x");
     try testing.expectError(error.UnexpectedType, parseVariantBool(enc.bytes(), .little));
+}
+
+test "parseVariantString reads a Properties.Get(Type/TTY) reply" {
+    var enc = Encoder.init(testing.allocator);
+    defer enc.deinit();
+    try enc.signature("s");
+    try enc.string("/dev/pts/3");
+    try testing.expectEqualStrings("/dev/pts/3", try parseVariantString(enc.bytes(), .little));
+
+    enc.reset();
+    try enc.signature("b"); // wrong inner type
+    try enc.boolean(true);
+    try testing.expectError(error.UnexpectedType, parseVariantString(enc.bytes(), .little));
+}
+
+test "parseStringArrayNonEmpty: empty as is false, a populated as is true" {
+    var enc = Encoder.init(testing.allocator);
+    defer enc.deinit();
+    try enc.put32(0); // empty array: 0-byte length
+    try testing.expectEqual(false, try parseStringArrayNonEmpty(enc.bytes(), .little));
+
+    enc.reset();
+    // a one-element array: the byte length, then the string ("left-index-finger").
+    var elems = Encoder.init(testing.allocator);
+    defer elems.deinit();
+    try elems.string("left-index-finger");
+    try enc.put32(@intCast(elems.bytes().len));
+    try enc.raw(elems.bytes());
+    try testing.expectEqual(true, try parseStringArrayNonEmpty(enc.bytes(), .little));
+
+    // A reply declaring more array bytes than are present is Truncated, not a spurious "non-empty".
+    enc.reset();
+    try enc.put32(64); // claims 64 bytes but the body has none after the length
+    try testing.expectError(error.Truncated, parseStringArrayNonEmpty(enc.bytes(), .little));
 }
 
 test "parseVerifyStatus reads (result, done)" {

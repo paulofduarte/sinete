@@ -11,6 +11,7 @@ const std = @import("std");
 const authz = @import("../authz.zig");
 const crypto = @import("../crypto.zig");
 const session = @import("../session.zig");
+const presenter = @import("../presenter.zig");
 const window = @import("window.zig");
 
 pub const Config = struct {
@@ -38,6 +39,10 @@ pub const Agent = struct {
     /// LocalSession confirms is the agent's own local session. Left null on platforms/builds without
     /// a peer-cred path (then no remote refusal happens); main.zig sets it after init on Linux.
     session: ?session.LocalSession = null,
+    /// Optional presenter for user-facing refusal/failure messages. Null => no message (the protocol
+    /// still answers FAILURE). The presence *prompt* itself is rendered by the platform Authorizer;
+    /// this is only the failure channel the core owns. main.zig sets it after init.
+    presenter: ?presenter.Presenter = null,
 
     pub fn init(gpa: std.mem.Allocator, cp: crypto.Cryptoprocessor, az: authz.Authorizer, cfg: Config) Agent {
         return .{ .gpa = gpa, .cp = cp, .az = az, .cfg = cfg, .windows = window.Cache.init(gpa) };
@@ -58,16 +63,35 @@ pub const Agent = struct {
         // Remote gate first: a forwarded/remote caller is refused before any presence prompt or
         // window check, and on every signature so a window warmed locally cannot be ridden remotely.
         if (self.session) |s| {
-            const c = cred orelse return error.RemoteRefused;
-            if (!(s.isLocal(c) catch return error.RemoteRefused)) return error.RemoteRefused;
+            const c = cred orelse {
+                self.notify(null, .remote_refused, "no peer credential");
+                return error.RemoteRefused;
+            };
+            const local = s.isLocal(c) catch |e| {
+                self.notify(cred, .remote_refused, @errorName(e));
+                return error.RemoteRefused;
+            };
+            if (!local) {
+                self.notify(cred, .remote_refused, "");
+                return error.RemoteRefused;
+            }
         }
 
         // peek is non-mutating: require presence on a cold window, then commit the window only
         // after the signature succeeds, so a failed sign never primes a silent window.
         const warm = self.windows.peek(key_id, now_ms, self.cfg.idle_ms, self.cfg.max_ms);
-        if (!warm) self.az.authorize(key_id, self.cfg.reason) catch return error.PresenceRefused;
+        if (!warm) self.az.authorize(cred, key_id, self.cfg.reason) catch |e| {
+            // Only an explicit user decline is reported as "declined"; every other error (no method
+            // available, or an unexpected internal failure -- authorize is anyerror) is "unavailable",
+            // so an OOM/backend error is never mislabeled as the user having refused.
+            self.notify(cred, if (e == error.PresenceDeclined) .declined else .unavailable, @errorName(e));
+            return error.PresenceRefused;
+        };
 
-        const n = self.cp.sign(key_id, data, out) catch return error.BackendError;
+        const n = self.cp.sign(key_id, data, out) catch |e| {
+            self.notify(cred, if (e == error.UnknownKey) .unknown_key else .hardware, @errorName(e));
+            return error.BackendError;
+        };
 
         // Signature succeeded: open a new window (cold) or slide the idle clock (warm). An
         // allocation failure here is swallowed; the worst case is one extra presence prompt.
@@ -78,6 +102,12 @@ pub const Agent = struct {
     /// Force re-authentication for a key, for instance after it is recreated or reconfigured.
     pub fn invalidate(self: *Agent, key_id: []const u8) void {
         self.windows.invalidate(key_id);
+    }
+
+    /// Best-effort user-facing message for a refused/failed signature, with optional diagnostic
+    /// detail (an underlying error name) for the log. No-op without a presenter.
+    fn notify(self: *Agent, cred: ?session.Cred, reason: presenter.Reason, detail: []const u8) void {
+        if (self.presenter) |p| p.showError(cred, reason, detail);
     }
 };
 
@@ -188,6 +218,70 @@ test "invalidate forces the next signature to re-authenticate" {
     agent.invalidate("key-1");
     _ = try agent.sign(null, "key-1", "b", 1100, &out); // would be silent, but invalidation forces presence again
     try testing.expectEqual(@as(usize, 2), az.granted);
+}
+
+test "the presenter is notified of the reason on each refusal path" {
+    var pres = presenter.Fake{};
+    var out: [8]u8 = undefined;
+
+    // remote refusal -- both branches: a non-local caller, and a missing credential
+    {
+        var cp = crypto.Fake{ .keys = &.{.{ .blob = "key-1", .comment = "me@host" }} };
+        var az = authz.Fake{};
+        var sess = session.Fake{ .local = false };
+        var agent = Agent.init(testing.allocator, cp.processor(), az.authorizer(), .{ .idle_ms = 1000, .max_ms = 10_000 });
+        agent.session = sess.session();
+        agent.presenter = pres.presenter();
+        defer agent.deinit();
+        // a non-local caller (isLocal == false)
+        try testing.expectError(error.RemoteRefused, agent.sign(.{ .pid = 9, .uid = 501 }, "key-1", "a", 1000, &out));
+        try testing.expectEqual(presenter.Reason.remote_refused, pres.last_error.?);
+        pres.last_error = null;
+        // a missing credential while the gate is set (the cred-orelse branch, notify(null, ...))
+        try testing.expectError(error.RemoteRefused, agent.sign(null, "key-1", "a", 1000, &out));
+        try testing.expectEqual(presenter.Reason.remote_refused, pres.last_error.?);
+    }
+    // a declined gesture
+    {
+        var cp = crypto.Fake{ .keys = &.{.{ .blob = "key-1", .comment = "me@host" }} };
+        var az = authz.Fake{ .declines = true };
+        var agent = Agent.init(testing.allocator, cp.processor(), az.authorizer(), .{ .idle_ms = 1000, .max_ms = 10_000 });
+        agent.presenter = pres.presenter();
+        defer agent.deinit();
+        try testing.expectError(error.PresenceRefused, agent.sign(null, "key-1", "a", 1000, &out));
+        try testing.expectEqual(presenter.Reason.declined, pres.last_error.?);
+    }
+    // an unavailable gesture (no reader / unevaluable) maps to .unavailable, not .declined
+    {
+        var cp = crypto.Fake{ .keys = &.{.{ .blob = "key-1", .comment = "me@host" }} };
+        var az = authz.Fake{ .declines = true, .decline_error = error.PresenceUnavailable };
+        var agent = Agent.init(testing.allocator, cp.processor(), az.authorizer(), .{ .idle_ms = 1000, .max_ms = 10_000 });
+        agent.presenter = pres.presenter();
+        defer agent.deinit();
+        try testing.expectError(error.PresenceRefused, agent.sign(null, "key-1", "a", 1000, &out));
+        try testing.expectEqual(presenter.Reason.unavailable, pres.last_error.?);
+    }
+    // an unexpected internal error (not a decline) also maps to .unavailable, never .declined
+    {
+        var cp = crypto.Fake{ .keys = &.{.{ .blob = "key-1", .comment = "me@host" }} };
+        var az = authz.Fake{ .declines = true, .decline_error = error.OutOfMemory };
+        var agent = Agent.init(testing.allocator, cp.processor(), az.authorizer(), .{ .idle_ms = 1000, .max_ms = 10_000 });
+        agent.presenter = pres.presenter();
+        defer agent.deinit();
+        try testing.expectError(error.PresenceRefused, agent.sign(null, "key-1", "a", 1000, &out));
+        try testing.expectEqual(presenter.Reason.unavailable, pres.last_error.?);
+    }
+    // a backend error for an unknown key maps to unknown_key, not hardware
+    {
+        var cp = crypto.Fake{ .keys = &.{} };
+        var az = authz.Fake{};
+        var agent = Agent.init(testing.allocator, cp.processor(), az.authorizer(), .{ .idle_ms = 1000, .max_ms = 10_000 });
+        agent.presenter = pres.presenter();
+        defer agent.deinit();
+        try testing.expectError(error.BackendError, agent.sign(null, "ghost", "a", 1000, &out));
+        try testing.expectEqual(presenter.Reason.unknown_key, pres.last_error.?);
+    }
+    try testing.expectEqual(@as(usize, 6), pres.errors);
 }
 
 test "identities reflects the cryptoprocessor enumeration" {

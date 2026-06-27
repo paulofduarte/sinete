@@ -21,8 +21,15 @@ const linux = if (builtin.os.tag == .linux) @import("backend/linux.zig") else st
 // Linux presence: the fprintd fingerprint Authorizer and the logind remote-session gate, both over
 // the pure-Zig D-Bus client. Gated so non-Linux builds don't pull in the Linux-only socket code.
 const fprintd = if (builtin.os.tag == .linux) @import("backend/fprintd.zig") else struct {};
+const authorizer_linux = if (builtin.os.tag == .linux) @import("backend/authorizer_linux.zig") else struct {};
 const logind = if (builtin.os.tag == .linux) @import("backend/logind.zig") else struct {};
 const dbus_conn = if (builtin.os.tag == .linux) @import("backend/dbus_conn.zig") else struct {};
+// Cross-platform log-only presenter: records every refusal/failure reason to the agent log until the
+// real channel presenters (pinentry / modal / tty) land.
+const presenter_log = @import("backend/presenter_log.zig");
+// The pinentry presenter is pure std + the sinete lib (no OS-specific syscalls), so it is imported
+// unconditionally -- the _pinentry-selftest diagnostic runs anywhere a pinentry binary exists.
+const pinentry = @import("backend/pinentry.zig").Pinentry;
 
 // zig-cli action callbacks are bare `fn() !void`, so the process context and the parsed argument
 // values live in file scope (the same pattern as zig-cli's own examples).
@@ -86,6 +93,11 @@ pub fn main(init: std.process.Init) !void {
                     .description = .{ .one_line = "diagnostic: exercise the TPM policy binding (Linux; SINETE_TPM=<sock>)" },
                     .target = .{ .action = .{ .exec = cmdTpmPolicySelftest } },
                 },
+                .{
+                    .name = "_pinentry-selftest",
+                    .description = .{ .one_line = "diagnostic: spawn pinentry, Assuan greeting + BYE (SINETE_PINENTRY=<path>)" },
+                    .target = .{ .action = .{ .exec = cmdPinentrySelftest } },
+                },
             }) },
         },
     };
@@ -114,31 +126,41 @@ fn cmdAgent() !void {
     const sock = if (opt_sock.len > 0) opt_sock else try defaultSockPath(g_io, g_env, &path_buf);
 
     if (builtin.os.tag == .macos) {
+        var lp = presenter_log.LogPresenter{ .io = g_io };
         var be = darwin.Darwin{};
-        try serveAgent(sock, be.processor(), be.authorizer(), null);
+        try serveAgent(sock, be.processor(), be.authorizer(), null, lp.presenter());
     } else if (builtin.os.tag == .linux) {
         var kbuf: [std.fs.max_path_bytes]u8 = undefined;
         var be = linuxBackend(try linuxKeyDir(&kbuf));
-        // Presence is a fingerprint via fprintd; remote/SSH sessions are refused via logind.
+        // The orchestrator is both the Authorizer (fingerprint or a typed confirm) and the Presenter
+        // (refusal/failure messages on the peer's terminal; it owns its own log fallback). Remote/SSH
+        // sessions are refused via logind.
         var fp = fprintd.Fprintd{ .io = g_io, .gpa = g_gpa };
         var lg = logind.Logind{ .io = g_io, .gpa = g_gpa, .self_uid = std.os.linux.getuid() };
-        try serveAgent(sock, be.processor(), fp.authorizer(), lg.localSession());
+        const display = g_env.get("DISPLAY") orelse "";
+        var xauth_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const xauth = xauthPath(&xauth_buf);
+        const runtime_dir = g_env.get("XDG_RUNTIME_DIR") orelse "";
+        const wl_display = g_env.get("WAYLAND_DISPLAY") orelse "";
+        var orch = authorizer_linux.Authorizer.init(g_io, g_gpa, &fp, &lg, display, xauth, runtime_dir, wl_display);
+        try serveAgent(sock, be.processor(), orch.authorizer(), lg.localSession(), orch.presenter());
     } else {
         // No secure element: advertise one freshly generated identity so the protocol path works.
+        var lp = presenter_log.LogPresenter{ .io = g_io };
         var arena = std.heap.ArenaAllocator.init(g_gpa);
         defer arena.deinit();
         const blob = try demoEcdsaBlob(g_io, arena.allocator());
         const keys = [_]sinete.crypto.KeyInfo{.{ .blob = blob, .comment = "sinete demo (fake backend)" }};
         var cp = sinete.crypto.Fake{ .keys = &keys };
         var az = sinete.authz.Fake{};
-        try serveAgent(sock, cp.processor(), az.authorizer(), null);
+        try serveAgent(sock, cp.processor(), az.authorizer(), null, lp.presenter());
     }
 }
 
 /// Wire a Cryptoprocessor + Authorizer into an Agent and serve it over the libxev transport until
 /// the loop ends. A reclaiming allocator backs the per-connection state (leak-detecting in safe
 /// builds, the fast smp_allocator in release); an arena would grow RSS without bound.
-fn serveAgent(sock: []const u8, cp: sinete.crypto.Cryptoprocessor, az: sinete.authz.Authorizer, session: ?sinete.session.LocalSession) !void {
+fn serveAgent(sock: []const u8, cp: sinete.crypto.Cryptoprocessor, az: sinete.authz.Authorizer, session: ?sinete.session.LocalSession, present: ?sinete.presenter.Presenter) !void {
     var debug_alloc: std.heap.DebugAllocator(.{}) = .init;
     const gpa, const debug_gpa = switch (builtin.mode) {
         .Debug, .ReleaseSafe => .{ debug_alloc.allocator(), true },
@@ -153,6 +175,7 @@ fn serveAgent(sock: []const u8, cp: sinete.crypto.Cryptoprocessor, az: sinete.au
         .max_ms = 3_600_000, // 1 h absolute cap
     });
     agent.session = session; // remote-session gate (Linux); null elsewhere leaves it inactive
+    agent.presenter = present; // user-facing refusal/failure messages (log-only for now)
     defer agent.deinit();
 
     var msg_buf: [std.fs.max_path_bytes + 64]u8 = undefined;
@@ -396,6 +419,42 @@ fn cmdTpmPolicySelftest() !void {
         try stderrWrite("error: _tpm-policy-selftest is only supported on Linux\n");
         std.process.exit(2);
     }
+}
+
+/// The Xauthority file for the built-in X11 modal: $XAUTHORITY, else $HOME/.Xauthority. Returns ""
+/// when neither is resolvable; the X11 modal then fails closed (no readable cookie -> X11Unavailable)
+/// and never sends an unauthenticated setup request (it stops before authenticating; the socket may
+/// open first, but no auth-less protocol exchange occurs).
+fn xauthPath(buf: []u8) []const u8 {
+    // An explicitly set $XAUTHORITY is authoritative: use it if usable, else fail closed (return "")
+    // rather than silently authenticating against a different file ($HOME/.Xauthority).
+    if (g_env.get("XAUTHORITY")) |x| {
+        if (x.len == 0 or x.len > buf.len) return "";
+        @memcpy(buf[0..x.len], x);
+        return buf[0..x.len];
+    }
+    const home = g_env.get("HOME") orelse "";
+    if (home.len == 0) return ""; // unset or empty HOME -> no path (avoid a bare "/.Xauthority")
+    const suffix = "/.Xauthority";
+    if (home.len + suffix.len > buf.len) return "";
+    @memcpy(buf[0..home.len], home);
+    @memcpy(buf[home.len..][0..suffix.len], suffix);
+    return buf[0 .. home.len + suffix.len];
+}
+
+fn cmdPinentrySelftest() !void {
+    const program = envValue("SINETE_PINENTRY") orelse "pinentry";
+    pinentry.selftest(g_io, g_gpa, program) catch |e| {
+        // Stream the pieces (ignore write errors) so the diagnostic always reports the real cause --
+        // a fixed bufPrint buffer could itself overflow on a long SINETE_PINENTRY path.
+        stderrWrite("PINENTRY SELFTEST FAIL: ") catch {};
+        stderrWrite(@errorName(e)) catch {};
+        stderrWrite(" (program: ") catch {};
+        stderrWrite(program) catch {};
+        stderrWrite(")\n") catch {};
+        std.process.exit(2);
+    };
+    try stdoutWrite("PINENTRY SELFTEST PASS\n");
 }
 
 // --- output helpers ---
