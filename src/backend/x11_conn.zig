@@ -147,7 +147,7 @@ pub const X11 = struct {
             if (ev[0] == 1) { // a reply: byte 1 is the grab status (0 = Success)
                 if (ev[1] != 0) return error.X11Unavailable;
                 seen += 1;
-            } else if (ev[0] & 0x7f == proto.ev_expose) {
+            } else if ((ev[0] & 0x7f) == proto.ev_expose) {
                 try self.putImage(conn, setup, wid, gc, img);
             } // any other input event before the grabs confirmed: ignore it
         }

@@ -20,13 +20,15 @@ const last: u8 = 0x7e;
 /// so an unexpected byte renders blank rather than reading out of bounds.
 pub fn glyph(c: u8) *const [height]u8 {
     const idx: usize = if (c >= first and c <= last) c - first else 0;
-    return blob[idx * height ..][0..height];
+    // slice[0..comptime_len] yields a *const [len]u8 (a pointer-to-array); annotate to make that explicit.
+    const g: *const [height]u8 = blob[idx * height ..][0..height];
+    return g;
 }
 
 /// Whether pixel column `gx` (0..7, left to right) of row `gy` (0..15) is set for `c`.
 pub fn pixel(c: u8, gx: u3, gy: u4) bool {
     const row = glyph(c)[gy];
-    return (row >> (7 - @as(u3, gx))) & 1 == 1;
+    return ((row >> (7 - @as(u3, gx))) & 1) == 1;
 }
 
 const testing = std.testing;

@@ -109,23 +109,15 @@ pub const Authorizer = struct {
     }
     fn showError(ptr: *anyopaque, cred: ?session.Cred, reason: pres.Reason, detail: []const u8) void {
         const self: *Authorizer = @ptrCast(@alignCast(ptr));
-        // Floor first: always record the reason (with detail) in the log, so a refusal is never lost
-        // even if the terminal write below silently fails (tty vanished / wrong path / permissions).
-        self.log.presenter().showError(cred, reason, detail);
-        // Additionally surface the curated message (no detail) on the peer's own channel: its
-        // terminal when there is one, otherwise a graphical pinentry dialog (best-effort).
+        // showError runs inline on the sign path, before the agent returns SSH_AGENT_FAILURE, so it
+        // must NOT block: a graphical session's error goes to the log only, since popping a blocking
+        // GUI error modal here would hang the client's request until the user dismissed it. (The
+        // gesture *prompt* may block -- presence legitimately waits for the user -- but an error
+        // message may not.) The tty write is a quick, non-blocking write to the peer's terminal.
+        self.log.presenter().showError(cred, reason, detail); // floor: always recorded, with detail
         var buf: [std.fs.max_path_bytes]u8 = undefined;
         if (self.targetTty(cred, &buf)) |path| {
-            tty.showMessage(path, pres.message(reason));
-        } else {
-            // Graphical: pinentry message, else the built-in X11 modal (both best-effort).
-            var pe = pinentry.Pinentry{ .io = self.io, .gpa = self.gpa, .display = self.display };
-            if (pe.message(reason)) |_| {} else |_| {
-                if (self.display.len > 0) {
-                    var xm = x11.X11{ .io = self.io, .gpa = self.gpa, .display = self.display, .xauth_path = self.xauth_path };
-                    xm.message(reason);
-                }
-            }
+            tty.showMessage(path, pres.message(reason)); // curated text only; detail never hits the user's tty
         }
     }
 
