@@ -81,6 +81,11 @@ pub fn main(init: std.process.Init) !void {
                     .description = .{ .one_line = "diagnostic: connect to the system D-Bus and Hello (Linux)" },
                     .target = .{ .action = .{ .exec = cmdDbusSelftest } },
                 },
+                .{
+                    .name = "_tpm-policy-selftest",
+                    .description = .{ .one_line = "diagnostic: exercise the TPM policy binding (Linux; SINETE_TPM=<sock>)" },
+                    .target = .{ .action = .{ .exec = cmdTpmPolicySelftest } },
+                },
             }) },
         },
     };
@@ -235,6 +240,8 @@ fn envValue(name: []const u8) ?[]const u8 {
 /// /dev/tpmrm0). `keydir` must outlive the returned value.
 fn linuxBackend(keydir: []const u8) linux.Linux {
     const sock = envValue("SINETE_TPM"); // empty -> unset: fall back to the kernel device
+    // The master secret is loaded lazily on the first policy-bound sign (Linux.ensureMasterLoaded),
+    // so an agent that started before the first generate still picks it up.
     return .{
         .io = g_io,
         .gpa = g_gpa,
@@ -377,6 +384,16 @@ fn cmdDbusSelftest() !void {
         try stdoutWrite("DBUS SELFTEST PASS\n");
     } else {
         try stderrWrite("error: _dbus-selftest is only supported on Linux\n");
+        std.process.exit(2);
+    }
+}
+
+fn cmdTpmPolicySelftest() !void {
+    if (builtin.os.tag == .linux) {
+        const sock = envValue("SINETE_TPM");
+        try linux.policySelftest(g_io, sock orelse "/dev/tpmrm0", sock != null);
+    } else {
+        try stderrWrite("error: _tpm-policy-selftest is only supported on Linux\n");
         std.process.exit(2);
     }
 }

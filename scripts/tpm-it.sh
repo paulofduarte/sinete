@@ -3,9 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Linux TPM integration test against swtpm, in an OrbStack/Docker Linux container (there is no TPM on
-# a dev Mac, and CI can't run it). Cross-compiles the agent, then runs the selftest + a full
-# generate -> list -> agent ssh-add -l -> ssh-keygen -Y sign -> verify -> remove round-trip. The
-# pure marshaling is unit-tested separately by `zig build test`; this exercises the device path.
+# a dev Mac, and CI can't run it). Cross-compiles the agent, then exercises the device path: the Z4
+# empty-auth crypto + key lifecycle, and the Z5b policy binding (a policy-bound key signs only via a
+# policy session that proves the master secret; an empty-auth sign on it must fail). Two fresh swtpm
+# instances are used so the policy selftest's master does not collide with the auto-enrolled one.
+#
+# The agent-mediated `ssh-keygen -Y sign` path is NOT exercised here: since Z5a it requires a
+# fingerprint (fprintd) which a bare container has no way to provide -- that is a manual / virtual-
+# device checklist item (manual/z5-linux-presence.md). Listing identities needs no presence, so the
+# agent `ssh-add -l` is still checked. The pure marshaling is unit-tested by `zig build test`.
 #
 # Usage:  scripts/tpm-it.sh        (needs docker/orbstack)
 
@@ -30,25 +36,37 @@ zig build -Doptimize=ReleaseFast "-Dtarget=${arch}-linux-musl"
 # profile blocks. A real Linux host has io_uring; this only relaxes the container for the test.
 docker run --rm --security-opt seccomp=unconfined -v "$repo/zig-out/bin:/host:ro" alpine:latest sh -c '
   set -e
+  set -o pipefail  # so a failing command on the left of a | is not masked by grep (busybox ash supports it)
   apk add --no-cache swtpm openssh-client >/dev/null 2>&1
-  mkdir -p /tmp/tpm /root; export HOME=/root
-  swtpm socket --tpm2 --tpmstate dir=/tmp/tpm \
-    --ctrl type=unixio,path=/tmp/tpm/ctrl --server type=unixio,path=/tmp/tpm/sock --flags startup-clear &
+  mkdir -p /tmp/t1 /tmp/t2 /root; export HOME=/root
+  for d in t1 t2; do
+    swtpm socket --tpm2 --tpmstate dir=/tmp/$d \
+      --ctrl type=unixio,path=/tmp/$d/ctrl --server type=unixio,path=/tmp/$d/sock --flags startup-clear &
+  done
   sleep 2
-  export SINETE_TPM=/tmp/tpm/sock
   B=/host/sinete
 
-  "$B" _tpm-selftest | grep -q "SELFTEST PASS"
+  # Z5b policy binding, on its own fresh TPM (defines its own master). Run first (set -e enforces a
+  # zero exit), then check the output, so a non-zero exit cannot be hidden by the grep.
+  pol=$(SINETE_TPM=/tmp/t1/sock "$B" _tpm-policy-selftest)
+  echo "$pol" | grep -q "POLICY SELFTEST PASS"
+  echo "ok: policy binding (empty-auth sign rejected, policy-session sign verifies)"
+
+  # Z4 crypto + the key lifecycle, on a second fresh TPM.
+  export SINETE_TPM=/tmp/t2/sock
+  self=$("$B" _tpm-selftest)
+  echo "$self" | grep -q "SELFTEST PASS"
   echo "ok: selftest"
 
   "$B" generate ztest >/dev/null
   "$B" list | grep -q "ztest (ECDSA)"
-  echo "ok: generate + list"
+  echo "ok: generate + list (policy-bound key, master auto-enrolled)"
 
-  # the key file holds TPM-wrapped private material: directory 0700, file 0600
+  # owner-only: directory 0700, key file and master secret 0600
   test "$(stat -c %a /root/.local/share/sinete/keys)" = 700
   test "$(stat -c %a /root/.local/share/sinete/keys/ztest)" = 600
-  echo "ok: key dir 0700, key file 0600"
+  test "$(stat -c %a /root/.local/share/sinete/keys/master.secret)" = 600
+  echo "ok: key dir 0700; key file + master.secret 0600"
 
   # generate must never clobber an existing key (exclusive create)
   if "$B" generate ztest >/dev/null 2>&1; then echo "FAIL: regenerate overwrote a key" >&2; exit 1; fi
@@ -58,13 +76,6 @@ docker run --rm --security-opt seccomp=unconfined -v "$repo/zig-out/bin:/host:ro
   sleep 1
   SSH_AUTH_SOCK=/tmp/a.sock ssh-add -l | grep -q "ztest (ECDSA)"
   echo "ok: agent ssh-add -l"
-
-  SSH_AUTH_SOCK=/tmp/a.sock ssh-add -L > /tmp/k.pub
-  printf "hello sinete z4" > /tmp/msg
-  SSH_AUTH_SOCK=/tmp/a.sock ssh-keygen -Y sign -f /tmp/k.pub -n test /tmp/msg < /tmp/msg >/dev/null 2>&1
-  echo "ztest@tpm $(cat /tmp/k.pub)" > /tmp/allowed
-  ssh-keygen -Y verify -f /tmp/allowed -I ztest@tpm -n test -s /tmp/msg.sig < /tmp/msg | grep -q "Good"
-  echo "ok: ssh-keygen -Y sign through the agent verifies"
 
   # the optional "sinete-" prefix resolves to the bare key name (parity with macOS)
   "$B" export sinete-ztest | grep -q "ztest"

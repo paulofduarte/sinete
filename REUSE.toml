@@ -17,7 +17,7 @@ SPDX-License-Identifier = "Apache-2.0"
 
 # The manual checklists are plain Markdown.
 [[annotations]]
-path = ["manual/z3-macos-se.md", "manual/z4-linux-tpm.md", "manual/z5-linux-presence.md"]
+path = ["manual/z3-macos-se.md", "manual/z4-linux-tpm.md", "manual/z5-linux-presence.md", "manual/z5-linux-policy.md"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Paulo Duarte"
 SPDX-License-Identifier = "Apache-2.0"
