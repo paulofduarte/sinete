@@ -51,9 +51,6 @@ pub const Wayland = struct {
     pub fn confirm(self: *Wayland, reason: presenter.Reason) Error!presenter.Outcome {
         return self.run(.{ .message = presenter.message(reason), .confirm = true });
     }
-    pub fn message(self: *Wayland, reason: presenter.Reason) void {
-        _ = self.run(.{ .message = presenter.message(reason), .confirm = false }) catch {};
-    }
 
     fn run(self: *Wayland, modal: ui.Modal) Error!presenter.Outcome {
         if (self.runtime_dir.len == 0 or self.wl_display.len == 0) return error.WaylandUnavailable;

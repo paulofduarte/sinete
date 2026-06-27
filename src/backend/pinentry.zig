@@ -32,17 +32,6 @@ pub const Pinentry = struct {
     /// cancel/deny. Any failure to even show the dialog (no pinentry, protocol/IO error) is
     /// PinentryUnavailable.
     pub fn confirm(self: *Pinentry, reason: presenter.Reason) Error!presenter.Outcome {
-        return self.run(reason, false);
-    }
-
-    /// Show a one-shot message (a refusal/failure) via a one-button dialog. Returns normally once the
-    /// dialog was shown; PinentryUnavailable if it could not be presented (so the caller can fall
-    /// through to another channel).
-    pub fn message(self: *Pinentry, reason: presenter.Reason) Error!void {
-        _ = try self.run(reason, true);
-    }
-
-    fn run(self: *Pinentry, reason: presenter.Reason, one_button: bool) Error!presenter.Outcome {
         var child = std.process.spawn(self.io, .{
             .argv = &.{self.program},
             .stdin = .pipe,
@@ -56,11 +45,11 @@ pub const Pinentry = struct {
         // The greeting is the first line and must be OK.
         if (!isOk(self.readLine(&stdout, &rbuf) catch return self.abort(&child))) return self.abort(&child);
 
-        self.setup(&stdin, &stdout, &rbuf, reason, one_button) catch return self.abort(&child);
+        self.setup(&stdin, &stdout, &rbuf, reason) catch return self.abort(&child);
 
         var line: std.ArrayList(u8) = .empty;
         defer line.deinit(self.gpa);
-        assuan.appendConfirm(self.gpa, &line, one_button) catch return self.abort(&child);
+        assuan.appendConfirm(self.gpa, &line, false) catch return self.abort(&child); // two-button Approve/Deny
         self.write(&stdin, line.items) catch return self.abort(&child);
 
         // Read until a terminal OK/ERR; status/comment lines precede it.
@@ -70,9 +59,8 @@ pub const Pinentry = struct {
         return outcome;
     }
 
-    /// Send the OPTION display + SETDESC/SETOK[/SETCANCEL] setup lines, checking each reply is OK. A
-    /// confirm uses Approve/Deny buttons; a one-button message uses a neutral OK and no cancel.
-    fn setup(self: *Pinentry, stdin: *std.Io.File, stdout: *std.Io.File, rbuf: []u8, reason: presenter.Reason, one_button: bool) !void {
+    /// Send the OPTION display + SETDESC/SETOK/SETCANCEL setup lines, checking each reply is OK.
+    fn setup(self: *Pinentry, stdin: *std.Io.File, stdout: *std.Io.File, rbuf: []u8, reason: presenter.Reason) !void {
         var line: std.ArrayList(u8) = .empty;
         defer line.deinit(self.gpa);
 
@@ -81,12 +69,8 @@ pub const Pinentry = struct {
         }
         try assuan.appendText(self.gpa, &line, "SETTITLE", "sinete");
         try assuan.appendText(self.gpa, &line, "SETDESC", presenter.message(reason));
-        if (one_button) {
-            try assuan.appendText(self.gpa, &line, "SETOK", "OK"); // a message: neutral, no cancel
-        } else {
-            try assuan.appendText(self.gpa, &line, "SETOK", "Approve");
-            try assuan.appendText(self.gpa, &line, "SETCANCEL", "Deny");
-        }
+        try assuan.appendText(self.gpa, &line, "SETOK", "Approve");
+        try assuan.appendText(self.gpa, &line, "SETCANCEL", "Deny");
 
         // Send each line and consume its OK; an ERR on setup aborts (fail closed).
         var it = std.mem.splitScalar(u8, line.items, '\n');
@@ -167,8 +151,9 @@ pub const Pinentry = struct {
             child.kill(io);
             _ = child.wait(io) catch {};
         }
-        var stdin = child.stdin orelse return error.PinentryUnavailable;
-        var stdout = child.stdout orelse return error.PinentryUnavailable;
+        // Distinct errors so the diagnostic reports exactly what was missing (not just Unavailable).
+        var stdin = child.stdin orelse return error.NoStdinPipe;
+        var stdout = child.stdout orelse return error.NoStdoutPipe;
         var rbuf: [greeting_max]u8 = undefined;
         if (!isOk(try p.readLine(&stdout, &rbuf))) return error.BadGreeting;
         p.bye(&stdin);

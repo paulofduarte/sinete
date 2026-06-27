@@ -9,8 +9,12 @@
 //! terminal (a local console or an ssh pts) prompts on that terminal via the pure-Zig termios prompt;
 //! a graphical session uses a pinentry dialog, falling back to the built-in X11 modal when pinentry
 //! is absent, then to the built-in Wayland (wlr-layer-shell) modal for a stripped Wayland session
-//! without XWayland. Everything fails closed: an unusable channel refuses (authorize), and showError
-//! always records to the log before any terminal/pinentry/modal attempt.
+//! without XWayland. Everything fails closed: an unusable channel refuses (authorize). showError is
+//! the exception that does NOT block (it runs inline on the sign path): it always logs, and writes
+//! to the peer's terminal when there is one, but a GRAPHICAL session's refusal is LOG-ONLY -- a
+//! blocking GUI message dialog would hang the client's request, and an in-session non-blocking
+//! notification is a future enhancement. So the graphical modals are used for the PROMPT, not for
+//! failure messages.
 
 const std = @import("std");
 const sinete = @import("sinete");

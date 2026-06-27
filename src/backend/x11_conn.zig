@@ -42,11 +42,6 @@ pub const X11 = struct {
         return self.run(.{ .message = presenter.message(reason), .confirm = true });
     }
 
-    /// Show a one-shot message (refusal/failure) with a single OK; best-effort.
-    pub fn message(self: *X11, reason: presenter.Reason) void {
-        _ = self.run(.{ .message = presenter.message(reason), .confirm = false }) catch {};
-    }
-
     fn run(self: *X11, modal: ui.Modal) Error!presenter.Outcome {
         const dnum = displayNumber(self.display) orelse return error.X11Unavailable;
 

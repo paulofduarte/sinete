@@ -306,7 +306,8 @@ const Reader = struct {
         const n: usize = try self.rU32();
         if (n == 0) return "";
         if (self.pos + n > self.b.len) return error.Truncated;
-        const s = self.b[self.pos .. self.pos + n - 1]; // drop the NUL
+        if (self.b[self.pos + n - 1] != 0) return error.BadMessage; // the trailing NUL must be present
+        const s = self.b[self.pos .. self.pos + n - 1]; // content without the NUL
         const padded = (n + 3) & ~@as(usize, 3);
         if (self.pos + padded > self.b.len) return error.Truncated;
         self.pos += padded;
