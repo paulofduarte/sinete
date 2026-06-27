@@ -378,7 +378,9 @@ pub const Linux = struct {
                 self.has_master = true;
                 return self.master_secret;
             }
-            if (attempt >= 20) return error.BadMasterSecret; // ~100ms of retries, then give up
+            // Only a short read can be a concurrent writer mid-create (the file grows toward 32 bytes);
+            // a larger file is genuinely corrupt, so fail immediately rather than sleeping ~100ms.
+            if (data.len > 32 or attempt >= 20) return error.BadMasterSecret;
             self.io.sleep(.fromMilliseconds(5), .awake) catch {};
         }
     }
