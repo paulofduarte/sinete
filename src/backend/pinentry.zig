@@ -18,6 +18,7 @@ pub const Error = error{PinentryUnavailable};
 
 const greeting_max = 512;
 const reply_max = 1024;
+const read_timeout_ms: i32 = 300_000; // a hung pinentry must not wedge the agent thread forever
 
 pub const Pinentry = struct {
     io: std.Io,
@@ -115,11 +116,14 @@ pub const Pinentry = struct {
         try f.writeStreamingAll(self.io, bytes);
     }
 
-    /// Read one '\n'-terminated line into `buf`, returning it without the newline. Errors on EOF or
-    /// an overlong line (so a wedged pinentry can't grow memory unbounded).
+    /// Read one '\n'-terminated line into `buf`, returning it without the newline. Errors on EOF, an
+    /// overlong line (so a wedged pinentry can't grow memory unbounded), or a read that blocks past
+    /// the timeout (so a hung pinentry can't wedge the agent's single thread forever -- the caller
+    /// then aborts the child and falls through to the next channel).
     fn readLine(self: *Pinentry, f: *std.Io.File, buf: []u8) ![]const u8 {
         var n: usize = 0;
         while (n < buf.len) {
+            if (!waitReadable(f.handle, read_timeout_ms)) return error.PinentryUnavailable;
             var one: [1]u8 = undefined;
             const got = f.readStreaming(self.io, &.{&one}) catch return error.PinentryUnavailable;
             if (got == 0) return error.PinentryUnavailable; // EOF before a line
@@ -128,6 +132,16 @@ pub const Pinentry = struct {
             n += 1;
         }
         return error.PinentryUnavailable; // line too long
+    }
+
+    /// Whether `fd` becomes readable within `timeout_ms` (the portable std.posix.poll, so the
+    /// selftest runs on macOS too). pinentry's pipes are not sockets, so SO_RCVTIMEO does not apply;
+    /// this bounds the blocking read instead. A poll error or timeout returns false (caller aborts).
+    fn waitReadable(fd: std.posix.fd_t, timeout_ms: i32) bool {
+        var fds = [_]std.posix.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
+        const n = std.posix.poll(&fds, timeout_ms) catch return false;
+        if (n == 0) return false; // timed out
+        return (fds[0].revents & std.posix.POLL.IN) != 0;
     }
 
     fn isOk(line: []const u8) bool {

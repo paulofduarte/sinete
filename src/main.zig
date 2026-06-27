@@ -445,8 +445,13 @@ fn xauthPath(buf: []u8) []const u8 {
 fn cmdPinentrySelftest() !void {
     const program = envValue("SINETE_PINENTRY") orelse "pinentry";
     pinentry.selftest(g_io, g_gpa, program) catch |e| {
-        var buf: [160]u8 = undefined;
-        try stderrWrite(try std.fmt.bufPrint(&buf, "PINENTRY SELFTEST FAIL: {s} (program: {s})\n", .{ @errorName(e), program }));
+        // Stream the pieces (ignore write errors) so the diagnostic always reports the real cause --
+        // a fixed bufPrint buffer could itself overflow on a long SINETE_PINENTRY path.
+        stderrWrite("PINENTRY SELFTEST FAIL: ") catch {};
+        stderrWrite(@errorName(e)) catch {};
+        stderrWrite(" (program: ") catch {};
+        stderrWrite(program) catch {};
+        stderrWrite(")\n") catch {};
         std.process.exit(2);
     };
     try stdoutWrite("PINENTRY SELFTEST PASS\n");

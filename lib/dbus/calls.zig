@@ -132,9 +132,12 @@ pub fn parseVariantBool(body: []const u8, endian: std.builtin.Endian) ParseError
 
 /// A reply whose body is a single string array (as): the leading 4-aligned u32 is the array's byte
 /// length. Returns whether it is non-empty -- used for ListEnrolledFingers (is any finger enrolled?).
+/// Validates that the declared length is actually present (a truncated reply is Truncated, not a
+/// spurious "non-empty" that could wrongly report a user as enrolled).
 pub fn parseStringArrayNonEmpty(body: []const u8, endian: std.builtin.Endian) ParseError!bool {
     var d = wire.Decoder{ .data = body, .endian = endian };
     const len = try d.get32();
+    if (len > d.data.len - d.pos) return error.Truncated; // declared array bytes not present
     return len > 0;
 }
 
@@ -296,6 +299,11 @@ test "parseStringArrayNonEmpty: empty as is false, a populated as is true" {
     try enc.put32(@intCast(elems.bytes().len));
     try enc.raw(elems.bytes());
     try testing.expectEqual(true, try parseStringArrayNonEmpty(enc.bytes(), .little));
+
+    // A reply declaring more array bytes than are present is Truncated, not a spurious "non-empty".
+    enc.reset();
+    try enc.put32(64); // claims 64 bytes but the body has none after the length
+    try testing.expectError(error.Truncated, parseStringArrayNonEmpty(enc.bytes(), .little));
 }
 
 test "parseVerifyStatus reads (result, done)" {
