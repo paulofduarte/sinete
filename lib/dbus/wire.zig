@@ -120,20 +120,23 @@ pub const Decoder = struct {
     pub fn boolean(self: *Decoder) Error!bool {
         return (try self.get32()) != 0;
     }
-    /// A STRING (s) or OBJECT_PATH (o); returns the bytes without the NUL.
+    /// A STRING (s) or OBJECT_PATH (o); returns the bytes without the NUL. The required trailing NUL
+    /// must be present (a missing one is a malformed frame).
     pub fn string(self: *Decoder) Error![]const u8 {
         const n: usize = @intCast(try self.get32());
         // n bytes of content + 1 NUL terminator
         const end = std.math.add(usize, self.pos, n + 1) catch return error.Truncated;
         if (end > self.data.len) return error.Truncated;
+        if (self.data[self.pos + n] != 0) return error.BadMessage;
         defer self.pos = end;
         return self.data[self.pos .. self.pos + n];
     }
-    /// A SIGNATURE (g); returns the bytes without the NUL.
+    /// A SIGNATURE (g); returns the bytes without the NUL, which (like a string) must be present.
     pub fn signature(self: *Decoder) Error![]const u8 {
         const n: usize = try self.byte();
         const end = std.math.add(usize, self.pos, n + 1) catch return error.Truncated;
         if (end > self.data.len) return error.Truncated;
+        if (self.data[self.pos + n] != 0) return error.BadMessage;
         defer self.pos = end;
         return self.data[self.pos .. self.pos + n];
     }
@@ -213,6 +216,13 @@ test "decoder honors a big-endian order byte" {
 test "decoder rejects a string that overruns its buffer" {
     var dec = Decoder{ .data = &[_]u8{ 5, 0, 0, 0, 'a', 'b' } }; // says 5, only 2 follow
     try testing.expectError(error.Truncated, dec.string());
+}
+
+test "decoder rejects a string or signature missing its NUL terminator" {
+    var s = Decoder{ .data = &[_]u8{ 2, 0, 0, 0, 'a', 'b', 'X' } }; // terminator is 'X', not 0
+    try testing.expectError(error.BadMessage, s.string());
+    var g = Decoder{ .data = &[_]u8{ 1, 's', 'X' } }; // signature terminator is 'X', not 0
+    try testing.expectError(error.BadMessage, g.signature());
 }
 
 test "skipBasic steps over an unconsumed variant value" {

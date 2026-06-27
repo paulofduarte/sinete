@@ -76,8 +76,9 @@ fn peerCred(fd: std.posix.fd_t) ?sinete.session.Cred {
             var uc: ucred = undefined;
             var len: std.os.linux.socklen_t = @sizeOf(ucred);
             const rc = std.os.linux.getsockopt(fd, std.os.linux.SOL.SOCKET, std.os.linux.SO.PEERCRED, @ptrCast(&uc), &len);
-            // A raw linux syscall returns 0 on success, or -errno encoded in the high bits.
-            if (@as(isize, @bitCast(rc)) != 0) return null;
+            // A raw linux syscall returns 0 on success, or -errno encoded in the high bits. Also
+            // require the full struct was written, so a short return never leaves fields uninitialized.
+            if (@as(isize, @bitCast(rc)) != 0 or len != @sizeOf(ucred)) return null;
             return .{ .pid = uc.pid, .uid = uc.uid };
         },
         else => return null,

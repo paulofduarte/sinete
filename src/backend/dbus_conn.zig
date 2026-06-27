@@ -18,6 +18,7 @@ const linux = std.os.linux;
 
 const default_system_bus = "/var/run/dbus/system_bus_socket";
 const recv_timeout_s: i64 = 30; // generous: method replies are instant; verify signals arrive within it
+const max_rx = 256 * 1024; // the messages sinete exchanges are tiny; cap the buffer and fail closed
 
 pub const Error = error{ DbusConnect, DbusAuth, DbusClosed, DbusError, DbusProtocol };
 
@@ -161,6 +162,7 @@ pub const Conn = struct {
     }
 
     fn fillOnce(self: *Conn) Error!void {
+        if (self.rx.items.len >= max_rx) return error.DbusProtocol; // a frame that never completes
         var tmp: [4096]u8 = undefined;
         const n = self.file.readStreaming(self.io, &.{&tmp}) catch return error.DbusClosed;
         if (n == 0) return error.DbusClosed;
