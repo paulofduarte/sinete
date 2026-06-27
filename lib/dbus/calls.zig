@@ -151,10 +151,17 @@ pub const SessionIter = struct {
     pub fn init(body: []const u8, endian: std.builtin.Endian) ParseError!SessionIter {
         var d = wire.Decoder{ .data = body, .endian = endian };
         const len: usize = @intCast(try d.get32());
-        if (len == 0) return .{ .d = d, .end = d.pos }; // empty array: no element-alignment padding
+        if (len == 0) { // empty array: no element-alignment padding, nothing to read
+            d.data = body[0..d.pos];
+            return .{ .d = d, .end = d.pos };
+        }
         try d.alignTo(8); // padding to the struct element boundary precedes the first element
         const end = std.math.add(usize, d.pos, len) catch return error.UnexpectedType;
         if (end > body.len) return error.UnexpectedType;
+        // Cap the decoder to the array's declared byte length so a malformed/short length cannot let
+        // a struct field read into bytes past the array; the decoder otherwise bounds only against
+        // body.len. Past `end`, string()/get32() then fail with Truncated (fail closed).
+        d.data = body[0..end];
         return .{ .d = d, .end = end };
     }
 
@@ -292,6 +299,21 @@ test "SessionIter on an empty array yields nothing" {
     try enc.put32(0); // zero-length array: no element-alignment padding follows
     var it = try SessionIter.init(enc.bytes(), .little);
     try testing.expect((try it.next()) == null);
+}
+
+test "SessionIter fails closed when a struct runs past the declared array length" {
+    var enc = Encoder.init(testing.allocator);
+    defer enc.deinit();
+    const lp = enc.mark();
+    try enc.raw(&[_]u8{ 0, 0, 0, 0 });
+    try enc.pad(8);
+    try appendSession(&enc, "1", 1000, "alice", "seat0", "/org/freedesktop/login1/session/_31");
+    // Declare an array length (4) far shorter than the struct actually occupies: with the decoder
+    // capped to `end`, the struct's fields read past it and fail with Truncated rather than
+    // wandering into the bytes after the array.
+    enc.patchU32(lp, 4);
+    var it = try SessionIter.init(enc.bytes(), .little);
+    try testing.expectError(error.Truncated, it.next());
 }
 
 test "localOnlyForUser: local iff the user has a session and none is remote" {
