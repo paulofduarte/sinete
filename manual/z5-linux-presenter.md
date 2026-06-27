@@ -47,7 +47,19 @@ is exercised:
       (green) / **Deny** (red) buttons, readable Spleen text, and a keyboard/pointer grab.
 - [ ] **Click Approve** signs; **click Deny** (or press **Esc**) refuses. The window is modal
       (other windows don't take input while it's up).
-- [ ] On a **Wayland** session with **XWayland** present, the same modal appears (via XWayland).
+- [ ] On a **Wayland** session with **XWayland** present, the X11 modal appears (via XWayland).
+
+## Graphical channel — built-in Wayland modal (no pinentry, no XWayland)
+
+On a wlroots compositor (sway / Hyprland / niri) with **XWayland disabled** and **pinentry absent**,
+the built-in Wayland layer-shell modal is exercised:
+
+- [ ] A cold sign draws sinete's own modal as a `zwlr_layer_shell_v1` overlay (top-most), with an
+      **exclusive keyboard grab** so it is truly modal.
+- [ ] **Click Approve** signs; **click Deny** (or press **Esc**) refuses.
+- [ ] Compositors **without** `zwlr_layer_shell_v1` (notably GNOME/Mutter) are not covered by this
+      path — but they ship XWayland, so the X11 modal covers them. A session with neither
+      layer-shell nor XWayland falls back to the log.
 - [ ] Killing the X server while the modal is up fails closed (the sign is refused, agent survives).
 
 ## Refusal/failure messages (non-blocking)

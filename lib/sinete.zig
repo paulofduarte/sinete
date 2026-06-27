@@ -20,6 +20,7 @@ pub const modal_font = @import("modal/font.zig");
 pub const modal_canvas = @import("modal/canvas.zig");
 pub const modal_ui = @import("modal/ui.zig");
 pub const x11_proto = @import("x11/proto.zig");
+pub const wayland_proto = @import("wayland/proto.zig");
 pub const wire = @import("ssh/wire.zig");
 pub const ecdsa_key = @import("ssh/ecdsa_key.zig");
 pub const ecdsa_sig = @import("ssh/ecdsa_sig.zig");
@@ -56,6 +57,7 @@ test {
     _ = modal_canvas;
     _ = modal_ui;
     _ = x11_proto;
+    _ = wayland_proto;
     _ = wire;
     _ = ecdsa_key;
     _ = ecdsa_sig;

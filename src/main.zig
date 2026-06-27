@@ -140,7 +140,9 @@ fn cmdAgent() !void {
         const display = g_env.get("DISPLAY") orelse "";
         var xauth_buf: [std.fs.max_path_bytes]u8 = undefined;
         const xauth = xauthPath(&xauth_buf);
-        var orch = authorizer_linux.Authorizer.init(g_io, g_gpa, &fp, &lg, display, xauth);
+        const runtime_dir = g_env.get("XDG_RUNTIME_DIR") orelse "";
+        const wl_display = g_env.get("WAYLAND_DISPLAY") orelse "";
+        var orch = authorizer_linux.Authorizer.init(g_io, g_gpa, &fp, &lg, display, xauth, runtime_dir, wl_display);
         try serveAgent(sock, be.processor(), orch.authorizer(), lg.localSession(), orch.presenter());
     } else {
         // No secure element: advertise one freshly generated identity so the protocol path works.

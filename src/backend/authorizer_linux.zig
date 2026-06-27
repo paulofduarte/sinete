@@ -8,8 +8,8 @@
 //! is resolved from the peer credential via logind (logind.peerTty): a session with a controlling
 //! terminal (a local console or an ssh pts) prompts on that terminal via the pure-Zig termios prompt;
 //! a graphical session uses a pinentry dialog, falling back to the built-in X11 modal when pinentry
-//! is absent (the built-in Wayland modal, for a stripped Wayland session without XWayland, lands in a
-//! later milestone). Everything fails closed: an unusable channel refuses (authorize), and showError
+//! is absent, then to the built-in Wayland (wlr-layer-shell) modal for a stripped Wayland session
+//! without XWayland. Everything fails closed: an unusable channel refuses (authorize), and showError
 //! always records to the log before any terminal/pinentry/modal attempt.
 
 const std = @import("std");
@@ -23,6 +23,7 @@ const logind = @import("logind.zig");
 const tty = @import("tty_prompt.zig");
 const pinentry = @import("pinentry.zig");
 const x11 = @import("x11_conn.zig");
+const wayland = @import("wayland_conn.zig");
 const presenter_log = @import("presenter_log.zig");
 
 pub const Authorizer = struct {
@@ -35,11 +36,14 @@ pub const Authorizer = struct {
     display: []const u8,
     /// The Xauthority file path for the built-in X11 modal ($XAUTHORITY or $HOME/.Xauthority).
     xauth_path: []const u8,
+    /// $XDG_RUNTIME_DIR + $WAYLAND_DISPLAY for the built-in Wayland modal (no-XWayland fallback).
+    runtime_dir: []const u8,
+    wl_display: []const u8,
     /// Log fallback for showError, and the always-on floor so a refusal is never lost.
     log: presenter_log.LogPresenter,
 
-    pub fn init(io: std.Io, gpa: std.mem.Allocator, fp: *fprintd.Fprintd, lg: *logind.Logind, display: []const u8, xauth_path: []const u8) Authorizer {
-        return .{ .io = io, .gpa = gpa, .fp = fp, .lg = lg, .display = display, .xauth_path = xauth_path, .log = .{ .io = io } };
+    pub fn init(io: std.Io, gpa: std.mem.Allocator, fp: *fprintd.Fprintd, lg: *logind.Logind, display: []const u8, xauth_path: []const u8, runtime_dir: []const u8, wl_display: []const u8) Authorizer {
+        return .{ .io = io, .gpa = gpa, .fp = fp, .lg = lg, .display = display, .xauth_path = xauth_path, .runtime_dir = runtime_dir, .wl_display = wl_display, .log = .{ .io = io } };
     }
 
     pub fn authorizer(self: *Authorizer) authz.Authorizer {
@@ -83,14 +87,19 @@ pub const Authorizer = struct {
     fn confirm(self: *Authorizer, cred: ?session.Cred, reason: pres.Reason) !pres.Outcome {
         var buf: [std.fs.max_path_bytes]u8 = undefined;
         if (self.targetTty(cred, &buf)) |path| return tty.promptConfirm(path, reason);
-        // Graphical session: pinentry (native), then the built-in X11 modal if pinentry is absent.
+        // Graphical session: pinentry (native), then the built-in X11 modal, then the built-in
+        // Wayland modal (a no-XWayland session). Each is tried only when its environment is present.
         var pe = pinentry.Pinentry{ .io = self.io, .gpa = self.gpa, .display = self.display };
         const pe_err = if (pe.confirm(reason)) |o| return o else |e| e;
         if (self.display.len > 0) {
             var xm = x11.X11{ .io = self.io, .gpa = self.gpa, .display = self.display, .xauth_path = self.xauth_path };
-            return xm.confirm(reason); // error.X11Unavailable -> caller maps to PresenceUnavailable
+            if (xm.confirm(reason)) |o| return o else |_| {}
         }
-        return pe_err; // no X11 fallback: surface the actual pinentry failure, not X11Unavailable
+        if (self.wl_display.len > 0) {
+            var wm = wayland.Wayland{ .io = self.io, .gpa = self.gpa, .runtime_dir = self.runtime_dir, .wl_display = self.wl_display };
+            return wm.confirm(reason); // error -> caller maps to PresenceUnavailable
+        }
+        return pe_err; // no graphical modal available: surface the pinentry failure
     }
 
     // --- Presenter ---
