@@ -172,9 +172,15 @@ fn keyByte(keycode: u8) ?u8 {
     };
 }
 
-/// The display number N from a ":N" / ":N.S" / "host:N" DISPLAY, or null for an unsupported form.
+/// The display number N from a LOCAL ":N" / ":N.S" / "unix:N" DISPLAY, or null. A DISPLAY with a
+/// non-local host (e.g. an SSH-forwarded "localhost:10.0") is rejected: connect() only uses the local
+/// unix socket /tmp/.X11-unix/XN, so honoring N from a remote DISPLAY would draw the prompt on an
+/// unintended local display. Such a session is refused (X11Unavailable), which is the safe outcome
+/// for a presence prompt -- presence is local by design.
 fn displayNumber(display: []const u8) ?u32 {
     const colon = std.mem.lastIndexOfScalar(u8, display, ':') orelse return null;
+    const host = display[0..colon];
+    if (host.len != 0 and !std.mem.eql(u8, host, "unix")) return null; // non-local DISPLAY -> refuse
     var s = display[colon + 1 ..];
     if (std.mem.indexOfScalar(u8, s, '.')) |dot| s = s[0..dot];
     if (s.len == 0) return null;
