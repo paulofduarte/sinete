@@ -80,7 +80,7 @@ pub const Agent = struct {
         // peek is non-mutating: require presence on a cold window, then commit the window only
         // after the signature succeeds, so a failed sign never primes a silent window.
         const warm = self.windows.peek(key_id, now_ms, self.cfg.idle_ms, self.cfg.max_ms);
-        if (!warm) self.az.authorize(key_id, self.cfg.reason) catch |e| {
+        if (!warm) self.az.authorize(cred, key_id, self.cfg.reason) catch |e| {
             // Distinguish "no presence method available" from a user decline so the message is right.
             self.notify(cred, if (e == error.PresenceUnavailable) .unavailable else .declined, @errorName(e));
             return error.PresenceRefused;

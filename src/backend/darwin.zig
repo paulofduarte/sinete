@@ -84,8 +84,9 @@ pub const Darwin = struct {
         return ecdsa_sig.derP256ToSshBlob(der[0..@intCast(dn)], out);
     }
 
-    fn authorize(ptr: *anyopaque, key_id: []const u8, reason: []const u8) anyerror!void {
+    fn authorize(ptr: *anyopaque, cred: ?sinete.session.Cred, key_id: []const u8, reason: []const u8) anyerror!void {
         _ = ptr;
+        _ = cred; // Touch ID draws on the console regardless of the peer; remote refusal is PR D
         _ = key_id; // the gesture is presence-only; the entitlement wall binds key use
         var rbuf: [256]u8 = undefined;
         const r: [:0]const u8 = std.fmt.bufPrintZ(&rbuf, "{s}", .{reason}) catch "authenticate to use a sinete key";

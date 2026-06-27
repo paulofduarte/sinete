@@ -1,15 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Paulo Duarte
 // SPDX-License-Identifier: Apache-2.0
 
-//! The Linux presence gesture: a fingerprint via fprintd (net.reactivated.Fprint) over D-Bus, the
-//! counterpart to the macOS Touch ID authorizer. It implements the cross-platform Authorizer seam,
-//! so the agent core's cold-window TTL cache is unchanged. The verify is blocking on the agent's
+//! The Linux fingerprint gesture: a verify via fprintd (net.reactivated.Fprint) over D-Bus, the
+//! counterpart to the macOS Touch ID gesture. It is a COMPONENT of the Linux authorizer orchestrator
+//! (authorizer_linux.zig), which selects it, renders the "touch now" cue through the Presenter, and
+//! falls back to a typed confirm when no reader is usable. The verify is blocking on the agent's
 //! single thread (like the macOS prompt and the TPM sign), bounded by the connection read timeout.
 //! Fail-closed: any missing reader, unenrolled finger, or D-Bus error refuses the signature.
 
 const std = @import("std");
 const sinete = @import("sinete");
-const authz = sinete.authz;
 const wire = sinete.dbus_wire;
 const calls = sinete.dbus_calls;
 const dbus = @import("dbus_conn.zig");
@@ -20,16 +20,21 @@ pub const Fprintd = struct {
 
     pub const Error = error{ PresenceDeclined, PresenceUnavailable };
 
-    pub fn authorizer(self: *Fprintd) authz.Authorizer {
-        return .{ .ptr = self, .vtable = &az_vt };
+    /// Whether a default fingerprint device exists, so the orchestrator can choose the fingerprint
+    /// gesture vs a typed confirm. Any D-Bus/daemon failure (incl. no device) reports false, so a
+    /// box without a reachable reader cleanly falls back to confirm. (Enrolled-finger detection is a
+    /// later refinement; today an enrolled-less reader still routes here and the verify refuses.)
+    pub fn hasDevice(self: *Fprintd) bool {
+        var conn = dbus.Conn.connectSystem(self.io, self.gpa) catch return false;
+        defer conn.close();
+        const dev = self.getDefaultDevice(&conn) catch return false;
+        return dev.len > 0;
     }
 
-    const az_vt = authz.Authorizer.VTable{ .authorize = authorize };
-
-    fn authorize(ptr: *anyopaque, key_id: []const u8, reason: []const u8) anyerror!void {
-        const self: *Fprintd = @ptrCast(@alignCast(ptr));
-        _ = key_id; // presence-only: the gesture proves a human; per-key binding is the TPM policy (5b)
-        _ = reason; // fprintd renders its own prompt; there is no caller-message channel
+    /// Run a fingerprint verify, normalizing every failure to the two-value Error so the orchestrator
+    /// maps them onto the presence outcome. A user no-match is PresenceDeclined; everything else
+    /// (no reader, D-Bus/daemon failure) is PresenceUnavailable.
+    pub fn authorize(self: *Fprintd) Error!void {
         self.verify() catch |e| return switch (e) {
             error.PresenceDeclined => Error.PresenceDeclined,
             else => Error.PresenceUnavailable, // any D-Bus/daemon failure fails closed

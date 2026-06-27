@@ -21,6 +21,7 @@ const linux = if (builtin.os.tag == .linux) @import("backend/linux.zig") else st
 // Linux presence: the fprintd fingerprint Authorizer and the logind remote-session gate, both over
 // the pure-Zig D-Bus client. Gated so non-Linux builds don't pull in the Linux-only socket code.
 const fprintd = if (builtin.os.tag == .linux) @import("backend/fprintd.zig") else struct {};
+const authorizer_linux = if (builtin.os.tag == .linux) @import("backend/authorizer_linux.zig") else struct {};
 const logind = if (builtin.os.tag == .linux) @import("backend/logind.zig") else struct {};
 const dbus_conn = if (builtin.os.tag == .linux) @import("backend/dbus_conn.zig") else struct {};
 // Cross-platform log-only presenter: records every refusal/failure reason to the agent log until the
@@ -125,10 +126,12 @@ fn cmdAgent() !void {
     } else if (builtin.os.tag == .linux) {
         var kbuf: [std.fs.max_path_bytes]u8 = undefined;
         var be = linuxBackend(try linuxKeyDir(&kbuf));
-        // Presence is a fingerprint via fprintd; remote/SSH sessions are refused via logind.
+        // The orchestrator is both the Authorizer (fingerprint or a typed confirm) and the Presenter
+        // (refusal/failure messages on the peer's terminal). Remote/SSH sessions are refused via logind.
         var fp = fprintd.Fprintd{ .io = g_io, .gpa = g_gpa };
+        var orch = authorizer_linux.Authorizer.init(g_io, g_gpa, &fp);
         var lg = logind.Logind{ .io = g_io, .gpa = g_gpa, .self_uid = std.os.linux.getuid() };
-        try serveAgent(sock, be.processor(), fp.authorizer(), lg.localSession(), pr);
+        try serveAgent(sock, be.processor(), orch.authorizer(), lg.localSession(), orch.presenter());
     } else {
         // No secure element: advertise one freshly generated identity so the protocol path works.
         var arena = std.heap.ArenaAllocator.init(g_gpa);
