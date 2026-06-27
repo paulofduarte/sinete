@@ -172,9 +172,10 @@ pub const X11 = struct {
     }
 };
 
-/// Map the stable, layout-independent evdev keycodes the modal uses to a representative byte. Letter
-/// keys (y/n) vary by layout and are intentionally not mapped here (the modal is driven by clicks for
-/// approval); only Escape/Return/Space are translated.
+/// Map the X11 keycodes the modal uses to a representative byte. These are the standard X11 keycodes
+/// (the evdev kernel codes + 8, fixed on Xorg/XWayland): Escape=9, Return=36, space=65 -- stable
+/// regardless of layout. Letter keys (y/n) vary by layout and are intentionally not mapped here (the
+/// modal is driven by clicks for approval); only Escape/Return/Space are translated.
 fn keyByte(keycode: u8) ?u8 {
     return switch (keycode) {
         9 => 0x1b, // Escape

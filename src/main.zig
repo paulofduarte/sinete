@@ -426,11 +426,12 @@ fn cmdTpmPolicySelftest() !void {
 /// and never sends an unauthenticated setup request (it stops before authenticating; the socket may
 /// open first, but no auth-less protocol exchange occurs).
 fn xauthPath(buf: []u8) []const u8 {
+    // An explicitly set $XAUTHORITY is authoritative: use it if usable, else fail closed (return "")
+    // rather than silently authenticating against a different file ($HOME/.Xauthority).
     if (g_env.get("XAUTHORITY")) |x| {
-        if (x.len > 0 and x.len <= buf.len) {
-            @memcpy(buf[0..x.len], x);
-            return buf[0..x.len];
-        }
+        if (x.len == 0 or x.len > buf.len) return "";
+        @memcpy(buf[0..x.len], x);
+        return buf[0..x.len];
     }
     const home = g_env.get("HOME") orelse "";
     if (home.len == 0) return ""; // unset or empty HOME -> no path (avoid a bare "/.Xauthority")
