@@ -490,7 +490,7 @@ pub fn selftest(io: std.Io, path: []const u8, is_socket: bool) !void {
 /// algorithm name and full consumption of both blobs are checked, so a mis-encoded signature fails.
 fn verifySshSig(sshsig: []const u8, msg: []const u8, point: *const [65]u8) !void {
     const Ecdsa = std.crypto.sign.ecdsa.EcdsaP256Sha256;
-    var dec = sinete.wire.Decoder{ .data = sshsig };
+    var dec = wire.Decoder{ .data = sshsig };
     if (!std.mem.eql(u8, try dec.string(), "ecdsa-sha2-nistp256")) return error.BadSignatureFormat;
     var inner = sinete.wire.Decoder{ .data = try dec.string() };
     if (!dec.done()) return error.BadSignatureFormat; // trailing bytes after the signature blob
@@ -537,11 +537,13 @@ pub fn policySelftest(io: std.Io, path: []const u8, is_socket: bool) !void {
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(msg, &digest, .{});
 
-    // Negative: an empty-password Sign on the policy key must be rejected by the TPM.
+    // Negative: an empty-password Sign on the policy key must be rejected by the TPM. Only the TPM's
+    // auth rejection (TpmError) proves the binding; any other failure (transport, decode) propagates.
     var sbuf: [256]u8 = undefined;
     if (signDigest(&t, handle, &digest, &sbuf)) |_| {
         return error.PolicyBindingBypassed; // empty-auth signed a policy key -> the binding is broken
-    } else |_| {
+    } else |e| {
+        if (e != error.TpmError) return e;
         note(out, io, &log_buf, "negative -> empty-auth sign rejected (binding holds)", .{});
     }
 
