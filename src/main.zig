@@ -240,15 +240,15 @@ fn envValue(name: []const u8) ?[]const u8 {
 /// /dev/tpmrm0). `keydir` must outlive the returned value.
 fn linuxBackend(keydir: []const u8) linux.Linux {
     const sock = envValue("SINETE_TPM"); // empty -> unset: fall back to the kernel device
-    var be = linux.Linux{
+    // The master secret is loaded lazily on the first policy-bound sign (Linux.ensureMasterLoaded),
+    // so an agent that started before the first generate still picks it up.
+    return .{
         .io = g_io,
         .gpa = g_gpa,
         .keydir = keydir,
         .tpm_path = sock orelse "/dev/tpmrm0",
         .tpm_is_socket = sock != null,
     };
-    be.loadMasterSecret(); // make the master available so policy-bound keys can sign
-    return be;
 }
 
 fn cmdGenerate() !void {

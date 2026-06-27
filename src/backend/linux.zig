@@ -277,11 +277,7 @@ pub const Linux = struct {
         // A policy-bound key (Z5b) signs only via a policy session proving the master secret; a
         // legacy Z4 empty-auth key signs directly. They coexist in one key directory.
         if (try cmd.hasAuthPolicy(key.pub_blob())) {
-            // A long-lived agent may have started before the first generate created master.secret;
-            // re-read it on demand before giving up, so a freshly enrolled master is picked up without
-            // an agent restart. A copied key file with no master.secret still fails closed.
-            if (!self.has_master) self.loadMasterSecret();
-            if (!self.has_master) return error.NoMaster;
+            try self.ensureMasterLoaded(); // NoMaster if absent (or BadMasterSecret if corrupt)
             return signDigestPolicy(&t, handle, &digest, &self.master_secret, out);
         }
         return signDigest(&t, handle, &digest, out);
@@ -319,10 +315,17 @@ pub const Linux = struct {
 
     /// Load the master secret S from keydir/master.secret (0600) if present, so policy keys can sign.
     /// Best-effort: a missing/short file just leaves has_master false (no policy keys can be signed).
-    pub fn loadMasterSecret(self: *Linux) void {
-        var dir = std.Io.Dir.cwd().openDir(self.io, self.keydir, .{}) catch return;
+    /// Ensure the master secret is loaded before signing a policy-bound key, reading it on demand (a
+    /// long-lived agent may predate the first generate). FileNotFound means no master (NoMaster); a
+    /// present-but-corrupt file surfaces BadMasterSecret rather than masquerading as NoMaster.
+    fn ensureMasterLoaded(self: *Linux) !void {
+        if (self.has_master) return;
+        var dir = std.Io.Dir.cwd().openDir(self.io, self.keydir, .{}) catch return error.NoMaster;
         defer dir.close(self.io);
-        _ = self.readMasterSecret(&dir) catch return; // best-effort: absent/invalid leaves has_master false
+        _ = self.readMasterSecret(&dir) catch |e| switch (e) {
+            error.FileNotFound => return error.NoMaster,
+            else => return e,
+        };
     }
 
     /// Return the master secret S, generating + persisting it (0600) on first use so the policy
@@ -353,14 +356,22 @@ pub const Linux = struct {
         return s;
     }
 
-    /// Load and validate the existing master.secret (exactly 32 bytes), recording it on success.
+    /// Load and validate the existing master.secret (exactly 32 bytes), recording it on success. A
+    /// wrong-size file can be a concurrent generate mid-create (the file is created before its bytes
+    /// are written), so retry briefly before declaring it corrupt.
     fn readMasterSecret(self: *Linux, dir: *std.Io.Dir) ![32]u8 {
-        const data = try dir.readFileAlloc(self.io, master_secret_file, self.gpa, .limited(64));
-        defer self.gpa.free(data);
-        if (data.len != 32) return error.BadMasterSecret;
-        @memcpy(&self.master_secret, data);
-        self.has_master = true;
-        return self.master_secret;
+        var attempt: u8 = 0;
+        while (true) : (attempt += 1) {
+            const data = try dir.readFileAlloc(self.io, master_secret_file, self.gpa, .limited(64));
+            defer self.gpa.free(data);
+            if (data.len == 32) {
+                @memcpy(&self.master_secret, data);
+                self.has_master = true;
+                return self.master_secret;
+            }
+            if (attempt >= 20) return error.BadMasterSecret; // ~100ms of retries, then give up
+            self.io.sleep(.fromMilliseconds(5), .awake) catch {};
+        }
     }
 
     /// Generate a new policy-bound ECDSA P-256 key, persist it as a TSS2 key file named `name`, and
