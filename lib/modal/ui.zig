@@ -13,8 +13,8 @@ const Canvas = @import("canvas.zig").Canvas;
 
 pub const Outcome = presenter.Outcome;
 
-pub const width: u32 = 420;
-pub const height: u32 = 140;
+pub const width: usize = 420; // usize so the pixel buffer alloc/index math is native; cast at the
+pub const height: usize = 140; // X11/Wayland edges (u16/i16) where the protocols need narrower ints
 
 // Opaque ARGB palette (0xAARRGGBB): a dark panel, light text, a subtle border, two buttons.
 const col_bg: u32 = 0xFF1E1E28;
@@ -56,8 +56,8 @@ pub const Modal = struct {
 
         // The message, left-aligned at the top margin, truncated to the panel width. Compute the
         // available width in u32, then a usize cap for slicing (avoid a signed/unsigned mix).
-        const avail: u32 = width - 2 * @as(u32, @intCast(margin));
-        const max_chars: usize = avail / @as(u32, font.width);
+        const avail: usize = width - 2 * @as(usize, @intCast(margin));
+        const max_chars: usize = avail / font.width;
         const msg = if (self.message.len > max_chars) self.message[0..max_chars] else self.message;
         c.text(msg, margin, margin + 6, col_fg);
 
@@ -144,5 +144,5 @@ test "paint fills the buffer without going out of bounds" {
     // The border pixel and some button pixels are painted (not the background fill color).
     try testing.expectEqual(col_border, buf[0]);
     const ok = okButton();
-    try testing.expectEqual(col_ok, buf[@as(u32, @intCast(ok.y + 5)) * width + @as(u32, @intCast(ok.x + 5))]);
+    try testing.expectEqual(col_ok, buf[@as(usize, @intCast(ok.y + 5)) * width + @as(usize, @intCast(ok.x + 5))]);
 }

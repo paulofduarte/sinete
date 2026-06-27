@@ -11,10 +11,10 @@ const font = @import("font.zig");
 
 pub const Canvas = struct {
     px: []u32,
-    w: u32,
-    h: u32,
+    w: usize, // dimensions kept as usize so all indexing/slicing is native (no per-site casts)
+    h: usize,
 
-    pub fn init(px: []u32, w: u32, h: u32) Canvas {
+    pub fn init(px: []u32, w: usize, h: usize) Canvas {
         std.debug.assert(px.len >= w * h);
         return .{ .px = px, .w = w, .h = h };
     }
@@ -28,10 +28,10 @@ pub const Canvas = struct {
     pub fn rect(self: Canvas, x: i32, y: i32, w: u32, h: u32, color: u32) void {
         const cw: i32 = @intCast(self.w);
         const ch: i32 = @intCast(self.h);
-        const x0: u32 = @intCast(std.math.clamp(x, 0, cw));
-        const y0: u32 = @intCast(std.math.clamp(y, 0, ch));
-        const x1: u32 = @intCast(std.math.clamp(x +| @as(i32, @intCast(w)), 0, cw));
-        const y1: u32 = @intCast(std.math.clamp(y +| @as(i32, @intCast(h)), 0, ch));
+        const x0: usize = @intCast(std.math.clamp(x, 0, cw));
+        const y0: usize = @intCast(std.math.clamp(y, 0, ch));
+        const x1: usize = @intCast(std.math.clamp(x +| @as(i32, @intCast(w)), 0, cw));
+        const y1: usize = @intCast(std.math.clamp(y +| @as(i32, @intCast(h)), 0, ch));
         var yy = y0;
         while (yy < y1) : (yy += 1) {
             var xx = x0;
@@ -77,8 +77,8 @@ pub const Canvas = struct {
 
     fn plot(self: Canvas, x: i32, y: i32, color: u32) void {
         if (x < 0 or y < 0) return;
-        const ux: u32 = @intCast(x);
-        const uy: u32 = @intCast(y);
+        const ux: usize = @intCast(x);
+        const uy: usize = @intCast(y);
         if (ux >= self.w or uy >= self.h) return;
         self.px[uy * self.w + ux] = color;
     }
