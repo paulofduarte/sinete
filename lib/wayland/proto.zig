@@ -71,7 +71,7 @@ fn putString(out: *Encoder, gpa: std.mem.Allocator, s: []const u8) !void {
 fn message(out: *Encoder, gpa: std.mem.Allocator, obj: u32, opcode: u16, body: []const u8) !void {
     const size: u32 = @intCast(8 + body.len);
     try putU32(out, gpa, obj);
-    try putU32(out, gpa, (size << 16) | opcode);
+    try putU32(out, gpa, (size << 16) | @as(u32, opcode));
     try out.appendSlice(gpa, body);
 }
 
@@ -215,7 +215,7 @@ pub const Msg = struct { obj: u32, opcode: u16, body: []const u8 };
 pub fn frameLen(data: []const u8) Error!?usize {
     if (data.len < 8) return null;
     const word2 = std.mem.readInt(u32, data[4..8], native_end);
-    const size: usize = word2 >> 16;
+    const size: usize = @intCast(word2 >> 16);
     if (size < 8) return error.BadMessage;
     if (data.len < size) return null;
     return size;
@@ -303,7 +303,7 @@ const Reader = struct {
         return raw >> 8;
     }
     fn string(self: *Reader) Error![]const u8 {
-        const n: usize = try self.rU32();
+        const n: usize = @intCast(try self.rU32());
         if (n == 0) return "";
         if (self.pos + n > self.b.len) return error.Truncated;
         if (self.b[self.pos + n - 1] != 0) return error.BadMessage; // the trailing NUL must be present
