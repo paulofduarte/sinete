@@ -60,7 +60,7 @@ pub const Authorizer = struct {
         switch (gesture) {
             .fingerprint => try self.fp.authorize(), // fprintd renders its own reader prompt for now
             .confirm => {
-                const outcome = self.confirm(cred) catch return error.PresenceUnavailable;
+                const outcome = self.confirm(cred, .confirm_sign) catch return error.PresenceUnavailable;
                 switch (outcome) {
                     .confirmed => return,
                     .declined, .cancelled => return error.PresenceDeclined,
@@ -70,20 +70,19 @@ pub const Authorizer = struct {
         }
     }
 
-    /// Drive a typed confirm on the peer's terminal.
-    fn confirm(self: *Authorizer, cred: ?session.Cred) !pres.Outcome {
+    /// Drive a typed confirm on the peer's terminal, using `reason` for the prompt text.
+    fn confirm(self: *Authorizer, cred: ?session.Cred, reason: pres.Reason) !pres.Outcome {
         var buf: [std.fs.max_path_bytes]u8 = undefined;
         const path = self.targetTty(cred, &buf) orelse return error.TtyUnavailable;
-        return tty.promptConfirm(path, .confirm_sign);
+        return tty.promptConfirm(path, reason);
     }
 
     // --- Presenter ---
 
     fn promptGesture(ptr: *anyopaque, cred: ?session.Cred, reason: pres.Reason, done: ?*std.atomic.Value(bool)) anyerror!pres.Outcome {
         const self: *Authorizer = @ptrCast(@alignCast(ptr));
-        _ = reason;
-        _ = done;
-        return self.confirm(cred);
+        _ = done; // async dismiss is used by the fingerprint cue (a later milestone)
+        return self.confirm(cred, reason);
     }
     fn promptInput(ptr: *anyopaque, cred: ?session.Cred, reason: pres.Reason, out: []u8) anyerror!usize {
         _ = ptr;

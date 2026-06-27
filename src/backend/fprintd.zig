@@ -3,10 +3,11 @@
 
 //! The Linux fingerprint gesture: a verify via fprintd (net.reactivated.Fprint) over D-Bus, the
 //! counterpart to the macOS Touch ID gesture. It is a COMPONENT of the Linux authorizer orchestrator
-//! (authorizer_linux.zig), which selects it, renders the "touch now" cue through the Presenter, and
-//! falls back to a typed confirm when no reader is usable. The verify is blocking on the agent's
-//! single thread (like the macOS prompt and the TPM sign), bounded by the connection read timeout.
-//! Fail-closed: any missing reader, unenrolled finger, or D-Bus error refuses the signature.
+//! (authorizer_linux.zig), which selects it when a reader is present and falls back to a typed
+//! confirm otherwise. fprintd renders its own reader prompt today; routing a "touch now" cue through
+//! the Presenter (so it can auto-dismiss on the match) is a later milestone. The verify is blocking
+//! on the agent's single thread (like the macOS prompt and the TPM sign), bounded by the connection
+//! read timeout. Fail-closed: any missing reader, unenrolled finger, or D-Bus error refuses.
 
 const std = @import("std");
 const sinete = @import("sinete");
