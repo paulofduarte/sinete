@@ -30,8 +30,8 @@ pub const Conn = struct {
     rx: std.ArrayList(u8) = .empty, // bytes read but not yet consumed
     cur: std.ArrayList(u8) = .empty, // the most recently extracted frame (Parsed aliases this)
 
-    /// Connect to the system bus, run the SASL EXTERNAL handshake, and send Hello. The bus path is
-    /// $DBUS_SYSTEM_BUS_ADDRESS (a `unix:path=` address) or the well-known default.
+    /// Connect to the system bus at its well-known path, run the SASL EXTERNAL handshake, and send
+    /// Hello. ($DBUS_SYSTEM_BUS_ADDRESS is not consulted -- see the note at the connect call below.)
     pub fn connectSystem(io: std.Io, gpa: std.mem.Allocator) Error!Conn {
         // The system bus has a well-known path; $DBUS_SYSTEM_BUS_ADDRESS is almost never set for it
         // (unlike the session bus), and env access is not available on this Linux-only path in 0.16.
