@@ -18,7 +18,7 @@ pub const Outcome = presenter.Outcome;
 pub fn percentEncode(gpa: std.mem.Allocator, out: *std.ArrayList(u8), value: []const u8) !void {
     const hex = "0123456789ABCDEF";
     for (value) |b| {
-        if (b == '%' or b < 0x20) {
+        if (b == '%' or b < 0x20 or b == 0x7f) { // %, C0 control bytes, and DEL
             try out.append(gpa, '%');
             try out.append(gpa, hex[b >> 4]);
             try out.append(gpa, hex[b & 0x0f]);
@@ -104,10 +104,11 @@ fn eqOrPrefix(line: []const u8, tok: []const u8) bool {
     return line.len > tok.len and std.mem.startsWith(u8, line, tok) and line[tok.len] == ' ';
 }
 
-/// The text after a leading token of length n (skipping the single separating space), or "".
+/// The text after a leading token of length n (skipping the single separating space at index n), or
+/// "" when the line is just the token.
 fn rest(line: []const u8, n: usize) []const u8 {
     if (line.len <= n) return "";
-    return line[n + 1 ..]; // n is the token length, n is the space
+    return line[n + 1 ..]; // index n is the separating space; n+1 starts the text
 }
 
 const testing = std.testing;
@@ -121,8 +122,8 @@ fn build(comptime f: anytype, args: anytype) !std.ArrayList(u8) {
 test "percentEncode escapes %, control bytes, and newlines; leaves text/space" {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(testing.allocator);
-    try percentEncode(testing.allocator, &out, "a b%c\n\r\t");
-    try testing.expectEqualStrings("a b%25c%0A%0D%09", out.items);
+    try percentEncode(testing.allocator, &out, "a b%c\n\r\t\x7f");
+    try testing.expectEqualStrings("a b%25c%0A%0D%09%7F", out.items); // DEL escaped too
 }
 
 test "appendOption / appendText / appendConfirm produce exact lines" {
