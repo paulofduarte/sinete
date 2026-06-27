@@ -34,6 +34,7 @@ const cc_load: u32 = 0x00000157;
 const cc_sign: u32 = 0x0000015D;
 const cc_read_public: u32 = 0x00000173;
 const cc_nv_define_space: u32 = 0x0000012A;
+const cc_nv_undefine_space: u32 = 0x00000122;
 const cc_nv_write: u32 = 0x00000137;
 const cc_nv_increment: u32 = 0x00000134;
 const cc_nv_read: u32 = 0x0000014E;
@@ -495,6 +496,16 @@ pub fn nvReadPublic(buf: []u8, index: u32) wire.Error![]const u8 {
     return m.bytes();
 }
 
+/// Owner-authorized NV_UndefineSpace, to remove a throwaway index (the policy selftest's test index).
+pub fn nvUndefine(buf: []u8, index: u32) wire.Error![]const u8 {
+    var m = try wire.startCommand(buf, wire.st_sessions, cc_nv_undefine_space);
+    try m.put32(rh_owner); // authHandle
+    try m.put32(index); // nvIndex
+    try putEmptyAuth(&m);
+    wire.finishCommand(&m);
+    return m.bytes();
+}
+
 /// The NV index's Name (nameAlg || hash) from an NV_ReadPublic response. The Name feeds the
 /// PolicySecret digest. Aliases `resp`.
 pub fn nvReadPublicName(resp: []const u8) Error![]const u8 {
@@ -827,4 +838,13 @@ test "nvDefineMaster + nvWrite + nvReadPublicName" {
         [_]u8{ 0x00, 0x02, 0xAA, 0xBB } ++ // nvPublic 2b
         [_]u8{ 0x00, 0x03, 0x00, 0x0b, 0x99 }; // nvName 2b
     try testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x0b, 0x99 }, try nvReadPublicName(&resp));
+
+    var buf3: [64]u8 = undefined;
+    const un = try nvUndefine(&buf3, 0x018E7E7D);
+    var uu = wire.Unmarshal{ .data = un };
+    _ = try uu.get16();
+    _ = try uu.get32();
+    try testing.expectEqual(cc_nv_undefine_space, try uu.get32());
+    try testing.expectEqual(rh_owner, try uu.get32()); // authHandle
+    try testing.expectEqual(@as(u32, 0x018E7E7D), try uu.get32()); // nvIndex
 }

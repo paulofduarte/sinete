@@ -88,6 +88,12 @@ fn flush(t: *Tpm, handle: u32) void {
     _ = t.transact(c) catch {};
 }
 
+/// Best-effort NV_UndefineSpace, to clean up the policy selftest's throwaway index.
+fn nvUndefineQuiet(t: *Tpm, index: u32) void {
+    const c = cmd.nvUndefine(&t.cmdbuf, index) catch return;
+    _ = t.transact(c) catch {};
+}
+
 /// Set the process umask, returning the previous value (raw Linux syscall; this file is linux-only).
 fn osUmask(mode: std.posix.mode_t) std.posix.mode_t {
     return @intCast(std.os.linux.syscall1(.umask, mode));
@@ -164,33 +170,34 @@ fn signDigest(t: *Tpm, key: u32, digest: []const u8, out: []u8) !usize {
 const master_index: u32 = 0x018E7E7F; // sibling of the epoch index; holds the PolicySecret authValue S
 const master_secret_file = "master.secret";
 
-/// Ensure the master NV index exists (define + write-once to set WRITTEN) with authValue `secret`,
-/// then return the PolicySecret authPolicy digest computed from its current Name. The Name aliases
-/// the response buffer, so the digest is computed before any further transact.
-fn masterPolicy(t: *Tpm, secret: []const u8) ![32]u8 {
-    const def = try cmd.nvDefineMaster(&t.cmdbuf, master_index, secret);
+/// Ensure NV index `index` exists (define + write-once to set WRITTEN) with authValue `secret`, then
+/// return the PolicySecret authPolicy digest computed from its current Name. The Name aliases the
+/// response buffer, so the digest is computed before any further transact. The production master uses
+/// `master_index`; the selftest passes a throwaway index so it never mutates the real master.
+fn masterPolicy(t: *Tpm, index: u32, secret: []const u8) ![32]u8 {
+    const def = try cmd.nvDefineMaster(&t.cmdbuf, index, secret);
     _ = try cmd.checkOrDefined(try t.transact(def)); // define if absent (idempotent)
     // Always write (idempotent) so TPMA_NV.WRITTEN is set and the Name is stable, even if a prior run
     // defined the index but crashed before its first write -- otherwise the derived policy digest
     // would change once WRITTEN is eventually set, stranding keys created in between.
-    const w = try cmd.nvWrite(&t.cmdbuf, master_index, secret, &[_]u8{0});
+    const w = try cmd.nvWrite(&t.cmdbuf, index, secret, &[_]u8{0});
     try cmd.expectOk(try t.transact(w));
-    const rp = try cmd.nvReadPublic(&t.cmdbuf, master_index);
+    const rp = try cmd.nvReadPublic(&t.cmdbuf, index);
     const name = try cmd.nvReadPublicName(try t.transact(rp));
     return cmd.policySecretDigest(name);
 }
 
 /// Sign a digest with a policy-bound key: open a policy session, satisfy its PolicySecret by proving
-/// the master secret `S`, then Sign authorized by that session (empty HMAC). The session auto-flushes
-/// on the Sign (continueSession=0); flush defensively in case an earlier step failed.
-fn signDigestPolicy(t: *Tpm, key: u32, digest: []const u8, secret: []const u8, out: []u8) !usize {
+/// the secret `S` of NV index `index`, then Sign authorized by that session (empty HMAC). The session
+/// auto-flushes on the Sign (continueSession=0); flush defensively in case an earlier step failed.
+fn signDigestPolicy(t: *Tpm, key: u32, digest: []const u8, index: u32, secret: []const u8, out: []u8) !usize {
     var nonce: [32]u8 = undefined;
     try randomBytes(&nonce);
     const sa = try cmd.startAuthSession(&t.cmdbuf, cmd.se_policy, &nonce);
     const sess = try cmd.startAuthSessionResult(try t.transact(sa));
     errdefer flush(t, sess.handle);
 
-    const ps = try cmd.policySecret(&t.cmdbuf, master_index, sess.handle, secret, sess.nonce_tpm, 0);
+    const ps = try cmd.policySecret(&t.cmdbuf, index, sess.handle, secret, sess.nonce_tpm, 0);
     try cmd.expectOk(try t.transact(ps));
 
     var nonce2: [32]u8 = undefined;
@@ -278,7 +285,7 @@ pub const Linux = struct {
         // legacy Z4 empty-auth key signs directly. They coexist in one key directory.
         if (try cmd.hasAuthPolicy(key.pub_blob())) {
             try self.ensureMasterLoaded(); // NoMaster if absent (or BadMasterSecret if corrupt)
-            return signDigestPolicy(&t, handle, &digest, &self.master_secret, out);
+            return signDigestPolicy(&t, handle, &digest, master_index, &self.master_secret, out);
         }
         return signDigest(&t, handle, &digest, out);
     }
@@ -383,7 +390,7 @@ pub const Linux = struct {
         var t = try Tpm.open(self.io, self.tpm_path, self.tpm_is_socket);
         defer t.close();
         const secret = try self.ensureMasterSecret();
-        const policy = try masterPolicy(&t, &secret);
+        const policy = try masterPolicy(&t, master_index, &secret);
         const primary = try createPrimary(&t);
         defer flush(&t, primary);
         var key: KeyBlobs = .{};
@@ -515,8 +522,12 @@ pub fn policySelftest(io: std.Io, path: []const u8, is_socket: bool) !void {
         }
     }.p;
 
+    // Use a throwaway test index (never the production master_index) and undefine it on the way out,
+    // so running this diagnostic against a real TPM cannot strand the user's actual master.
+    const test_index: u32 = 0x018E7E7D;
+    defer nvUndefineQuiet(&t, test_index);
     const secret = [_]u8{0x5A} ** 32;
-    const policy = try masterPolicy(&t, &secret);
+    const policy = try masterPolicy(&t, test_index, &secret);
     note(out, io, &log_buf, "masterPolicy -> 0x{x:0>2}{x:0>2}...", .{ policy[0], policy[1] });
 
     const primary = try createPrimary(&t);
@@ -548,7 +559,7 @@ pub fn policySelftest(io: std.Io, path: []const u8, is_socket: bool) !void {
     }
 
     // Positive: sign via the policy session, then verify the signature.
-    const n = try signDigestPolicy(&t, handle, &digest, &secret, &sbuf);
+    const n = try signDigestPolicy(&t, handle, &digest, test_index, &secret, &sbuf);
     try verifySshSig(sbuf[0..n], msg, &key.point);
     note(out, io, &log_buf, "positive -> policy-session sign verifies", .{});
     note(out, io, &log_buf, "POLICY SELFTEST PASS", .{});
