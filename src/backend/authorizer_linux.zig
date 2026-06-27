@@ -20,6 +20,7 @@ const session = sinete.session;
 const fprintd = @import("fprintd.zig");
 const logind = @import("logind.zig");
 const tty = @import("tty_prompt.zig");
+const pinentry = @import("pinentry.zig");
 const presenter_log = @import("presenter_log.zig");
 
 pub const Authorizer = struct {
@@ -28,11 +29,13 @@ pub const Authorizer = struct {
     fp: *fprintd.Fprintd,
     /// Resolves the peer's prompt channel (graphical vs which terminal) from its logind session.
     lg: *logind.Logind,
-    /// Log fallback for showError when no interactive channel is reachable.
+    /// The X11 DISPLAY forwarded to pinentry for a graphical prompt; "" if unset.
+    display: []const u8,
+    /// Log fallback for showError, and the always-on floor so a refusal is never lost.
     log: presenter_log.LogPresenter,
 
-    pub fn init(io: std.Io, gpa: std.mem.Allocator, fp: *fprintd.Fprintd, lg: *logind.Logind) Authorizer {
-        return .{ .io = io, .gpa = gpa, .fp = fp, .lg = lg, .log = .{ .io = io } };
+    pub fn init(io: std.Io, gpa: std.mem.Allocator, fp: *fprintd.Fprintd, lg: *logind.Logind, display: []const u8) Authorizer {
+        return .{ .io = io, .gpa = gpa, .fp = fp, .lg = lg, .display = display, .log = .{ .io = io } };
     }
 
     pub fn authorizer(self: *Authorizer) authz.Authorizer {
@@ -70,11 +73,14 @@ pub const Authorizer = struct {
         }
     }
 
-    /// Drive a typed confirm on the peer's terminal, using `reason` for the prompt text.
+    /// Drive a confirm for `cred`, using `reason` for the prompt text: on a terminal session via the
+    /// pure-Zig termios prompt, otherwise (a graphical session) via a pinentry dialog. Errors only
+    /// when no channel is usable, which the caller maps to PresenceUnavailable.
     fn confirm(self: *Authorizer, cred: ?session.Cred, reason: pres.Reason) !pres.Outcome {
         var buf: [std.fs.max_path_bytes]u8 = undefined;
-        const path = self.targetTty(cred, &buf) orelse return error.TtyUnavailable;
-        return tty.promptConfirm(path, reason);
+        if (self.targetTty(cred, &buf)) |path| return tty.promptConfirm(path, reason);
+        var pe = pinentry.Pinentry{ .io = self.io, .gpa = self.gpa, .display = self.display };
+        return pe.confirm(reason) catch return error.TtyUnavailable;
     }
 
     // --- Presenter ---
@@ -96,11 +102,14 @@ pub const Authorizer = struct {
         // Floor first: always record the reason (with detail) in the log, so a refusal is never lost
         // even if the terminal write below silently fails (tty vanished / wrong path / permissions).
         self.log.presenter().showError(cred, reason, detail);
-        // Additionally surface the curated message (no detail) on the peer's own terminal when there
-        // is one; a graphical session has none (its modal channels land in later milestones).
+        // Additionally surface the curated message (no detail) on the peer's own channel: its
+        // terminal when there is one, otherwise a graphical pinentry dialog (best-effort).
         var buf: [std.fs.max_path_bytes]u8 = undefined;
         if (self.targetTty(cred, &buf)) |path| {
             tty.showMessage(path, pres.message(reason));
+        } else {
+            var pe = pinentry.Pinentry{ .io = self.io, .gpa = self.gpa, .display = self.display };
+            pe.message(reason);
         }
     }
 

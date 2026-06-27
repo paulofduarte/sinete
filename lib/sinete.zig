@@ -15,6 +15,7 @@ pub const session = @import("session.zig");
 pub const presenter = @import("presenter.zig");
 pub const presence = @import("presence.zig");
 pub const tty_prompt = @import("tty/prompt.zig");
+pub const assuan = @import("assuan.zig");
 pub const wire = @import("ssh/wire.zig");
 pub const ecdsa_key = @import("ssh/ecdsa_key.zig");
 pub const ecdsa_sig = @import("ssh/ecdsa_sig.zig");
@@ -46,6 +47,7 @@ test {
     _ = presenter;
     _ = presence;
     _ = tty_prompt;
+    _ = assuan;
     _ = wire;
     _ = ecdsa_key;
     _ = ecdsa_sig;

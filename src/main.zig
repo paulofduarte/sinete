@@ -27,6 +27,9 @@ const dbus_conn = if (builtin.os.tag == .linux) @import("backend/dbus_conn.zig")
 // Cross-platform log-only presenter: records every refusal/failure reason to the agent log until the
 // real channel presenters (pinentry / modal / tty) land.
 const presenter_log = @import("backend/presenter_log.zig");
+// The pinentry presenter is pure std + the sinete lib (no OS-specific syscalls), so it is imported
+// unconditionally -- the _pinentry-selftest diagnostic runs anywhere a pinentry binary exists.
+const pinentry = @import("backend/pinentry.zig").Pinentry;
 
 // zig-cli action callbacks are bare `fn() !void`, so the process context and the parsed argument
 // values live in file scope (the same pattern as zig-cli's own examples).
@@ -90,6 +93,11 @@ pub fn main(init: std.process.Init) !void {
                     .description = .{ .one_line = "diagnostic: exercise the TPM policy binding (Linux; SINETE_TPM=<sock>)" },
                     .target = .{ .action = .{ .exec = cmdTpmPolicySelftest } },
                 },
+                .{
+                    .name = "_pinentry-selftest",
+                    .description = .{ .one_line = "diagnostic: spawn pinentry, Assuan greeting + BYE (SINETE_PINENTRY=<path>)" },
+                    .target = .{ .action = .{ .exec = cmdPinentrySelftest } },
+                },
             }) },
         },
     };
@@ -129,7 +137,8 @@ fn cmdAgent() !void {
         // sessions are refused via logind.
         var fp = fprintd.Fprintd{ .io = g_io, .gpa = g_gpa };
         var lg = logind.Logind{ .io = g_io, .gpa = g_gpa, .self_uid = std.os.linux.getuid() };
-        var orch = authorizer_linux.Authorizer.init(g_io, g_gpa, &fp, &lg);
+        const display = g_env.get("DISPLAY") orelse "";
+        var orch = authorizer_linux.Authorizer.init(g_io, g_gpa, &fp, &lg, display);
         try serveAgent(sock, be.processor(), orch.authorizer(), lg.localSession(), orch.presenter());
     } else {
         // No secure element: advertise one freshly generated identity so the protocol path works.
@@ -406,6 +415,15 @@ fn cmdTpmPolicySelftest() !void {
         try stderrWrite("error: _tpm-policy-selftest is only supported on Linux\n");
         std.process.exit(2);
     }
+}
+
+fn cmdPinentrySelftest() !void {
+    const program = envValue("SINETE_PINENTRY") orelse "pinentry";
+    pinentry.selftest(g_io, g_gpa, program) catch {
+        try stderrWrite("PINENTRY SELFTEST FAIL (is pinentry installed / on PATH?)\n");
+        std.process.exit(2);
+    };
+    try stdoutWrite("PINENTRY SELFTEST PASS\n");
 }
 
 // --- output helpers ---
