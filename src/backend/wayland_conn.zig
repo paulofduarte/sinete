@@ -294,26 +294,27 @@ const Conn = struct {
         }
     }
 
-    /// sendmsg the bytes with `fd` attached as SCM_RIGHTS ancillary data (one fd).
+    /// sendmsg the bytes with `fd` attached as SCM_RIGHTS ancillary data (one fd). The control buffer
+    /// holds a cmsghdr followed by the fd: cmsg_len = CMSG_LEN(sizeof fd), and msg_controllen =
+    /// CMSG_SPACE(sizeof fd) -- the alignment-padded size the kernel expects (a bare CMSG_LEN can be
+    /// rejected with EINVAL on 64-bit). The buffer is zeroed so the padding bytes are defined.
     fn sendWithFd(self: *Conn, bytes: []const u8, fd: i32) !void {
         var iov = [_]std.posix.iovec_const{.{ .base = bytes.ptr, .len = bytes.len }};
-        // Control buffer: a cmsghdr followed by the fd. CMSG_LEN(4) = sizeof(cmsghdr)+4; the buffer
-        // is sized to CMSG_SPACE and 8-aligned for the cmsghdr.
-        const hdr_len = @sizeOf(linux.cmsghdr);
-        var ctrl: [64]u8 align(8) = undefined;
+        const hdr = @sizeOf(linux.cmsghdr);
+        const space = cmsgAlign(hdr) + cmsgAlign(@sizeOf(i32)); // CMSG_SPACE(sizeof fd)
+        var ctrl = [_]u8{0} ** 64;
         const ch: *linux.cmsghdr = @ptrCast(@alignCast(&ctrl));
         ch.level = linux.SOL.SOCKET;
         ch.type = linux.SCM.RIGHTS;
-        ch.len = @intCast(hdr_len + @sizeOf(i32));
-        @memcpy(ctrl[hdr_len .. hdr_len + 4], std.mem.asBytes(&fd));
-        const controllen = hdr_len + @sizeOf(i32);
+        ch.len = @intCast(hdr + @sizeOf(i32)); // CMSG_LEN(sizeof fd)
+        @memcpy(ctrl[hdr .. hdr + 4], std.mem.asBytes(&fd));
         var msg = linux.msghdr_const{
             .name = null,
             .namelen = 0,
             .iov = &iov,
             .iovlen = 1,
             .control = &ctrl,
-            .controllen = @intCast(controllen),
+            .controllen = @intCast(space),
             .flags = 0,
         };
         const n = linux.sendmsg(self.fd, &msg, 0);
@@ -362,20 +363,29 @@ const Conn = struct {
     }
 };
 
+/// CMSG_ALIGN: round up to the control-message alignment (the size of usize on Linux).
+fn cmsgAlign(n: usize) usize {
+    const a: usize = @alignOf(usize);
+    return (n + a - 1) & ~(a - 1);
+}
+
 /// Close every fd delivered in the recvmsg ancillary data (SCM_RIGHTS), so received keymap/etc. fds
-/// don't accumulate in the agent.
+/// don't accumulate in the agent. Guards the cmsg length against truncation/corruption so it never
+/// reads past the control buffer.
 fn reapFds(msg: *linux.msghdr) void {
     const clen: usize = @intCast(msg.controllen);
-    if (clen < @sizeOf(linux.cmsghdr)) return;
+    const hdr = @sizeOf(linux.cmsghdr);
+    if (clen < hdr) return;
     const base: [*]u8 = @ptrCast(msg.control.?);
     const ch: *const linux.cmsghdr = @ptrCast(@alignCast(base));
     if (ch.level != linux.SOL.SOCKET or ch.type != linux.SCM.RIGHTS) return;
-    const data_off = @sizeOf(linux.cmsghdr);
-    const fd_bytes = @as(usize, @intCast(ch.len)) - data_off;
+    const len: usize = @intCast(ch.len);
+    if (len < hdr or len > clen) return; // malformed/truncated: do not read past the buffer
+    const fd_bytes = len - hdr;
     var i: usize = 0;
     while (i + 4 <= fd_bytes) : (i += 4) {
         var fd: i32 = undefined;
-        @memcpy(std.mem.asBytes(&fd), base[data_off + i .. data_off + i + 4]);
+        @memcpy(std.mem.asBytes(&fd), base[hdr + i .. hdr + i + 4]);
         _ = linux.close(fd);
     }
 }

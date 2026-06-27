@@ -78,5 +78,6 @@ the built-in Wayland layer-shell modal is exercised:
   in a later refinement.
 - Keyboard approval in the GUI is intentionally click-only (y/n keycodes are layout-dependent and
   need GetKeyboardMapping, deferred with PIN input); Escape/closing always deny.
-- A graphical session with **neither pinentry nor XWayland** (a stripped Wayland compositor) is
-  covered by the built-in Wayland modal in the next milestone; until then it falls back to the log.
+- A graphical session with **neither pinentry nor XWayland** is covered by the built-in Wayland
+  layer-shell modal (above), provided the compositor implements `zwlr_layer_shell_v1`; a session with
+  none of pinentry, XWayland, or layer-shell falls back to the log.
