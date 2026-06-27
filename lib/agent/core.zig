@@ -64,15 +64,15 @@ pub const Agent = struct {
         // window check, and on every signature so a window warmed locally cannot be ridden remotely.
         if (self.session) |s| {
             const c = cred orelse {
-                self.notify(null, .remote_refused);
+                self.notify(null, .remote_refused, "no peer credential");
                 return error.RemoteRefused;
             };
-            const local = s.isLocal(c) catch {
-                self.notify(cred, .remote_refused);
+            const local = s.isLocal(c) catch |e| {
+                self.notify(cred, .remote_refused, @errorName(e));
                 return error.RemoteRefused;
             };
             if (!local) {
-                self.notify(cred, .remote_refused);
+                self.notify(cred, .remote_refused, "");
                 return error.RemoteRefused;
             }
         }
@@ -82,12 +82,12 @@ pub const Agent = struct {
         const warm = self.windows.peek(key_id, now_ms, self.cfg.idle_ms, self.cfg.max_ms);
         if (!warm) self.az.authorize(key_id, self.cfg.reason) catch |e| {
             // Distinguish "no presence method available" from a user decline so the message is right.
-            self.notify(cred, if (e == error.PresenceUnavailable) .unavailable else .declined);
+            self.notify(cred, if (e == error.PresenceUnavailable) .unavailable else .declined, @errorName(e));
             return error.PresenceRefused;
         };
 
         const n = self.cp.sign(key_id, data, out) catch |e| {
-            self.notify(cred, if (e == error.UnknownKey) .unknown_key else .hardware);
+            self.notify(cred, if (e == error.UnknownKey) .unknown_key else .hardware, @errorName(e));
             return error.BackendError;
         };
 
@@ -102,9 +102,10 @@ pub const Agent = struct {
         self.windows.invalidate(key_id);
     }
 
-    /// Best-effort user-facing message for a refused/failed signature. No-op without a presenter.
-    fn notify(self: *Agent, cred: ?session.Cred, reason: presenter.Reason) void {
-        if (self.presenter) |p| p.showError(cred, reason, "");
+    /// Best-effort user-facing message for a refused/failed signature, with optional diagnostic
+    /// detail (an underlying error name) for the log. No-op without a presenter.
+    fn notify(self: *Agent, cred: ?session.Cred, reason: presenter.Reason, detail: []const u8) void {
+        if (self.presenter) |p| p.showError(cred, reason, detail);
     }
 };
 
