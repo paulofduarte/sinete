@@ -42,8 +42,8 @@ const cc_flush_context: u32 = 0x00000165;
 const cc_start_auth_session: u32 = 0x00000176;
 const cc_policy_secret: u32 = 0x00000151; // TPM_CC_PolicySecret (confirmed on swtpm via the digest)
 
-const se_policy: u8 = 0x01; // TPM_SE_POLICY: a real policy session
-const se_trial: u8 = 0x03; // TPM_SE_TRIAL: computes a policy digest without authorizing anything
+pub const se_policy: u8 = 0x01; // TPM_SE_POLICY: a real policy session
+pub const se_trial: u8 = 0x03; // TPM_SE_TRIAL: computes a policy digest without authorizing anything
 
 // Object attributes (TPMA_OBJECT).
 const attr_fixed_tpm: u32 = 1 << 1;
