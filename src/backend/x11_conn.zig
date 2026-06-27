@@ -21,7 +21,11 @@ const File = std.Io.File;
 
 pub const Error = error{X11Unavailable};
 
-const recv_timeout_s: i64 = 120; // a modal waits for the human; bounded so a dead server can't wedge
+// The modal waits for a human, so the read timeout is generous (5 min) -- long enough that a normal
+// approval is never refused for being slow, while still bounding a hung (but not dead) server. A
+// truly-dead server is caught earlier and faster by EOF on read (readAll -> X11Unavailable), not by
+// this timeout; a user who never responds within it is a fail-closed refusal, which is correct.
+const recv_timeout_s: i64 = 300;
 const max_setup: usize = 64 * 1024; // a real setup reply is a few KB; cap before allocating, fail closed
 
 pub const X11 = struct {
