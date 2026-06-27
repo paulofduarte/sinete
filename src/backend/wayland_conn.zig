@@ -53,7 +53,10 @@ pub const Wayland = struct {
     }
 
     fn run(self: *Wayland, modal: ui.Modal) Error!presenter.Outcome {
-        if (self.runtime_dir.len == 0 or self.wl_display.len == 0) return error.WaylandUnavailable;
+        if (self.wl_display.len == 0) return error.WaylandUnavailable;
+        // A relative WAYLAND_DISPLAY is resolved against XDG_RUNTIME_DIR; an absolute path is not, so
+        // only require the runtime dir for the relative form (connect() handles an absolute path).
+        if (self.wl_display[0] != '/' and self.runtime_dir.len == 0) return error.WaylandUnavailable;
         var c = Conn.connect(self) catch return error.WaylandUnavailable;
         defer c.deinit();
         return c.drive(modal) catch error.WaylandUnavailable;
