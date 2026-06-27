@@ -18,6 +18,11 @@ const transport = @import("transport.zig");
 // free of the Apple-framework shim.
 const darwin = if (builtin.os.tag == .macos) @import("backend/darwin.zig") else struct {};
 const linux = if (builtin.os.tag == .linux) @import("backend/linux.zig") else struct {};
+// Linux presence: the fprintd fingerprint Authorizer and the logind remote-session gate, both over
+// the pure-Zig D-Bus client. Gated so non-Linux builds don't pull in the Linux-only socket code.
+const fprintd = if (builtin.os.tag == .linux) @import("backend/fprintd.zig") else struct {};
+const logind = if (builtin.os.tag == .linux) @import("backend/logind.zig") else struct {};
+const dbus_conn = if (builtin.os.tag == .linux) @import("backend/dbus_conn.zig") else struct {};
 
 // zig-cli action callbacks are bare `fn() !void`, so the process context and the parsed argument
 // values live in file scope (the same pattern as zig-cli's own examples).
@@ -71,6 +76,11 @@ pub fn main(init: std.process.Init) !void {
                     .description = .{ .one_line = "diagnostic: exercise the TPM path (Linux; SINETE_TPM=<swtpm sock>)" },
                     .target = .{ .action = .{ .exec = cmdTpmSelftest } },
                 },
+                .{
+                    .name = "_dbus-selftest",
+                    .description = .{ .one_line = "diagnostic: connect to the system D-Bus and Hello (Linux)" },
+                    .target = .{ .action = .{ .exec = cmdDbusSelftest } },
+                },
             }) },
         },
     };
@@ -100,11 +110,14 @@ fn cmdAgent() !void {
 
     if (builtin.os.tag == .macos) {
         var be = darwin.Darwin{};
-        try serveAgent(sock, be.processor(), be.authorizer());
+        try serveAgent(sock, be.processor(), be.authorizer(), null);
     } else if (builtin.os.tag == .linux) {
         var kbuf: [std.fs.max_path_bytes]u8 = undefined;
         var be = linuxBackend(try linuxKeyDir(&kbuf));
-        try serveAgent(sock, be.processor(), be.authorizer());
+        // Presence is a fingerprint via fprintd; remote/SSH sessions are refused via logind.
+        var fp = fprintd.Fprintd{ .io = g_io, .gpa = g_gpa };
+        var lg = logind.Logind{ .io = g_io, .gpa = g_gpa, .self_uid = std.os.linux.getuid() };
+        try serveAgent(sock, be.processor(), fp.authorizer(), lg.localSession());
     } else {
         // No secure element: advertise one freshly generated identity so the protocol path works.
         var arena = std.heap.ArenaAllocator.init(g_gpa);
@@ -113,14 +126,14 @@ fn cmdAgent() !void {
         const keys = [_]sinete.crypto.KeyInfo{.{ .blob = blob, .comment = "sinete demo (fake backend)" }};
         var cp = sinete.crypto.Fake{ .keys = &keys };
         var az = sinete.authz.Fake{};
-        try serveAgent(sock, cp.processor(), az.authorizer());
+        try serveAgent(sock, cp.processor(), az.authorizer(), null);
     }
 }
 
 /// Wire a Cryptoprocessor + Authorizer into an Agent and serve it over the libxev transport until
 /// the loop ends. A reclaiming allocator backs the per-connection state (leak-detecting in safe
 /// builds, the fast smp_allocator in release); an arena would grow RSS without bound.
-fn serveAgent(sock: []const u8, cp: sinete.crypto.Cryptoprocessor, az: sinete.authz.Authorizer) !void {
+fn serveAgent(sock: []const u8, cp: sinete.crypto.Cryptoprocessor, az: sinete.authz.Authorizer, session: ?sinete.session.LocalSession) !void {
     var debug_alloc: std.heap.DebugAllocator(.{}) = .init;
     const gpa, const debug_gpa = switch (builtin.mode) {
         .Debug, .ReleaseSafe => .{ debug_alloc.allocator(), true },
@@ -134,6 +147,7 @@ fn serveAgent(sock: []const u8, cp: sinete.crypto.Cryptoprocessor, az: sinete.au
         .idle_ms = 300_000, // 5 min idle TTL
         .max_ms = 3_600_000, // 1 h absolute cap
     });
+    agent.session = session; // remote-session gate (Linux); null elsewhere leaves it inactive
     defer agent.deinit();
 
     var msg_buf: [std.fs.max_path_bytes + 64]u8 = undefined;
@@ -353,6 +367,16 @@ fn cmdTpmSelftest() !void {
         try linux.selftest(g_io, sock orelse "/dev/tpmrm0", sock != null);
     } else {
         try stderrWrite("error: _tpm-selftest is only supported on Linux\n");
+        std.process.exit(2);
+    }
+}
+
+fn cmdDbusSelftest() !void {
+    if (builtin.os.tag == .linux) {
+        try dbus_conn.Conn.selftest(g_io, g_gpa);
+        try stdoutWrite("DBUS SELFTEST PASS\n");
+    } else {
+        try stderrWrite("error: _dbus-selftest is only supported on Linux\n");
         std.process.exit(2);
     }
 }

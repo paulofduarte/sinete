@@ -10,6 +10,7 @@ const std = @import("std");
 const proto = @import("../ssh/agent_proto.zig");
 const wire = @import("../ssh/wire.zig");
 const core = @import("core.zig");
+const session = @import("../session.zig");
 
 /// The largest signature blob emitted. An ecdsa-sha2-nistp256 signature is about 101 bytes,
 /// so 512 is ample.
@@ -20,15 +21,15 @@ const max_sig = 512;
 /// TTL logic. Fail-closed: malformed input, a backend or presence error, and a response that
 /// cannot be represented all collapse to a single SSH_AGENT_FAILURE. An error is returned only
 /// if even that one byte cannot be written, for example under memory exhaustion.
-pub fn respond(agent: *core.Agent, body: []const u8, arena: std.mem.Allocator, now_ms: i64, enc: *wire.Encoder) !void {
-    buildResponse(agent, body, arena, now_ms, enc) catch {
+pub fn respond(agent: *core.Agent, cred: ?session.Cred, body: []const u8, arena: std.mem.Allocator, now_ms: i64, enc: *wire.Encoder) !void {
+    buildResponse(agent, cred, body, arena, now_ms, enc) catch {
         // Discard any partial response, then answer FAILURE.
         enc.reset();
         try proto.writeFailure(enc);
     };
 }
 
-fn buildResponse(agent: *core.Agent, body: []const u8, arena: std.mem.Allocator, now_ms: i64, enc: *wire.Encoder) !void {
+fn buildResponse(agent: *core.Agent, cred: ?session.Cred, body: []const u8, arena: std.mem.Allocator, now_ms: i64, enc: *wire.Encoder) !void {
     switch (try proto.parseRequest(body)) {
         .request_identities => {
             const keys = try agent.identities(arena);
@@ -38,7 +39,7 @@ fn buildResponse(agent: *core.Agent, body: []const u8, arena: std.mem.Allocator,
         },
         .sign_request => |sr| {
             var sig: [max_sig]u8 = undefined;
-            const n = try agent.sign(sr.key_blob, sr.data, now_ms, &sig);
+            const n = try agent.sign(cred, sr.key_blob, sr.data, now_ms, &sig);
             try proto.writeSignResponse(enc, sig[0..n]);
         },
         .unsupported => try proto.writeFailure(enc),
@@ -70,7 +71,7 @@ test "REQUEST_IDENTITIES is answered with the advertised keys" {
 
     var enc = wire.Encoder.init(testing.allocator);
     defer enc.deinit();
-    try respond(&agent, &.{11}, arena.allocator(), 1000, &enc);
+    try respond(&agent, null, &.{11}, arena.allocator(), 1000, &enc);
 
     var d = wire.Decoder{ .data = enc.bytes() };
     try testing.expectEqual(@as(u8, 12), try d.byte()); // IDENTITIES_ANSWER
@@ -91,7 +92,7 @@ test "SIGN_REQUEST for a known key yields SIGN_RESPONSE and runs presence once" 
 
     var enc = wire.Encoder.init(testing.allocator);
     defer enc.deinit();
-    try respond(&agent, body.bytes(), testing.allocator, 1000, &enc);
+    try respond(&agent, null, body.bytes(), testing.allocator, 1000, &enc);
 
     var d = wire.Decoder{ .data = enc.bytes() };
     try testing.expectEqual(@as(u8, 14), try d.byte()); // SIGN_RESPONSE
@@ -112,7 +113,7 @@ test "a declined presence gesture yields FAILURE" {
 
     var enc = wire.Encoder.init(testing.allocator);
     defer enc.deinit();
-    try respond(&agent, body.bytes(), testing.allocator, 1000, &enc);
+    try respond(&agent, null, body.bytes(), testing.allocator, 1000, &enc);
     try testing.expectEqual(@as(u8, 5), enc.bytes()[0]); // SSH_AGENT_FAILURE
 }
 
@@ -128,7 +129,7 @@ test "an unknown key yields FAILURE, never a partial response" {
 
     var enc = wire.Encoder.init(testing.allocator);
     defer enc.deinit();
-    try respond(&agent, body.bytes(), testing.allocator, 1000, &enc);
+    try respond(&agent, null, body.bytes(), testing.allocator, 1000, &enc);
     try testing.expectEqual(@as(u8, 5), enc.bytes()[0]); // FAILURE
 }
 
@@ -140,11 +141,11 @@ test "unsupported and malformed requests both yield FAILURE" {
 
     var enc = wire.Encoder.init(testing.allocator);
     defer enc.deinit();
-    try respond(&agent, &.{99}, testing.allocator, 1, &enc); // unsupported type
+    try respond(&agent, null, &.{99}, testing.allocator, 1, &enc); // unsupported type
     try testing.expectEqual(@as(u8, 5), enc.bytes()[0]);
 
     var enc2 = wire.Encoder.init(testing.allocator);
     defer enc2.deinit();
-    try respond(&agent, &.{}, testing.allocator, 1, &enc2); // empty/malformed body
+    try respond(&agent, null, &.{}, testing.allocator, 1, &enc2); // empty/malformed body
     try testing.expectEqual(@as(u8, 5), enc2.bytes()[0]);
 }

@@ -10,6 +10,7 @@
 const std = @import("std");
 const core = @import("core.zig");
 const server = @import("server.zig");
+const session = @import("../session.zig");
 const wire = @import("../ssh/wire.zig");
 
 /// Largest accepted request body. Agent messages are small; bound it so a malformed or hostile
@@ -28,6 +29,7 @@ pub const Outcome = union(enum) {
 /// `body` is scratch for the response body; `arena` backs respond's per-request allocation.
 pub fn processOne(
     agent: *core.Agent,
+    cred: ?session.Cred,
     arena: std.mem.Allocator,
     now_ms: i64,
     in: []const u8,
@@ -43,7 +45,7 @@ pub fn processOne(
     body.reset();
     // respond turns malformed/unsupported bodies into a FAILURE message; it errors only if even
     // that single byte cannot be written (OOM), in which case we drop the connection.
-    server.respond(agent, in[4..total], arena, now_ms, body) catch return .close;
+    server.respond(agent, cred, in[4..total], arena, now_ms, body) catch return .close;
 
     frame_out.reset();
     if (body.bytes().len > std.math.maxInt(u32)) return .close; // response too large to frame; fail closed
@@ -80,7 +82,7 @@ const Harness = struct {
     }
     fn run(h: *Harness, in: []const u8) Outcome {
         _ = h.arena.reset(.retain_capacity); // mirror the transport: the per-request arena resets each frame
-        return processOne(&h.agent, h.arena.allocator(), 1000, in, &h.body, &h.frame);
+        return processOne(&h.agent, null, h.arena.allocator(), 1000, in, &h.body, &h.frame);
     }
 };
 
