@@ -277,7 +277,11 @@ pub const Linux = struct {
         // A policy-bound key (Z5b) signs only via a policy session proving the master secret; a
         // legacy Z4 empty-auth key signs directly. They coexist in one key directory.
         if (try cmd.hasAuthPolicy(key.pub_blob())) {
-            if (!self.has_master) return error.NoMaster; // a copied key file without the secret cannot sign
+            // A long-lived agent may have started before the first generate created master.secret;
+            // re-read it on demand before giving up, so a freshly enrolled master is picked up without
+            // an agent restart. A copied key file with no master.secret still fails closed.
+            if (!self.has_master) self.loadMasterSecret();
+            if (!self.has_master) return error.NoMaster;
             return signDigestPolicy(&t, handle, &digest, &self.master_secret, out);
         }
         return signDigest(&t, handle, &digest, out);
