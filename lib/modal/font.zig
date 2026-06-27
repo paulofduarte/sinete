@@ -19,10 +19,11 @@ const last: u8 = 0x7e;
 /// The 16 row-bytes for `c`. A codepoint outside the printable range falls back to space (0x20),
 /// so an unexpected byte renders blank rather than reading out of bounds.
 pub fn glyph(c: u8) *const [height]u8 {
+    // idx is clamped to the printable range (<= last-first), so [start, start+height) is always
+    // within blob (start <= 94*16 = 1504, +16 = 1520 = blob.len). Return a pointer to that array.
     const idx: usize = if (c >= first and c <= last) @as(usize, c - first) else 0;
-    // slice[0..comptime_len] yields a *const [len]u8 (a pointer-to-array); annotate to make that explicit.
-    const g: *const [height]u8 = blob[idx * @as(usize, height) ..][0..height];
-    return g;
+    const start = idx * @as(usize, height);
+    return @ptrCast(blob[start..].ptr);
 }
 
 /// Whether pixel column `gx` (0..7, left to right) of row `gy` (0..15) is set for `c`.
