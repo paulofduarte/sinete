@@ -143,19 +143,25 @@ pub const Pinentry = struct {
 
     /// Spawn `program`, read the greeting, send BYE -- a connectivity check for the
     /// `_pinentry-selftest` diagnostic, so the subprocess + Assuan plumbing can be verified without a
-    /// real dialog. `program` lets the diagnostic point at a specific binary (SINETE_PINENTRY).
-    pub fn selftest(io: std.Io, gpa: std.mem.Allocator, program: []const u8) Error!void {
+    /// real dialog. `program` lets the diagnostic point at a specific binary (SINETE_PINENTRY). Unlike
+    /// the dialog path, this propagates the underlying error (e.g. FileNotFound / AccessDenied /
+    /// InvalidExe) so the diagnostic can report exactly why pinentry could not be used.
+    pub fn selftest(io: std.Io, gpa: std.mem.Allocator, program: []const u8) !void {
         var p = Pinentry{ .io = io, .gpa = gpa, .program = program };
-        var child = std.process.spawn(io, .{
+        var child = try std.process.spawn(io, .{
             .argv = &.{p.program},
             .stdin = .pipe,
             .stdout = .pipe,
             .stderr = .ignore,
-        }) catch return error.PinentryUnavailable;
-        var stdin = child.stdin orelse return p.abort(&child);
-        var stdout = child.stdout orelse return p.abort(&child);
+        });
+        var stdin = child.stdin orelse return error.PinentryUnavailable;
+        var stdout = child.stdout orelse return error.PinentryUnavailable;
+        errdefer {
+            child.kill(io);
+            _ = child.wait(io) catch {};
+        }
         var rbuf: [greeting_max]u8 = undefined;
-        if (!isOk(p.readLine(&stdout, &rbuf) catch return p.abort(&child))) return p.abort(&child);
+        if (!isOk(try p.readLine(&stdout, &rbuf))) return error.BadGreeting;
         p.bye(&stdin);
         _ = child.wait(io) catch {};
     }

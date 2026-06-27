@@ -419,8 +419,9 @@ fn cmdTpmPolicySelftest() !void {
 
 fn cmdPinentrySelftest() !void {
     const program = envValue("SINETE_PINENTRY") orelse "pinentry";
-    pinentry.selftest(g_io, g_gpa, program) catch {
-        try stderrWrite("PINENTRY SELFTEST FAIL (is pinentry installed / on PATH?)\n");
+    pinentry.selftest(g_io, g_gpa, program) catch |e| {
+        var buf: [160]u8 = undefined;
+        try stderrWrite(try std.fmt.bufPrint(&buf, "PINENTRY SELFTEST FAIL: {s} (program: {s})\n", .{ @errorName(e), program }));
         std.process.exit(2);
     };
     try stdoutWrite("PINENTRY SELFTEST PASS\n");
