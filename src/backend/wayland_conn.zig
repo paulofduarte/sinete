@@ -320,7 +320,10 @@ const Conn = struct {
             .flags = 0,
         };
         const n = linux.sendmsg(self.fd, &msg, 0);
-        if (sysErr(n)) return error.WaylandUnavailable;
+        if (sysErr(n) or n == 0) return error.WaylandUnavailable;
+        // sendmsg can do a short write on a stream socket; the fd is already queued in the ancillary
+        // stream, so send any remaining message bytes normally to keep the framing intact.
+        if (n < bytes.len) try self.writeAll(bytes[n..]);
     }
 
     // --- receive: frame the message stream, reaping any fds events carry ---

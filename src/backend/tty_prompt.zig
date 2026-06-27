@@ -22,7 +22,7 @@ fn failed(rc: usize) bool {
 /// Draw a confirm prompt on `tty_path` and block for a single decisive key. Restores the terminal
 /// before returning. Any open/termios/IO failure is TtyUnavailable so the caller fails closed.
 pub fn promptConfirm(tty_path: []const u8, reason: presenter.Reason) Error!presenter.Outcome {
-    var t = try Term.open(tty_path);
+    var t = try Term.open(tty_path, false); // blocking: the prompt reads a key
     defer t.close();
     t.raw() catch return error.TtyUnavailable;
     defer t.restore();
@@ -35,9 +35,10 @@ pub fn promptConfirm(tty_path: []const u8, reason: presenter.Reason) Error!prese
 
 /// Write a one-shot message line (a refusal/failure) to `tty_path`. The text is the curated
 /// presenter.message() only -- diagnostic detail (error names) goes to the log, never the user's
-/// terminal. Best-effort: a missing/unwritable tty is silently skipped (the caller logs instead).
+/// terminal. Opened NON-BLOCKING: this runs inline on the sign path, so a flow-controlled/full pts
+/// must never hang the agent -- a write that would block is simply dropped (the log keeps the record).
 pub fn showMessage(tty_path: []const u8, text: []const u8) void {
-    var t = Term.open(tty_path) catch return;
+    var t = Term.open(tty_path, true) catch return;
     defer t.close();
     t.write(text);
     t.write("\n");
@@ -50,12 +51,12 @@ const Term = struct {
     fd: i32,
     saved: ?std.posix.termios = null,
 
-    fn open(path: []const u8) Error!Term {
+    fn open(path: []const u8, nonblock: bool) Error!Term {
         var zbuf: [std.fs.max_path_bytes]u8 = undefined;
         if (path.len + 1 > zbuf.len) return error.TtyUnavailable;
         @memcpy(zbuf[0..path.len], path);
         zbuf[path.len] = 0;
-        const rc = linux.open(@ptrCast(&zbuf), .{ .ACCMODE = .RDWR, .NOCTTY = true, .CLOEXEC = true }, 0);
+        const rc = linux.open(@ptrCast(&zbuf), .{ .ACCMODE = .RDWR, .NOCTTY = true, .CLOEXEC = true, .NONBLOCK = nonblock }, 0);
         if (failed(rc)) return error.TtyUnavailable;
         return .{ .fd = @intCast(rc) };
     }
