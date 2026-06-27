@@ -141,15 +141,15 @@ pub const X11 = struct {
         var seen: u8 = 0;
         while (seen < 2) {
             try readAll(self.io, conn, &ev);
-            switch (ev[0]) {
-                0 => return error.X11Unavailable, // X error
-                1 => { // a reply: byte 1 is the grab status (0 = Success)
-                    if (ev[1] != 0) return error.X11Unavailable;
-                    seen += 1;
-                },
-                proto.ev_expose => try self.putImage(conn, setup, wid, gc, img),
-                else => {}, // an input event before the grabs confirmed: ignore it
-            }
+            // Errors (0) and replies (1) are exact type bytes; events carry a SendEvent high bit, so
+            // mask 0x7f to recognize a synthetic Expose too.
+            if (ev[0] == 0) return error.X11Unavailable; // X error
+            if (ev[0] == 1) { // a reply: byte 1 is the grab status (0 = Success)
+                if (ev[1] != 0) return error.X11Unavailable;
+                seen += 1;
+            } else if (ev[0] & 0x7f == proto.ev_expose) {
+                try self.putImage(conn, setup, wid, gc, img);
+            } // any other input event before the grabs confirmed: ignore it
         }
     }
 
