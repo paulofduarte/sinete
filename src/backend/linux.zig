@@ -469,16 +469,19 @@ pub fn selftest(io: std.Io, path: []const u8, is_socket: bool) !void {
     note(out, io, &log_buf, "SELFTEST PASS", .{});
 }
 
-/// Verify an SSH ecdsa-sha2-nistp256 signature blob against a public point, for the selftests.
+/// Verify an SSH ecdsa-sha2-nistp256 signature blob against a public point, for the selftests. The
+/// algorithm name and full consumption of both blobs are checked, so a mis-encoded signature fails.
 fn verifySshSig(sshsig: []const u8, msg: []const u8, point: *const [65]u8) !void {
     const Ecdsa = std.crypto.sign.ecdsa.EcdsaP256Sha256;
     var dec = sinete.wire.Decoder{ .data = sshsig };
-    _ = try dec.string(); // "ecdsa-sha2-nistp256"
+    if (!std.mem.eql(u8, try dec.string(), "ecdsa-sha2-nistp256")) return error.BadSignatureFormat;
     var inner = sinete.wire.Decoder{ .data = try dec.string() };
+    if (!dec.done()) return error.BadSignatureFormat; // trailing bytes after the signature blob
     var rs: [64]u8 = undefined;
     @memset(&rs, 0);
     copyRight(rs[0..32], try inner.string());
     copyRight(rs[32..64], try inner.string());
+    if (!inner.done()) return error.BadSignatureFormat; // trailing bytes inside the signature blob
     try Ecdsa.Signature.fromBytes(rs).verify(msg, try Ecdsa.PublicKey.fromSec1(point));
 }
 
