@@ -32,6 +32,9 @@ pub const Authorizer = struct {
 pub const Fake = struct {
     granted: usize = 0,
     declines: bool = false,
+    /// The error returned when `declines` is set; defaults to a user decline, but a test can choose
+    /// PresenceUnavailable to exercise the "no reader / unevaluable" path.
+    decline_error: anyerror = error.PresenceDeclined,
 
     pub fn authorizer(self: *Fake) Authorizer {
         return .{ .ptr = self, .vtable = &vt };
@@ -41,7 +44,7 @@ pub const Fake = struct {
         _ = key_id;
         _ = reason;
         const self: *Fake = @ptrCast(@alignCast(ptr));
-        if (self.declines) return error.PresenceDeclined;
+        if (self.declines) return self.decline_error;
         self.granted += 1;
     }
 };

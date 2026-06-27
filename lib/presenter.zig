@@ -109,6 +109,7 @@ test "message covers every reason and stays single-line ASCII" {
         const m = message(@enumFromInt(f.value));
         try std.testing.expect(m.len > 0);
         try std.testing.expect(std.mem.indexOfAny(u8, m, "\n\r") == null);
+        for (m) |b| try std.testing.expect(b < 0x80); // single-line AND ASCII-only
     }
 }
 

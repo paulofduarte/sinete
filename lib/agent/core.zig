@@ -80,8 +80,9 @@ pub const Agent = struct {
         // peek is non-mutating: require presence on a cold window, then commit the window only
         // after the signature succeeds, so a failed sign never primes a silent window.
         const warm = self.windows.peek(key_id, now_ms, self.cfg.idle_ms, self.cfg.max_ms);
-        if (!warm) self.az.authorize(key_id, self.cfg.reason) catch {
-            self.notify(cred, .declined);
+        if (!warm) self.az.authorize(key_id, self.cfg.reason) catch |e| {
+            // Distinguish "no presence method available" from a user decline so the message is right.
+            self.notify(cred, if (e == error.PresenceUnavailable) .unavailable else .declined);
             return error.PresenceRefused;
         };
 
@@ -220,7 +221,7 @@ test "the presenter is notified of the reason on each refusal path" {
     var pres = presenter.Fake{};
     var out: [8]u8 = undefined;
 
-    // remote refusal (missing credential while a session gate is set)
+    // remote refusal -- both branches: a non-local caller, and a missing credential
     {
         var cp = crypto.Fake{ .keys = &.{.{ .blob = "key-1", .comment = "me@host" }} };
         var az = authz.Fake{};
@@ -229,7 +230,12 @@ test "the presenter is notified of the reason on each refusal path" {
         agent.session = sess.session();
         agent.presenter = pres.presenter();
         defer agent.deinit();
+        // a non-local caller (isLocal == false)
         try testing.expectError(error.RemoteRefused, agent.sign(.{ .pid = 9, .uid = 501 }, "key-1", "a", 1000, &out));
+        try testing.expectEqual(presenter.Reason.remote_refused, pres.last_error.?);
+        pres.last_error = null;
+        // a missing credential while the gate is set (the cred-orelse branch, notify(null, ...))
+        try testing.expectError(error.RemoteRefused, agent.sign(null, "key-1", "a", 1000, &out));
         try testing.expectEqual(presenter.Reason.remote_refused, pres.last_error.?);
     }
     // a declined gesture
@@ -242,6 +248,16 @@ test "the presenter is notified of the reason on each refusal path" {
         try testing.expectError(error.PresenceRefused, agent.sign(null, "key-1", "a", 1000, &out));
         try testing.expectEqual(presenter.Reason.declined, pres.last_error.?);
     }
+    // an unavailable gesture (no reader / unevaluable) maps to .unavailable, not .declined
+    {
+        var cp = crypto.Fake{ .keys = &.{.{ .blob = "key-1", .comment = "me@host" }} };
+        var az = authz.Fake{ .declines = true, .decline_error = error.PresenceUnavailable };
+        var agent = Agent.init(testing.allocator, cp.processor(), az.authorizer(), .{ .idle_ms = 1000, .max_ms = 10_000 });
+        agent.presenter = pres.presenter();
+        defer agent.deinit();
+        try testing.expectError(error.PresenceRefused, agent.sign(null, "key-1", "a", 1000, &out));
+        try testing.expectEqual(presenter.Reason.unavailable, pres.last_error.?);
+    }
     // a backend error for an unknown key maps to unknown_key, not hardware
     {
         var cp = crypto.Fake{ .keys = &.{} };
@@ -252,7 +268,7 @@ test "the presenter is notified of the reason on each refusal path" {
         try testing.expectError(error.BackendError, agent.sign(null, "ghost", "a", 1000, &out));
         try testing.expectEqual(presenter.Reason.unknown_key, pres.last_error.?);
     }
-    try testing.expectEqual(@as(usize, 3), pres.errors);
+    try testing.expectEqual(@as(usize, 5), pres.errors);
 }
 
 test "identities reflects the cryptoprocessor enumeration" {
