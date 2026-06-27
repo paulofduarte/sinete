@@ -61,6 +61,8 @@ pub const X11 = struct {
 
         self.openWindow(&conn, setup, wid, gc) catch return error.X11Unavailable;
         self.putImage(&conn, setup, wid, gc, img) catch return error.X11Unavailable;
+        // Confirm the keyboard+pointer grabs actually took, else the window is not modal -> fail closed.
+        self.awaitGrabs(&conn, setup, wid, gc, img) catch return error.X11Unavailable;
 
         return self.eventLoop(&conn, modal, setup, wid, gc, img) catch error.X11Unavailable;
     }
@@ -120,6 +122,27 @@ pub const X11 = struct {
         try writeAll(self.io, conn, req.items);
     }
 
+    /// Read until both grab replies (GrabPointer, then GrabKeyboard) arrive, failing closed if either
+    /// status is not Success (the window would not be modal) or the server reports an error. Only the
+    /// grab requests reply in the open-window batch, so any reply here is a grab reply; an Expose that
+    /// races in is handled by repainting.
+    fn awaitGrabs(self: *X11, conn: *File, setup: proto.Setup, wid: u32, gc: u32, img: []const u8) !void {
+        var ev: [32]u8 = undefined;
+        var seen: u8 = 0;
+        while (seen < 2) {
+            try readAll(self.io, conn, &ev);
+            switch (ev[0]) {
+                0 => return error.X11Unavailable, // X error
+                1 => { // a reply: byte 1 is the grab status (0 = Success)
+                    if (ev[1] != 0) return error.X11Unavailable;
+                    seen += 1;
+                },
+                proto.ev_expose => try self.putImage(conn, setup, wid, gc, img),
+                else => {}, // an input event before the grabs confirmed: ignore it
+            }
+        }
+    }
+
     fn eventLoop(self: *X11, conn: *File, modal: ui.Modal, setup: proto.Setup, wid: u32, gc: u32, img: []const u8) !presenter.Outcome {
         var ev: [32]u8 = undefined;
         while (true) {
@@ -128,7 +151,8 @@ pub const X11 = struct {
                 .expose => try self.putImage(conn, setup, wid, gc, img), // repaint on damage
                 .key => |kc| if (modal.keyOutcome(keyByte(kc) orelse continue)) |o| return o,
                 .button => |b| if (modal.clickOutcome(b.x, b.y)) |o| return o,
-                .other, .err => {}, // ignore replies/unrelated events
+                .err => return error.X11Unavailable, // a server error must fail closed, not wedge
+                .other => {}, // replies/unrelated events
             }
         }
     }

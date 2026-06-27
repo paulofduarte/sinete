@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! The built-in modal's bitmap font: Spleen 8x16 (BSD-2-Clause, Frederic Cambus), printable ASCII
-//! only (0x20..0x7E), extracted from its BDF into assets/spleen-8x16-ascii.bin and embedded here so
-//! the modal depends on neither server-side core fonts nor a client font library. Each glyph is 16
-//! rows of one byte; bit 7 (0x80) is the leftmost pixel. Pure: the canvas blits these pixels.
+//! only (0x20..0x7E), extracted from its BDF into spleen-8x16-ascii.bin (next to this file) and
+//! embedded here so the modal depends on neither server-side core fonts nor a client font library.
+//! Each glyph is 16 rows of one byte; bit 7 (0x80) is the leftmost pixel. Pure: the canvas blits these.
 
 const std = @import("std");
 

@@ -156,12 +156,12 @@ pub const Pinentry = struct {
             .stdout = .pipe,
             .stderr = .ignore,
         });
-        var stdin = child.stdin orelse return error.PinentryUnavailable;
-        var stdout = child.stdout orelse return error.PinentryUnavailable;
         errdefer {
             child.kill(io);
             _ = child.wait(io) catch {};
         }
+        var stdin = child.stdin orelse return error.PinentryUnavailable;
+        var stdout = child.stdout orelse return error.PinentryUnavailable;
         var rbuf: [greeting_max]u8 = undefined;
         if (!isOk(try p.readLine(&stdout, &rbuf))) return error.BadGreeting;
         p.bye(&stdin);
