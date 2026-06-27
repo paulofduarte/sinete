@@ -94,14 +94,22 @@ fn osUmask(mode: std.posix.mode_t) std.posix.mode_t {
 }
 
 /// Fill `buf` with kernel CSPRNG bytes via the getrandom syscall (std.crypto.random is gone in 0.16;
-/// this file is linux-only). Used for the master secret and TPM session nonces.
+/// this file is linux-only). Used for the master secret and TPM session nonces. Retries on a signal
+/// interruption (EINTR) or a transient EAGAIN, as getrandom can return either.
 fn randomBytes(buf: []u8) error{Getrandom}!void {
+    const eintr = @intFromEnum(std.os.linux.E.INTR);
+    const eagain = @intFromEnum(std.os.linux.E.AGAIN);
     var off: usize = 0;
     while (off < buf.len) {
         const rc = std.os.linux.getrandom(buf[off..].ptr, buf.len - off, 0);
-        const n: isize = @bitCast(rc);
-        if (n <= 0) return error.Getrandom;
-        off += @intCast(n);
+        const signed: isize = @bitCast(rc);
+        if (signed > 0) {
+            off += @intCast(rc);
+            continue;
+        }
+        const errno: usize = if (signed < 0) @intCast(-signed) else 0;
+        if (errno == eintr or errno == eagain) continue; // transient: retry
+        return error.Getrandom;
     }
 }
 
@@ -255,7 +263,10 @@ pub const Linux = struct {
         var t = try Tpm.open(self.io, self.tpm_path, self.tpm_is_socket);
         defer t.close();
         const primary = try createPrimary(&t);
-        const handle = try loadKey(&t, primary, &key);
+        const handle = loadKey(&t, primary, &key) catch |e| {
+            flush(&t, primary); // don't leak the parent if the load fails
+            return e;
+        };
         defer flush(&t, handle);
         flush(&t, primary); // the parent is only needed to load; free its slot before the sign/session
         var digest: [32]u8 = undefined;
@@ -476,8 +487,14 @@ pub fn policySelftest(io: std.Io, path: []const u8, is_socket: bool) !void {
 
     const primary = try createPrimary(&t);
     var key: KeyBlobs = .{};
-    try createPolicyKeyBlobs(&t, primary, &policy, &key);
-    const handle = try loadKey(&t, primary, &key);
+    createPolicyKeyBlobs(&t, primary, &policy, &key) catch |e| {
+        flush(&t, primary);
+        return e;
+    };
+    const handle = loadKey(&t, primary, &key) catch |e| {
+        flush(&t, primary);
+        return e;
+    };
     defer flush(&t, handle);
     flush(&t, primary);
     note(out, io, &log_buf, "policy key created + loaded", .{});
