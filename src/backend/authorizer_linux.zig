@@ -7,9 +7,10 @@
 //! the core calls showError(); the orchestrator shows the reason on the same channel. The channel
 //! is resolved from the peer credential via logind (logind.peerTty): a session with a controlling
 //! terminal (a local console or an ssh pts) prompts on that terminal via the pure-Zig termios prompt;
-//! a graphical session uses a pinentry dialog. (The built-in X11/Wayland modal fallbacks, for when
-//! pinentry is absent, land in later milestones.) Everything fails closed: an unusable channel
-//! refuses (authorize), and showError always records to the log before any terminal/pinentry attempt.
+//! a graphical session uses a pinentry dialog, falling back to the built-in X11 modal when pinentry
+//! is absent (the built-in Wayland modal, for a stripped Wayland session without XWayland, lands in a
+//! later milestone). Everything fails closed: an unusable channel refuses (authorize), and showError
+//! always records to the log before any terminal/pinentry/modal attempt.
 
 const std = @import("std");
 const sinete = @import("sinete");

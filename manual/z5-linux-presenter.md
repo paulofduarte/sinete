@@ -15,9 +15,13 @@ prompt / refusal. The orchestrator picks the channel from the peer's logind sess
 
 ## Gesture selection
 
-- [ ] With **no fingerprint reader** (or none enrolled), a cold-window sign shows a **confirm**
-      (not a hard refusal): `[y/n]` on a terminal session, or a dialog on a graphical session.
-- [ ] With an **enrolled reader**, a cold-window sign runs the **fingerprint verify** (fprintd).
+- [ ] With **no fingerprint device** (fprintd unreachable / no reader), a cold-window sign shows a
+      **confirm** (not a hard refusal): `[y/n]` on a terminal session, or a dialog on a graphical one.
+- [ ] With a **reachable device + an enrolled finger**, a cold-window sign runs the **fingerprint
+      verify** (fprintd).
+- [ ] (Current intermediate state) A reachable device with **no enrolled finger** still routes to the
+      fprintd verify, which refuses; routing that case to a confirm needs enrollment detection
+      (`ListEnrolledFingers`), which lands in the fprintd-selection milestone.
 
 ## Terminal channel (pure-Zig termios) — the 3 tty scenarios
 
