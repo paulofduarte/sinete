@@ -50,6 +50,12 @@ pub const X11 = struct {
         defer conn.close(self.io);
 
         const setup = self.handshake(&conn, dnum) catch return error.X11Unavailable;
+        // Our ARGB buffer is uploaded as raw little-endian 32-bit pixels, which a server consumes
+        // correctly only as a depth-24 (or 32) TrueColor visual with LSBFirst image byte order. On a
+        // big-endian/MSBFirst or other-depth root, draw nothing -- fail closed rather than render
+        // garbage (the caller falls back to the log). This is a conservative subset of real servers.
+        if (setup.image_byte_order != 0) return error.X11Unavailable; // need LSBFirst
+        if (setup.root_depth != 24 and setup.root_depth != 32) return error.X11Unavailable;
         const wid = setup.newId(0);
         const gc = setup.newId(1);
 

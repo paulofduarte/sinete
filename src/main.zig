@@ -420,7 +420,8 @@ fn cmdTpmPolicySelftest() !void {
 }
 
 /// The Xauthority file for the built-in X11 modal: $XAUTHORITY, else $HOME/.Xauthority. Returns ""
-/// when neither is resolvable (the modal then connects without a cookie and likely fails closed).
+/// when neither is resolvable; the X11 modal then fails closed (no readable cookie -> X11Unavailable),
+/// it never attempts an unauthenticated connection.
 fn xauthPath(buf: []u8) []const u8 {
     if (g_env.get("XAUTHORITY")) |x| {
         if (x.len > 0 and x.len <= buf.len) {
