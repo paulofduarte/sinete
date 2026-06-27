@@ -80,13 +80,15 @@ pub const X11 = struct {
     }
 
     fn handshake(self: *X11, conn: *File, dnum: u32) !proto.Setup {
+        // Require the MIT-MAGIC-COOKIE-1: if it can't be read/resolved, fail closed (the caller falls
+        // back to the log) rather than attempting an unauthenticated connection. readCookie returns
+        // error.X11Unavailable on a missing/unparseable Xauthority.
         var cookie_buf: [64]u8 = undefined;
-        const cookie = readCookie(self.io, self.xauth_path, dnum, &cookie_buf) catch &[_]u8{};
+        const cookie = try readCookie(self.io, self.xauth_path, dnum, &cookie_buf);
 
         var req: std.ArrayList(u8) = .empty;
         defer req.deinit(self.gpa);
-        const name: []const u8 = if (cookie.len > 0) "MIT-MAGIC-COOKIE-1" else "";
-        try proto.setupRequest(self.gpa, &req, name, cookie);
+        try proto.setupRequest(self.gpa, &req, "MIT-MAGIC-COOKIE-1", cookie);
         try writeAll(self.io, conn, req.items);
 
         // The reply: an 8-byte header whose bytes 6..8 give the additional length in 4-byte units.
