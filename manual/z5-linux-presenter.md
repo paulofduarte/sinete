@@ -19,9 +19,9 @@ prompt / refusal. The orchestrator picks the channel from the peer's logind sess
       **confirm** (not a hard refusal): `[y/n]` on a terminal session, or a dialog on a graphical one.
 - [ ] With a **reachable device + an enrolled finger**, a cold-window sign runs the **fingerprint
       verify** (fprintd).
-- [ ] (Current intermediate state) A reachable device with **no enrolled finger** still routes to the
-      fprintd verify, which refuses; routing that case to a confirm needs enrollment detection
-      (`ListEnrolledFingers`), which lands in the fprintd-selection milestone.
+- [ ] A reachable device with **no enrolled finger** routes to a **confirm** (not the verify): the
+      orchestrator checks `ListEnrolledFingers` up front, so an enrolled-less reader does not start a
+      verify that could only fail.
 
 ## Terminal channel (pure-Zig termios) — the 3 tty scenarios
 

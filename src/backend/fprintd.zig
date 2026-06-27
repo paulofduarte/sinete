@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const sinete = @import("sinete");
+const presence = sinete.presence;
 const wire = sinete.dbus_wire;
 const calls = sinete.dbus_calls;
 const dbus = @import("dbus_conn.zig");
@@ -21,15 +22,31 @@ pub const Fprintd = struct {
 
     pub const Error = error{ PresenceDeclined, PresenceUnavailable };
 
-    /// Whether a default fingerprint device exists, so the orchestrator can choose the fingerprint
-    /// gesture vs a typed confirm. Any D-Bus/daemon failure (incl. no device) reports false, so a
-    /// box without a reachable reader cleanly falls back to confirm. (Enrolled-finger detection is a
-    /// later refinement; today an enrolled-less reader still routes here and the verify refuses.)
-    pub fn hasDevice(self: *Fprintd) bool {
-        var conn = dbus.Conn.connectSystem(self.io, self.gpa) catch return false;
+    /// The presence capabilities the orchestrator selects on: a reachable default device, and whether
+    /// any finger is enrolled for the caller. A box without a reader, or a reader with no enrolled
+    /// finger, reports enrolled=false so the orchestrator falls back to a typed confirm rather than
+    /// starting a verify that could only fail. Any D-Bus/daemon failure reports {false,false}.
+    pub fn caps(self: *Fprintd) presence.Caps {
+        var conn = dbus.Conn.connectSystem(self.io, self.gpa) catch return .{};
         defer conn.close();
-        const dev = self.getDefaultDevice(&conn) catch return false;
-        return dev.len > 0;
+        const dev = self.getDefaultDevice(&conn) catch return .{};
+        if (dev.len == 0 or dev.len > 256) return .{};
+        var path_buf: [256]u8 = undefined;
+        @memcpy(path_buf[0..dev.len], dev);
+        const enrolled = self.listEnrolled(&conn, path_buf[0..dev.len]) catch false;
+        return .{ .reader = true, .enrolled = enrolled };
+    }
+
+    /// Whether the caller has any enrolled finger on `dev_path` (ListEnrolledFingers is a read-only
+    /// query, no Claim needed). A D-Bus error is treated as "not enrolled" (-> confirm fallback).
+    fn listEnrolled(self: *Fprintd, conn: *dbus.Conn, dev_path: []const u8) !bool {
+        const s = conn.nextSerial();
+        var enc = wire.Encoder.init(self.gpa);
+        defer enc.deinit();
+        try calls.listEnrolledFingers(&enc, s, dev_path, ""); // empty username = the caller's user
+        try conn.send(enc.bytes());
+        const r = try conn.awaitReply(s);
+        return calls.parseStringArrayNonEmpty(r.body, r.endian);
     }
 
     /// Run a fingerprint verify, normalizing every failure to the two-value Error so the orchestrator

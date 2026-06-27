@@ -19,10 +19,16 @@ pub const height: usize = 140; // X11/Wayland edges (u16/i16) where the protocol
 // Opaque ARGB palette (0xAARRGGBB): a dark panel, light text, a subtle border, two buttons.
 const col_bg: u32 = 0xFF1E1E28;
 const col_fg: u32 = 0xFFE6E6F0;
+const col_hint: u32 = 0xFF8A8AA0; // a dimmer grey for the secondary hint line
 const col_border: u32 = 0xFF5A5A78;
 const col_ok: u32 = 0xFF2E7D32; // approve = green
 const col_cancel: u32 = 0xFF8E2A2A; // deny = red
 const col_btn_fg: u32 = 0xFFFFFFFF;
+
+// This modal is the built-in fallback, drawn only when the native pinentry dialog is unavailable. A
+// dimmer hint nudges the user toward installing pinentry for a native dialog (no package names --
+// the right pinentry frontend is distro/desktop specific).
+const hint_text = "Tip: install pinentry for a native dialog";
 
 const margin: i32 = 16;
 const btn_w: u32 = 110;
@@ -60,6 +66,10 @@ pub const Modal = struct {
         const max_chars: usize = avail / @as(usize, font.width);
         const msg = if (self.message.len > max_chars) self.message[0..max_chars] else self.message;
         c.text(msg, margin, margin + 6, col_fg);
+
+        // The "install pinentry" hint, a line below the message in the dimmer hint colour.
+        const hint = if (hint_text.len > max_chars) hint_text[0..max_chars] else hint_text;
+        c.text(hint, margin, margin + 6 + @as(i32, @intCast(font.height)) + 8, col_hint);
 
         const ok = okButton();
         button(c, ok, if (self.confirm) "Approve" else "OK", col_ok);
@@ -145,4 +155,11 @@ test "paint fills the buffer without going out of bounds" {
     try testing.expectEqual(col_border, buf[0]);
     const ok = okButton();
     try testing.expectEqual(col_ok, buf[@as(usize, @intCast(ok.y + 5)) * width + @as(usize, @intCast(ok.x + 5))]);
+    // The hint line is painted in the hint colour somewhere on its row.
+    const hint_row: usize = @intCast(margin + 6 + @as(i32, @intCast(font.height)) + 8 + 4);
+    var hint_seen = false;
+    for (0..width) |x| {
+        if (buf[hint_row * width + x] == col_hint) hint_seen = true;
+    }
+    try testing.expect(hint_seen);
 }

@@ -67,11 +67,9 @@ pub const Authorizer = struct {
         _ = key_id; // presence-only; per-key binding is the TPM policy
         _ = reason;
 
-        // Choose from the one capability we can measure today: a reachable default device routes to
-        // the fingerprint verify, otherwise a typed confirm. Enrolled-finger detection (the full
-        // presence.selectGesture Caps) is a later refinement; until then an enrolled-less reader
-        // still routes to the verify, which refuses.
-        const gesture: presence.Gesture = if (self.fp.hasDevice()) .fingerprint else .confirm;
+        // A reachable reader with an enrolled finger routes to the fingerprint verify; otherwise (no
+        // reader, or a reader with no enrolled finger) a typed confirm.
+        const gesture = presence.selectGesture(self.fp.caps());
         switch (gesture) {
             .fingerprint => try self.fp.authorize(), // fprintd renders its own reader prompt for now
             .confirm => {
