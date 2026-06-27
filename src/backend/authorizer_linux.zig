@@ -93,11 +93,14 @@ pub const Authorizer = struct {
     }
     fn showError(ptr: *anyopaque, cred: ?session.Cred, reason: pres.Reason, detail: []const u8) void {
         const self: *Authorizer = @ptrCast(@alignCast(ptr));
+        // Floor first: always record the reason (with detail) in the log, so a refusal is never lost
+        // even if the terminal write below silently fails (tty vanished / wrong path / permissions).
+        self.log.presenter().showError(cred, reason, detail);
+        // Additionally surface the curated message (no detail) on the peer's own terminal when there
+        // is one; a graphical session has none (its modal channels land in later milestones).
         var buf: [std.fs.max_path_bytes]u8 = undefined;
         if (self.targetTty(cred, &buf)) |path| {
-            tty.showMessage(path, pres.message(reason)); // curated text only; detail never hits the user's tty
-        } else {
-            self.log.presenter().showError(cred, reason, detail); // no terminal: log with detail
+            tty.showMessage(path, pres.message(reason));
         }
     }
 
