@@ -196,8 +196,8 @@ fn displayNumber(display: []const u8) ?u32 {
     return std.fmt.parseInt(u32, s, 10) catch null;
 }
 
-/// Read an MIT-MAGIC-COOKIE-1 from the Xauthority file whose display number matches, else the first
-/// MIT-MAGIC-COOKIE-1 found. Entries are big-endian length-prefixed:
+/// Read the MIT-MAGIC-COOKIE-1 from the Xauthority file whose display number matches `dnum`; no
+/// match fails closed (no fallback to an unrelated cookie). Entries are big-endian length-prefixed:
 /// family(2) addr(2+n) number(2+n) name(2+n) data(2+n). Returns the cookie copied into `buf`.
 fn readCookie(io: std.Io, path: []const u8, dnum: u32, buf: []u8) ![]const u8 {
     var dir = std.Io.Dir.cwd();
@@ -207,7 +207,6 @@ fn readCookie(io: std.Io, path: []const u8, dnum: u32, buf: []u8) ![]const u8 {
     var num_str: [16]u8 = undefined;
     const want = std.fmt.bufPrint(&num_str, "{d}", .{dnum}) catch "";
 
-    var fallback: ?[]const u8 = null;
     var p: usize = 0;
     while (p + 2 <= data.len) {
         p += 2; // family (the loop condition already guarantees these 2 bytes)
@@ -216,21 +215,15 @@ fn readCookie(io: std.Io, path: []const u8, dnum: u32, buf: []u8) ![]const u8 {
         const name = readField(data, &p) orelse break;
         const cookie = readField(data, &p) orelse break;
         _ = addr;
-        if (std.mem.eql(u8, name, "MIT-MAGIC-COOKIE-1")) {
-            if (cookie.len <= buf.len) {
-                if (std.mem.eql(u8, number, want)) {
-                    @memcpy(buf[0..cookie.len], cookie);
-                    return buf[0..cookie.len];
-                }
-                if (fallback == null) fallback = cookie;
-            }
+        // Require a cookie for the RESOLVED local display number; do not fall back to any other
+        // cookie (that could authenticate to / draw on an unintended X server). No match -> fail
+        // closed. (Address/family matching could tighten this further later.)
+        if (std.mem.eql(u8, name, "MIT-MAGIC-COOKIE-1") and std.mem.eql(u8, number, want) and cookie.len <= buf.len) {
+            @memcpy(buf[0..cookie.len], cookie);
+            return buf[0..cookie.len];
         }
     }
-    if (fallback) |c| {
-        @memcpy(buf[0..c.len], c);
-        return buf[0..c.len];
-    }
-    return error.X11Unavailable;
+    return error.X11Unavailable; // no MIT-MAGIC-COOKIE-1 for this display number
 }
 
 /// A big-endian u16-length-prefixed field; advances `p` past it. Null on truncation.
