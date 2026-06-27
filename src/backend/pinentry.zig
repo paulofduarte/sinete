@@ -14,7 +14,7 @@ const sinete = @import("sinete");
 const assuan = sinete.assuan;
 const presenter = sinete.presenter;
 
-pub const Error = error{ PinentryUnavailable, PresenceDeclined };
+pub const Error = error{PinentryUnavailable};
 
 const greeting_max = 512;
 const reply_max = 1024;
@@ -28,8 +28,9 @@ pub const Pinentry = struct {
     /// The X11 DISPLAY to forward (OPTION display=), or "" to let pinentry use its own environment.
     display: []const u8 = "",
 
-    /// Show a confirm dialog and return the user's choice. confirmed = approved; a cancel / deny is
-    /// PresenceDeclined; anything else (no pinentry, protocol/IO failure) is PinentryUnavailable.
+    /// Show a confirm dialog and return the user's choice: .confirmed when approved, .declined on a
+    /// cancel/deny. Any failure to even show the dialog (no pinentry, protocol/IO error) is
+    /// PinentryUnavailable.
     pub fn confirm(self: *Pinentry, reason: presenter.Reason) Error!presenter.Outcome {
         return self.run(reason, false);
     }
@@ -53,7 +54,7 @@ pub const Pinentry = struct {
         // The greeting is the first line and must be OK.
         if (!isOk(self.readLine(&stdout, &rbuf) catch return self.abort(&child))) return self.abort(&child);
 
-        self.setup(&stdin, &stdout, &rbuf, reason) catch return self.abort(&child);
+        self.setup(&stdin, &stdout, &rbuf, reason, one_button) catch return self.abort(&child);
 
         var line: std.ArrayList(u8) = .empty;
         defer line.deinit(self.gpa);
@@ -67,8 +68,9 @@ pub const Pinentry = struct {
         return outcome;
     }
 
-    /// Send the OPTION display + SETDESC/SETOK/SETCANCEL setup lines, checking each reply is OK.
-    fn setup(self: *Pinentry, stdin: *std.Io.File, stdout: *std.Io.File, rbuf: []u8, reason: presenter.Reason) !void {
+    /// Send the OPTION display + SETDESC/SETOK[/SETCANCEL] setup lines, checking each reply is OK. A
+    /// confirm uses Approve/Deny buttons; a one-button message uses a neutral OK and no cancel.
+    fn setup(self: *Pinentry, stdin: *std.Io.File, stdout: *std.Io.File, rbuf: []u8, reason: presenter.Reason, one_button: bool) !void {
         var line: std.ArrayList(u8) = .empty;
         defer line.deinit(self.gpa);
 
@@ -77,8 +79,12 @@ pub const Pinentry = struct {
         }
         try assuan.appendText(self.gpa, &line, "SETTITLE", "sinete");
         try assuan.appendText(self.gpa, &line, "SETDESC", presenter.message(reason));
-        try assuan.appendText(self.gpa, &line, "SETOK", "Approve");
-        try assuan.appendText(self.gpa, &line, "SETCANCEL", "Deny");
+        if (one_button) {
+            try assuan.appendText(self.gpa, &line, "SETOK", "OK"); // a message: neutral, no cancel
+        } else {
+            try assuan.appendText(self.gpa, &line, "SETOK", "Approve");
+            try assuan.appendText(self.gpa, &line, "SETCANCEL", "Deny");
+        }
 
         // Send each line and consume its OK; an ERR on setup aborts (fail closed).
         var it = std.mem.splitScalar(u8, line.items, '\n');
@@ -104,9 +110,11 @@ pub const Pinentry = struct {
         self.write(stdin, line.items) catch {};
     }
 
-    /// Kill the child and report unavailable -- the single fail-closed exit used on any error.
+    /// Kill the child, reap it (so a failed dialog leaves no zombie), and report unavailable -- the
+    /// single fail-closed exit used on any error.
     fn abort(self: *Pinentry, child: *std.process.Child) Error {
         child.kill(self.io);
+        _ = child.wait(self.io) catch {};
         return error.PinentryUnavailable;
     }
 

@@ -6,10 +6,10 @@
 //! reader is present, else a typed confirm) and drives it through the right channel. On a refusal
 //! the core calls showError(); the orchestrator shows the reason on the same channel. The channel
 //! is resolved from the peer credential via logind (logind.peerTty): a session with a controlling
-//! terminal (a local console or an ssh pts) prompts on that terminal; a graphical session is a modal
-//! channel, whose backends land in later milestones (until then a gesture there is unavailable and a
-//! message falls back to the log). Everything fails closed: an unusable channel refuses (authorize)
-//! or falls back to the log (showError).
+//! terminal (a local console or an ssh pts) prompts on that terminal via the pure-Zig termios prompt;
+//! a graphical session uses a pinentry dialog. (The built-in X11/Wayland modal fallbacks, for when
+//! pinentry is absent, land in later milestones.) Everything fails closed: an unusable channel
+//! refuses (authorize), and showError always records to the log before any terminal/pinentry attempt.
 
 const std = @import("std");
 const sinete = @import("sinete");
@@ -80,7 +80,7 @@ pub const Authorizer = struct {
         var buf: [std.fs.max_path_bytes]u8 = undefined;
         if (self.targetTty(cred, &buf)) |path| return tty.promptConfirm(path, reason);
         var pe = pinentry.Pinentry{ .io = self.io, .gpa = self.gpa, .display = self.display };
-        return pe.confirm(reason) catch return error.TtyUnavailable;
+        return pe.confirm(reason); // error.PinentryUnavailable reflects the actual failing channel
     }
 
     // --- Presenter ---
