@@ -124,6 +124,15 @@ pub fn parseVariantBool(body: []const u8, endian: std.builtin.Endian) ParseError
     return d.boolean();
 }
 
+/// org.freedesktop.DBus.Properties.Get reply: a variant (v) wrapping a string (s) or object path
+/// (o) -- used to read login1 Session string properties (Type, TTY, Display). The slice aliases body.
+pub fn parseVariantString(body: []const u8, endian: std.builtin.Endian) ParseError![]const u8 {
+    var d = wire.Decoder{ .data = body, .endian = endian };
+    const sig = try d.signature();
+    if (!std.mem.eql(u8, sig, "s") and !std.mem.eql(u8, sig, "o")) return error.UnexpectedType;
+    return d.string();
+}
+
 /// net.reactivated.Fprint.Device.VerifyStatus signal body: (s result, b done).
 pub fn parseVerifyStatus(body: []const u8, endian: std.builtin.Endian) ParseError!struct { result: []const u8, done: bool } {
     var d = wire.Decoder{ .data = body, .endian = endian };
@@ -244,6 +253,19 @@ test "parseVariantBool reads a Properties.Get(Remote) reply" {
     try enc.signature("s"); // wrong inner type
     try enc.string("x");
     try testing.expectError(error.UnexpectedType, parseVariantBool(enc.bytes(), .little));
+}
+
+test "parseVariantString reads a Properties.Get(Type/TTY) reply" {
+    var enc = Encoder.init(testing.allocator);
+    defer enc.deinit();
+    try enc.signature("s");
+    try enc.string("/dev/pts/3");
+    try testing.expectEqualStrings("/dev/pts/3", try parseVariantString(enc.bytes(), .little));
+
+    enc.reset();
+    try enc.signature("b"); // wrong inner type
+    try enc.boolean(true);
+    try testing.expectError(error.UnexpectedType, parseVariantString(enc.bytes(), .little));
 }
 
 test "parseVerifyStatus reads (result, done)" {

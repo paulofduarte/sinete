@@ -17,6 +17,7 @@ const pres = sinete.presenter;
 const presence = sinete.presence;
 const session = sinete.session;
 const fprintd = @import("fprintd.zig");
+const logind = @import("logind.zig");
 const tty = @import("tty_prompt.zig");
 const presenter_log = @import("presenter_log.zig");
 
@@ -24,11 +25,13 @@ pub const Authorizer = struct {
     io: std.Io,
     gpa: std.mem.Allocator,
     fp: *fprintd.Fprintd,
+    /// Resolves the peer's prompt channel (graphical vs which terminal) from its logind session.
+    lg: *logind.Logind,
     /// Log fallback for showError when no interactive channel is reachable.
     log: presenter_log.LogPresenter,
 
-    pub fn init(io: std.Io, gpa: std.mem.Allocator, fp: *fprintd.Fprintd) Authorizer {
-        return .{ .io = io, .gpa = gpa, .fp = fp, .log = .{ .io = io } };
+    pub fn init(io: std.Io, gpa: std.mem.Allocator, fp: *fprintd.Fprintd, lg: *logind.Logind) Authorizer {
+        return .{ .io = io, .gpa = gpa, .fp = fp, .lg = lg, .log = .{ .io = io } };
     }
 
     pub fn authorizer(self: *Authorizer) authz.Authorizer {
@@ -97,12 +100,16 @@ pub const Authorizer = struct {
         }
     }
 
-    /// The terminal to prompt on for `cred`. This milestone targets the agent's controlling terminal
-    /// (`/dev/tty`), which reaches a foreground-run agent; logind-derived per-peer selection (the
-    /// graphical vs console vs ssh decision, and the peer's own pts) replaces this next.
+    /// The terminal to prompt on for `cred`, or null for a graphical (or unresolvable) session -- in
+    /// which case a gesture is currently unavailable and a message falls back to the log (the
+    /// graphical modal channels land in later milestones). With a peer credential the terminal is the
+    /// peer's own logind session TTY (a local console or an ssh pts); without one (no SO_PEERCRED) the
+    /// agent's controlling terminal `/dev/tty` is tried, which reaches a foreground-run agent.
     fn targetTty(self: *Authorizer, cred: ?session.Cred, buf: []u8) ?[]const u8 {
-        _ = self;
-        _ = cred;
+        if (cred) |c| {
+            if (c.pid <= 0) return null;
+            return self.lg.peerTty(@intCast(c.pid), buf);
+        }
         const path = "/dev/tty";
         if (path.len > buf.len) return null;
         @memcpy(buf[0..path.len], path);

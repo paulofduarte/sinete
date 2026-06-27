@@ -16,6 +16,7 @@
 const std = @import("std");
 const sinete = @import("sinete");
 const session = sinete.session;
+const presence = sinete.presence;
 const wire = sinete.dbus_wire;
 const calls = sinete.dbus_calls;
 const message = sinete.dbus_message;
@@ -129,5 +130,43 @@ pub const Logind = struct {
         try conn.send(enc.bytes());
         const r = try conn.awaitReply(s);
         return calls.parseVariantBool(r.body, r.endian);
+    }
+
+    /// The controlling terminal to draw a prompt/message on for the process `pid`, or null when its
+    /// session is graphical (a modal channel) or cannot be resolved (no session / D-Bus error). The
+    /// terminal-vs-graphical decision is the pure presence.pickChannel over the session Type + TTY.
+    /// The returned slice is copied into `out`.
+    pub fn peerTty(self: *Logind, pid: u32, out: []u8) ?[]const u8 {
+        var conn = dbus.Conn.connectSystem(self.io, self.gpa) catch return null;
+        defer conn.close();
+
+        var sess_buf: [256]u8 = undefined;
+        const sess = switch (self.sessionByPid(&conn, pid, &sess_buf)) {
+            .session => |p| p,
+            .no_session, .err => return null, // sessionless (graphical app) or error -> not a terminal
+        };
+
+        var type_buf: [64]u8 = undefined;
+        const type_str = self.sessionStrProp(&conn, sess, "Type", &type_buf) catch return null;
+        const tty = self.sessionStrProp(&conn, sess, "TTY", out) catch return null;
+        return switch (presence.pickChannel(type_str, tty)) {
+            .terminal => tty,
+            .graphical => null,
+        };
+    }
+
+    /// Read a string-valued session property (Type, TTY, Display) into `buf`, returning the copy.
+    /// Copies because the reply body is reused by the next call on the same connection.
+    fn sessionStrProp(self: *Logind, conn: *dbus.Conn, sess_path: []const u8, prop: []const u8, buf: []u8) ![]const u8 {
+        const s = conn.nextSerial();
+        var enc = wire.Encoder.init(self.gpa);
+        defer enc.deinit();
+        try calls.propertiesGet(&enc, s, calls.login1_dest, sess_path, calls.login1_session_iface, prop);
+        try conn.send(enc.bytes());
+        const r = try conn.awaitReply(s);
+        const v = try calls.parseVariantString(r.body, r.endian);
+        if (v.len > buf.len) return error.Overflow;
+        @memcpy(buf[0..v.len], v);
+        return buf[0..v.len];
     }
 };

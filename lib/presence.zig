@@ -35,6 +35,25 @@ pub fn gestureReason(g: Gesture) presenter.Reason {
     };
 }
 
+/// Where to draw a prompt/message for a session: a graphical modal, or a terminal. Decided from the
+/// logind session Type and TTY -- pure so the policy is unit-tested without a live bus.
+pub const Channel = enum { graphical, terminal };
+
+/// A graphical session draws a modal; a session with a controlling terminal (a local console or an
+/// ssh pts) draws on that terminal; an unknown/typeless session with no tty prefers graphical (a
+/// modal, which degrades to the log until the modal backends exist).
+pub fn pickChannel(session_type: []const u8, tty: []const u8) Channel {
+    if (isGraphical(session_type)) return .graphical;
+    if (tty.len > 0) return .terminal;
+    return .graphical;
+}
+
+fn isGraphical(session_type: []const u8) bool {
+    return std.mem.eql(u8, session_type, "x11") or
+        std.mem.eql(u8, session_type, "wayland") or
+        std.mem.eql(u8, session_type, "mir");
+}
+
 test "selectGesture: fingerprint only with reader + an enrolled finger" {
     try std.testing.expectEqual(Gesture.fingerprint, selectGesture(.{ .reader = true, .enrolled = true }));
     try std.testing.expectEqual(Gesture.confirm, selectGesture(.{ .reader = true, .enrolled = false })); // present, no fingers
@@ -45,4 +64,13 @@ test "selectGesture: fingerprint only with reader + an enrolled finger" {
 test "gestureReason maps to the prompt cue" {
     try std.testing.expectEqual(presenter.Reason.touch_fingerprint, gestureReason(.fingerprint));
     try std.testing.expectEqual(presenter.Reason.confirm_sign, gestureReason(.confirm));
+}
+
+test "pickChannel: graphical type wins; otherwise a tty is a terminal; else graphical" {
+    try std.testing.expectEqual(Channel.graphical, pickChannel("wayland", "")); // graphical, no tty
+    try std.testing.expectEqual(Channel.graphical, pickChannel("x11", "/dev/tty2")); // graphical even with a tty
+    try std.testing.expectEqual(Channel.terminal, pickChannel("tty", "/dev/pts/3")); // ssh pts
+    try std.testing.expectEqual(Channel.terminal, pickChannel("tty", "/dev/tty3")); // local console
+    try std.testing.expectEqual(Channel.graphical, pickChannel("tty", "")); // typeless, no tty -> modal/log
+    try std.testing.expectEqual(Channel.graphical, pickChannel("", "")); // unknown -> graphical
 }

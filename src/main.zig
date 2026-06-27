@@ -129,8 +129,8 @@ fn cmdAgent() !void {
         // The orchestrator is both the Authorizer (fingerprint or a typed confirm) and the Presenter
         // (refusal/failure messages on the peer's terminal). Remote/SSH sessions are refused via logind.
         var fp = fprintd.Fprintd{ .io = g_io, .gpa = g_gpa };
-        var orch = authorizer_linux.Authorizer.init(g_io, g_gpa, &fp);
         var lg = logind.Logind{ .io = g_io, .gpa = g_gpa, .self_uid = std.os.linux.getuid() };
+        var orch = authorizer_linux.Authorizer.init(g_io, g_gpa, &fp, &lg);
         try serveAgent(sock, be.processor(), orch.authorizer(), lg.localSession(), orch.presenter());
     } else {
         // No secure element: advertise one freshly generated identity so the protocol path works.
