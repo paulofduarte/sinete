@@ -89,7 +89,7 @@ test "pickChannel: graphical type wins; otherwise a tty is a terminal; else grap
     try std.testing.expectEqual(Channel.graphical, pickChannel("x11", "/dev/tty2")); // graphical even with a tty
     try std.testing.expectEqual(Channel.terminal, pickChannel("tty", "/dev/pts/3")); // ssh pts
     try std.testing.expectEqual(Channel.terminal, pickChannel("tty", "/dev/tty3")); // local console
-    try std.testing.expectEqual(Channel.graphical, pickChannel("tty", "")); // typeless, no tty -> modal/log
+    try std.testing.expectEqual(Channel.graphical, pickChannel("tty", "")); // tty type but no TTY value -> modal/log
     try std.testing.expectEqual(Channel.graphical, pickChannel("", "")); // unknown -> graphical
 }
 

@@ -4,11 +4,12 @@
 //! The Linux presence orchestrator: it is the agent's Authorizer AND its Presenter. On a cold
 //! window the core calls authorize(); the orchestrator picks the gesture (a fingerprint when a
 //! reader is present, else a typed confirm) and drives it through the right channel. On a refusal
-//! the core calls showError(); the orchestrator shows the reason on the same channel. Channel
-//! selection (which terminal / a graphical modal) is resolved from the peer credential -- in this
-//! milestone the target is the controlling terminal; logind-derived per-peer selection lands next.
-//! Everything fails closed: an unusable channel refuses (authorize) or falls back to the log
-//! (showError).
+//! the core calls showError(); the orchestrator shows the reason on the same channel. The channel
+//! is resolved from the peer credential via logind (logind.peerTty): a session with a controlling
+//! terminal (a local console or an ssh pts) prompts on that terminal; a graphical session is a modal
+//! channel, whose backends land in later milestones (until then a gesture there is unavailable and a
+//! message falls back to the log). Everything fails closed: an unusable channel refuses (authorize)
+//! or falls back to the log (showError).
 
 const std = @import("std");
 const sinete = @import("sinete");
