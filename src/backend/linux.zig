@@ -14,7 +14,6 @@ const ecdsa_key = sinete.ecdsa_key;
 const wire = sinete.wire;
 const keyfile = sinete.tpm_keyfile;
 const crypto = sinete.crypto;
-const authz = sinete.authz;
 const device = @import("tpm_device.zig");
 
 /// The largest TSS2 key file we read (PEM); a P-256 loadable key is a few hundred bytes.
@@ -94,6 +93,18 @@ fn osUmask(mode: std.posix.mode_t) std.posix.mode_t {
     return @intCast(std.os.linux.syscall1(.umask, mode));
 }
 
+/// Fill `buf` with kernel CSPRNG bytes via the getrandom syscall (std.crypto.random is gone in 0.16;
+/// this file is linux-only). Used for the master secret and TPM session nonces.
+fn randomBytes(buf: []u8) error{Getrandom}!void {
+    var off: usize = 0;
+    while (off < buf.len) {
+        const rc = std.os.linux.getrandom(buf[off..].ptr, buf.len - off, 0);
+        const n: isize = @bitCast(rc);
+        if (n <= 0) return error.Getrandom;
+        off += @intCast(n);
+    }
+}
+
 /// Whether a key filename is safe to surface as a single-line SSH key comment. A name with a newline
 /// or carriage return (valid on a Linux filesystem) could split list/export output into multiple
 /// records (e.g. injecting an extra authorized_keys line), so such files are ignored everywhere.
@@ -118,6 +129,15 @@ fn createKey(t: *Tpm, parent: u32, out: *KeyBlobs) !void {
     try cmd.pointFromPublic(out.pub_blob(), &out.point);
 }
 
+/// Create an ECDSA P-256 signing key bound to `auth_policy` (no password), copying its blobs + point.
+fn createPolicyKeyBlobs(t: *Tpm, parent: u32, auth_policy: []const u8, out: *KeyBlobs) !void {
+    const c = try cmd.createPolicyKey(&t.cmdbuf, parent, auth_policy);
+    const blobs = try cmd.createKeyBlobs(try t.transact(c));
+    try out.setPrivate(blobs.private);
+    try out.setPublic(blobs.public);
+    try cmd.pointFromPublic(out.pub_blob(), &out.point);
+}
+
 /// Load a saved key under `parent`, returning its transient handle.
 fn loadKey(t: *Tpm, parent: u32, k: *const KeyBlobs) !u32 {
     const c = try cmd.load(&t.cmdbuf, parent, k.priv(), k.pub_blob());
@@ -131,27 +151,65 @@ fn signDigest(t: *Tpm, key: u32, digest: []const u8, out: []u8) !usize {
     return ecdsa_sig.rawRsToSshBlob(sig.r, sig.s, out);
 }
 
+// --- Z5b: the master NV index and the policy-bound sign path ---
+
+const master_index: u32 = 0x018E7E7F; // sibling of the epoch index; holds the PolicySecret authValue S
+const master_secret_file = "master.secret";
+
+/// Ensure the master NV index exists (define + write-once to set WRITTEN) with authValue `secret`,
+/// then return the PolicySecret authPolicy digest computed from its current Name. The Name aliases
+/// the response buffer, so the digest is computed before any further transact.
+fn masterPolicy(t: *Tpm, secret: []const u8) ![32]u8 {
+    const def = try cmd.nvDefineMaster(&t.cmdbuf, master_index, secret);
+    if (try cmd.checkOrDefined(try t.transact(def)) == .ok) {
+        const w = try cmd.nvWrite(&t.cmdbuf, master_index, secret, &[_]u8{0}); // any write sets WRITTEN
+        try cmd.expectOk(try t.transact(w));
+    }
+    const rp = try cmd.nvReadPublic(&t.cmdbuf, master_index);
+    const name = try cmd.nvReadPublicName(try t.transact(rp));
+    return cmd.policySecretDigest(name);
+}
+
+/// Sign a digest with a policy-bound key: open a policy session, satisfy its PolicySecret by proving
+/// the master secret `S`, then Sign authorized by that session (empty HMAC). The session auto-flushes
+/// on the Sign (continueSession=0); flush defensively in case an earlier step failed.
+fn signDigestPolicy(t: *Tpm, key: u32, digest: []const u8, secret: []const u8, out: []u8) !usize {
+    var nonce: [32]u8 = undefined;
+    try randomBytes(&nonce);
+    const sa = try cmd.startAuthSession(&t.cmdbuf, cmd.se_policy, &nonce);
+    const sess = try cmd.startAuthSessionResult(try t.transact(sa));
+    errdefer flush(t, sess.handle);
+
+    const ps = try cmd.policySecret(&t.cmdbuf, master_index, sess.handle, secret, sess.nonce_tpm, 0);
+    try cmd.expectOk(try t.transact(ps));
+
+    var nonce2: [32]u8 = undefined;
+    try randomBytes(&nonce2);
+    const sg = try cmd.signPolicy(&t.cmdbuf, key, digest, sess.handle, &nonce2);
+    const sig = try cmd.signResult(try t.transact(sg));
+    return ecdsa_sig.rawRsToSshBlob(sig.r, sig.s, out);
+}
+
 // --- the Cryptoprocessor backend: file-backed TPM keys ---
 
 /// The Linux TPM backend. Keys live as TSS2 key files in `keydir`, loaded into the TPM on demand;
-/// the device is /dev/tpmrm0 or a swtpm socket. Mirrors the macOS Darwin backend behind the same
-/// vtables. v1 is presence-less, so the Authorizer is a no-op (Z5 adds the fprintd/FIDO2 gesture).
+/// the device is /dev/tpmrm0 or a swtpm socket. The Cryptoprocessor only; presence is the separate
+/// fprintd Authorizer (Z5a). Policy-bound keys (Z5b) also need the master secret S, loaded from
+/// `keydir/master.secret` when present; `master.secret` absent means no policy keys can be signed.
 pub const Linux = struct {
     io: std.Io,
     gpa: std.mem.Allocator,
     keydir: []const u8,
     tpm_path: []const u8,
     tpm_is_socket: bool,
+    master_secret: [32]u8 = undefined,
+    has_master: bool = false,
 
     pub fn processor(self: *Linux) crypto.Cryptoprocessor {
         return .{ .ptr = self, .vtable = &cp_vt };
     }
-    pub fn authorizer(self: *Linux) authz.Authorizer {
-        return .{ .ptr = self, .vtable = &az_vt };
-    }
 
     const cp_vt = crypto.Cryptoprocessor.VTable{ .enumerate = enumerate, .sign = sign };
-    const az_vt = authz.Authorizer.VTable{ .authorize = authorize };
 
     fn enumerate(ptr: *anyopaque, arena: std.mem.Allocator) anyerror![]const crypto.KeyInfo {
         const self: *Linux = @ptrCast(@alignCast(ptr));
@@ -197,18 +255,19 @@ pub const Linux = struct {
         var t = try Tpm.open(self.io, self.tpm_path, self.tpm_is_socket);
         defer t.close();
         const primary = try createPrimary(&t);
-        defer flush(&t, primary);
         const handle = try loadKey(&t, primary, &key);
         defer flush(&t, handle);
+        flush(&t, primary); // the parent is only needed to load; free its slot before the sign/session
         var digest: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(data, &digest, .{});
-        return signDigest(&t, handle, &digest, out);
-    }
 
-    fn authorize(ptr: *anyopaque, key_id: []const u8, reason: []const u8) anyerror!void {
-        _ = ptr;
-        _ = key_id;
-        _ = reason; // presence-less on Linux for Z4; Z5 binds a fprintd/FIDO2 gesture here
+        // A policy-bound key (Z5b) signs only via a policy session proving the master secret; a
+        // legacy Z4 empty-auth key signs directly. They coexist in one key directory.
+        if (try cmd.hasAuthPolicy(key.pub_blob())) {
+            if (!self.has_master) return error.NoMaster; // a copied key file without the secret cannot sign
+            return signDigestPolicy(&t, handle, &digest, &self.master_secret, out);
+        }
+        return signDigest(&t, handle, &digest, out);
     }
 
     /// Find the key file whose public point equals `want`, copying its blobs into `out`.
@@ -241,15 +300,52 @@ pub const Linux = struct {
         return false;
     }
 
-    /// Generate a new ECDSA P-256 key, persist it as a TSS2 key file named `name`, and return its
-    /// public point.
+    /// Load the master secret S from keydir/master.secret (0600) if present, so policy keys can sign.
+    /// Best-effort: a missing/short file just leaves has_master false (no policy keys can be signed).
+    pub fn loadMasterSecret(self: *Linux) void {
+        var dir = std.Io.Dir.cwd().openDir(self.io, self.keydir, .{}) catch return;
+        defer dir.close(self.io);
+        const data = dir.readFileAlloc(self.io, master_secret_file, self.gpa, .limited(64)) catch return;
+        defer self.gpa.free(data);
+        if (data.len != 32) return;
+        @memcpy(&self.master_secret, data);
+        self.has_master = true;
+    }
+
+    /// Return the master secret S, generating + persisting it (0600) on first use so the policy
+    /// binding is on by default with no separate enroll step.
+    fn ensureMasterSecret(self: *Linux) ![32]u8 {
+        if (self.has_master) return self.master_secret;
+        var s: [32]u8 = undefined;
+        try randomBytes(&s);
+        const old_umask = osUmask(0o077);
+        defer _ = osUmask(old_umask);
+        try std.Io.Dir.cwd().createDirPath(self.io, self.keydir);
+        try std.Io.Dir.cwd().setFilePermissions(self.io, self.keydir, @enumFromInt(0o700), .{ .follow_symlinks = false });
+        var dir = try std.Io.Dir.cwd().openDir(self.io, self.keydir, .{});
+        defer dir.close(self.io);
+        var file = try dir.createFile(self.io, master_secret_file, .{ .exclusive = true });
+        errdefer dir.deleteFile(self.io, master_secret_file) catch {};
+        defer file.close(self.io);
+        try file.writeStreamingAll(self.io, &s);
+        try dir.setFilePermissions(self.io, master_secret_file, @enumFromInt(0o600), .{ .follow_symlinks = false });
+        self.master_secret = s;
+        self.has_master = true;
+        return s;
+    }
+
+    /// Generate a new policy-bound ECDSA P-256 key, persist it as a TSS2 key file named `name`, and
+    /// return its public point. The key is bound to the master via a TPM authPolicy, so signing it
+    /// later requires proving the master secret (after the presence gesture).
     pub fn generate(self: *Linux, name: []const u8) ![65]u8 {
         var t = try Tpm.open(self.io, self.tpm_path, self.tpm_is_socket);
         defer t.close();
+        const secret = try self.ensureMasterSecret();
+        const policy = try masterPolicy(&t, &secret);
         const primary = try createPrimary(&t);
         defer flush(&t, primary);
         var key: KeyBlobs = .{};
-        try createKey(&t, primary, &key);
+        try createPolicyKeyBlobs(&t, primary, &policy, &key);
 
         var pem_buf: [max_keyfile]u8 = undefined;
         const pem = try keyfile.encode(&pem_buf, key.pub_blob(), key.priv());
@@ -346,6 +442,63 @@ pub fn selftest(io: std.Io, path: []const u8, is_socket: bool) !void {
     if (e1 != e0 + 1) return error.EpochNotMonotonic;
     note(out, io, &log_buf, "epoch -> {d} then {d} (+1)", .{ e0, e1 });
     note(out, io, &log_buf, "SELFTEST PASS", .{});
+}
+
+/// Verify an SSH ecdsa-sha2-nistp256 signature blob against a public point, for the selftests.
+fn verifySshSig(sshsig: []const u8, msg: []const u8, point: *const [65]u8) !void {
+    const Ecdsa = std.crypto.sign.ecdsa.EcdsaP256Sha256;
+    var dec = sinete.wire.Decoder{ .data = sshsig };
+    _ = try dec.string(); // "ecdsa-sha2-nistp256"
+    var inner = sinete.wire.Decoder{ .data = try dec.string() };
+    var rs: [64]u8 = undefined;
+    @memset(&rs, 0);
+    copyRight(rs[0..32], try inner.string());
+    copyRight(rs[32..64], try inner.string());
+    try Ecdsa.Signature.fromBytes(rs).verify(msg, try Ecdsa.PublicKey.fromSec1(point));
+}
+
+/// Exercise the Z5b policy binding against a TPM: enroll a master, create a policy-bound key, prove
+/// the binding (an empty-auth Sign on it MUST fail), then sign via the policy session and verify.
+pub fn policySelftest(io: std.Io, path: []const u8, is_socket: bool) !void {
+    var t = try Tpm.open(io, path, is_socket);
+    defer t.close();
+    var log_buf: [128]u8 = undefined;
+    const out = std.Io.File.stdout();
+    const note = struct {
+        fn p(o: std.Io.File, i: std.Io, b: *[128]u8, comptime f: []const u8, a: anytype) void {
+            o.writeStreamingAll(i, std.fmt.bufPrint(b, f ++ "\n", a) catch return) catch {};
+        }
+    }.p;
+
+    const secret = [_]u8{0x5A} ** 32;
+    const policy = try masterPolicy(&t, &secret);
+    note(out, io, &log_buf, "masterPolicy -> 0x{x:0>2}{x:0>2}...", .{ policy[0], policy[1] });
+
+    const primary = try createPrimary(&t);
+    var key: KeyBlobs = .{};
+    try createPolicyKeyBlobs(&t, primary, &policy, &key);
+    const handle = try loadKey(&t, primary, &key);
+    defer flush(&t, handle);
+    flush(&t, primary);
+    note(out, io, &log_buf, "policy key created + loaded", .{});
+
+    const msg = "sinete z5b policy selftest";
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(msg, &digest, .{});
+
+    // Negative: an empty-password Sign on the policy key must be rejected by the TPM.
+    var sbuf: [256]u8 = undefined;
+    if (signDigest(&t, handle, &digest, &sbuf)) |_| {
+        return error.PolicyBindingBypassed; // empty-auth signed a policy key -> the binding is broken
+    } else |_| {
+        note(out, io, &log_buf, "negative -> empty-auth sign rejected (binding holds)", .{});
+    }
+
+    // Positive: sign via the policy session, then verify the signature.
+    const n = try signDigestPolicy(&t, handle, &digest, &secret, &sbuf);
+    try verifySshSig(sbuf[0..n], msg, &key.point);
+    note(out, io, &log_buf, "positive -> policy-session sign verifies", .{});
+    note(out, io, &log_buf, "POLICY SELFTEST PASS", .{});
 }
 
 fn copyRight(dst: []u8, src: []const u8) void {
