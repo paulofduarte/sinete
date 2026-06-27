@@ -463,9 +463,9 @@ pub fn selftest(io: std.Io, path: []const u8, is_socket: bool) !void {
     note(out, io, &log_buf, "sign -> {d}-byte SSH signature blob", .{n});
 
     // Verify with std.crypto: decode the SSH blob back to r||s and check against the public point.
-    var dec = sinete.wire.Decoder{ .data = sshsig[0..n] };
+    var dec = wire.Decoder{ .data = sshsig[0..n] };
     _ = try dec.string(); // "ecdsa-sha2-nistp256"
-    var inner = sinete.wire.Decoder{ .data = try dec.string() };
+    var inner = wire.Decoder{ .data = try dec.string() };
     const r = try inner.string();
     const s = try inner.string();
     var rs: [64]u8 = undefined;
@@ -492,7 +492,7 @@ fn verifySshSig(sshsig: []const u8, msg: []const u8, point: *const [65]u8) !void
     const Ecdsa = std.crypto.sign.ecdsa.EcdsaP256Sha256;
     var dec = wire.Decoder{ .data = sshsig };
     if (!std.mem.eql(u8, try dec.string(), "ecdsa-sha2-nistp256")) return error.BadSignatureFormat;
-    var inner = sinete.wire.Decoder{ .data = try dec.string() };
+    var inner = wire.Decoder{ .data = try dec.string() };
     if (!dec.done()) return error.BadSignatureFormat; // trailing bytes after the signature blob
     var rs: [64]u8 = undefined;
     @memset(&rs, 0);
