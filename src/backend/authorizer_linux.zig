@@ -84,12 +84,12 @@ pub const Authorizer = struct {
         if (self.targetTty(cred, &buf)) |path| return tty.promptConfirm(path, reason);
         // Graphical session: pinentry (native), then the built-in X11 modal if pinentry is absent.
         var pe = pinentry.Pinentry{ .io = self.io, .gpa = self.gpa, .display = self.display };
-        if (pe.confirm(reason)) |o| return o else |_| {}
+        const pe_err = if (pe.confirm(reason)) |o| return o else |e| e;
         if (self.display.len > 0) {
             var xm = x11.X11{ .io = self.io, .gpa = self.gpa, .display = self.display, .xauth_path = self.xauth_path };
             return xm.confirm(reason); // error.X11Unavailable -> caller maps to PresenceUnavailable
         }
-        return error.X11Unavailable;
+        return pe_err; // no X11 fallback: surface the actual pinentry failure, not X11Unavailable
     }
 
     // --- Presenter ---

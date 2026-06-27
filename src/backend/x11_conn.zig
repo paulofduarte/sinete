@@ -22,6 +22,7 @@ const File = std.Io.File;
 pub const Error = error{X11Unavailable};
 
 const recv_timeout_s: i64 = 120; // a modal waits for the human; bounded so a dead server can't wedge
+const max_setup: usize = 64 * 1024; // a real setup reply is a few KB; cap before allocating, fail closed
 
 pub const X11 = struct {
     io: std.Io,
@@ -94,6 +95,7 @@ pub const X11 = struct {
         if (hdr[0] != 1) return error.X11Unavailable; // not success
         const add_units = std.mem.readInt(u16, hdr[6..8], .little);
         const total = 8 + @as(usize, add_units) * 4;
+        if (total > max_setup) return error.X11Unavailable; // implausibly large reply -> fail closed
         const buf = try self.gpa.alloc(u8, total);
         defer self.gpa.free(buf);
         @memcpy(buf[0..8], &hdr);
