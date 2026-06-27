@@ -313,14 +313,16 @@ pub const Linux = struct {
         return false;
     }
 
-    /// Load the master secret S from keydir/master.secret (0600) if present, so policy keys can sign.
-    /// Best-effort: a missing/short file just leaves has_master false (no policy keys can be signed).
     /// Ensure the master secret is loaded before signing a policy-bound key, reading it on demand (a
-    /// long-lived agent may predate the first generate). FileNotFound means no master (NoMaster); a
-    /// present-but-corrupt file surfaces BadMasterSecret rather than masquerading as NoMaster.
+    /// long-lived agent may predate the first generate). A missing key directory or master.secret
+    /// means no master (NoMaster); a present-but-corrupt file surfaces BadMasterSecret; other I/O
+    /// errors (e.g. permission denied) propagate so they are not hidden as NoMaster.
     fn ensureMasterLoaded(self: *Linux) !void {
         if (self.has_master) return;
-        var dir = std.Io.Dir.cwd().openDir(self.io, self.keydir, .{}) catch return error.NoMaster;
+        var dir = std.Io.Dir.cwd().openDir(self.io, self.keydir, .{}) catch |e| switch (e) {
+            error.FileNotFound => return error.NoMaster,
+            else => return e,
+        };
         defer dir.close(self.io);
         _ = self.readMasterSecret(&dir) catch |e| switch (e) {
             error.FileNotFound => return error.NoMaster,
