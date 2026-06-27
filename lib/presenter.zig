@@ -37,7 +37,7 @@ pub fn message(reason: Reason) []const u8 {
         .confirm_sign => "sinete: approve signing with your SSH key?",
         .declined => "sinete: signing refused -- presence was declined",
         .unavailable => "sinete: signing refused -- no presence method is available",
-        .remote_refused => "sinete: signing refused -- this is a remote session; sign at the machine",
+        .remote_refused => "sinete: signing refused -- could not confirm a local session (remote or unverifiable); sign at the machine",
         .hardware => "sinete: signing failed -- the secure hardware returned an error",
         .unknown_key => "sinete: signing refused -- this key is not managed by sinete",
         .timeout => "sinete: signing refused -- presence timed out",
