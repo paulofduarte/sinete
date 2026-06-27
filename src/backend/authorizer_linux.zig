@@ -121,11 +121,12 @@ pub const Authorizer = struct {
         }
     }
 
-    /// The terminal to prompt on for `cred`, or null for a graphical (or unresolvable) session -- in
-    /// which case a gesture is currently unavailable and a message falls back to the log (the
-    /// graphical modal channels land in later milestones). With a peer credential the terminal is the
-    /// peer's own logind session TTY (a local console or an ssh pts); without one (no SO_PEERCRED) the
-    /// agent's controlling terminal `/dev/tty` is tried, which reaches a foreground-run agent.
+    /// The terminal to prompt on for `cred`, or null for a graphical (or unresolvable) session. For a
+    /// null result the confirm path falls back to a graphical channel (pinentry, then the X11 modal),
+    /// while showError deliberately logs only (it must not block the sign path on a GUI dialog). With
+    /// a peer credential the terminal is the peer's own logind session TTY (a local console or an ssh
+    /// pts); without one (no SO_PEERCRED) the agent's controlling terminal `/dev/tty` is tried, which
+    /// reaches a foreground-run agent.
     fn targetTty(self: *Authorizer, cred: ?session.Cred, buf: []u8) ?[]const u8 {
         if (cred) |c| {
             if (c.pid <= 0) return null;

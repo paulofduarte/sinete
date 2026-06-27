@@ -48,8 +48,17 @@ is exercised:
 - [ ] **Click Approve** signs; **click Deny** (or press **Esc**) refuses. The window is modal
       (other windows don't take input while it's up).
 - [ ] On a **Wayland** session with **XWayland** present, the same modal appears (via XWayland).
-- [ ] A refusal/failure shows the one-button **message** modal (single OK), no Approve/Deny.
 - [ ] Killing the X server while the modal is up fails closed (the sign is refused, agent survives).
+
+## Refusal/failure messages (non-blocking)
+
+`showError` runs inline on the sign path (before `SSH_AGENT_FAILURE`), so it must not block:
+
+- [ ] **Terminal/ssh** refusal: the reason is written to the peer's tty (quick, non-blocking) and
+      logged.
+- [ ] **Graphical** refusal: the reason is **logged only** (no GUI message modal) so the client
+      command returns promptly. (A non-blocking desktop notification could be added later; a blocking
+      GUI error dialog is intentionally avoided here.)
 
 ## Notes / known intermediate state
 
