@@ -119,10 +119,12 @@ pub const Authorizer = struct {
     fn showError(ptr: *anyopaque, cred: ?session.Cred, reason: pres.Reason, detail: []const u8) void {
         const self: *Authorizer = @ptrCast(@alignCast(ptr));
         // showError runs inline on the sign path, before the agent returns SSH_AGENT_FAILURE, so it
-        // must NOT block: a graphical session's error goes to the log only, since popping a blocking
-        // GUI error modal here would hang the client's request until the user dismissed it. (The
-        // gesture *prompt* may block -- presence legitimately waits for the user -- but an error
-        // message may not.) The tty write is a quick, non-blocking write to the peer's terminal.
+        // must not let a CLIENT-reachable channel stall it: the tty write (to the peer's pts) is
+        // non-blocking, and a graphical session's error goes to the log only -- a blocking GUI error
+        // modal would hang the request until the user dismissed it. (The gesture *prompt* may block;
+        // presence legitimately waits for the user. An error message may not.) The log floor writes
+        // to the agent's OWN stderr (journald/file), which the client cannot back-pressure, so it is
+        // not a client-controllable DoS vector and is kept synchronous to guarantee the record.
         self.log.presenter().showError(cred, reason, detail); // floor: always recorded, with detail
         var buf: [std.fs.max_path_bytes]u8 = undefined;
         if (self.targetTty(cred, &buf)) |path| {
