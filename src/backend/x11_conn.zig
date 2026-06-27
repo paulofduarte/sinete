@@ -55,6 +55,7 @@ pub const X11 = struct {
         // garbage (the caller falls back to the log). This is a conservative subset of real servers.
         if (setup.image_byte_order != 0) return error.X11Unavailable; // need LSBFirst
         if (setup.root_depth != 24 and setup.root_depth != 32) return error.X11Unavailable;
+        if (setup.root_bpp != 32) return error.X11Unavailable; // our image is 32 bits-per-pixel
         const wid = setup.newId(0);
         const gc = setup.newId(1);
 

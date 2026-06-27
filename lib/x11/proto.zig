@@ -65,6 +65,7 @@ pub const Setup = struct {
     root: u32,
     root_visual: u32,
     root_depth: u8,
+    root_bpp: u8, // bits-per-pixel of the root depth's pixmap format (32 for our ARGB buffer)
     image_byte_order: u8, // 0 = LSBFirst, 1 = MSBFirst
 
     /// The n-th allocatable resource id (window, gc, ...).
@@ -91,7 +92,18 @@ pub fn parseSetup(buf: []const u8) Error!Setup {
     const image_byte_order = try d.r8();
     try d.skip(1 + 1 + 1 + 1 + 1 + 4); // bitmap-bit-order, scanline-unit/pad, min/max-keycode, pad(4)
     try d.skip(align4(vendor_len)); // vendor string, padded
-    try d.skip(@as(usize, num_formats) * 8); // FORMATs
+
+    // FORMATs: each is depth(1), bits-per-pixel(1), scanline-pad(1), pad(5). Record each depth's bpp
+    // so we can confirm the root depth is 32 bits-per-pixel (a depth-24 visual may be 24bpp, which
+    // would misinterpret our 32-bit ARGB image).
+    var bpp_for_depth: [256]u8 = .{0} ** 256;
+    var fi: usize = 0;
+    while (fi < num_formats) : (fi += 1) {
+        const depth = try d.r8();
+        const bpp = try d.r8();
+        try d.skip(6); // scanline-pad(1) + pad(5)
+        bpp_for_depth[depth] = bpp;
+    }
     if (num_screens < 1) return error.BadReply;
 
     // SCREEN 0: root, then the fields up to root-visual/depth.
@@ -106,6 +118,7 @@ pub fn parseSetup(buf: []const u8) Error!Setup {
         .root = root,
         .root_visual = root_visual,
         .root_depth = root_depth,
+        .root_bpp = bpp_for_depth[root_depth],
         .image_byte_order = image_byte_order,
     };
 }
@@ -283,7 +296,7 @@ test "parseSetup extracts ids, root, visual, depth past vendor + formats" {
     try b.appendNTimes(a, 0, 4); // pad
     try b.appendSlice(a, "ABCDE"); // vendor (5)
     try b.appendNTimes(a, 0, 3); // pad to 8
-    try b.appendNTimes(a, 0, 8); // one FORMAT
+    try b.appendSlice(a, &.{ 24, 32, 0, 0, 0, 0, 0, 0 }); // one FORMAT: depth 24, bpp 32
     // SCREEN
     try put32(&b, a, 0x0000_01ab); // root
     try b.appendNTimes(a, 0, 4 * 4 + 2 * 6); // colormap..dimensions
@@ -296,6 +309,7 @@ test "parseSetup extracts ids, root, visual, depth past vendor + formats" {
     try testing.expectEqual(@as(u32, 0x0000_01ab), s.root);
     try testing.expectEqual(@as(u32, 0x0000_0021), s.root_visual);
     try testing.expectEqual(@as(u8, 24), s.root_depth);
+    try testing.expectEqual(@as(u8, 32), s.root_bpp); // from the FORMAT for depth 24
     try testing.expectEqual(@as(u32, 0x0440_0000), s.newId(0));
     try testing.expectEqual(@as(u32, 0x0440_0001), s.newId(1));
 }
@@ -307,7 +321,7 @@ test "parseSetup rejects a failed status" {
 test "createWindow encodes opcode, depth, length and the three values" {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(testing.allocator);
-    const s = Setup{ .resource_id_base = 0x200, .resource_id_mask = 0xff, .root = 0x1ab, .root_visual = 0x21, .root_depth = 24, .image_byte_order = 0 };
+    const s = Setup{ .resource_id_base = 0x200, .resource_id_mask = 0xff, .root = 0x1ab, .root_visual = 0x21, .root_depth = 24, .root_bpp = 32, .image_byte_order = 0 };
     try createWindow(testing.allocator, &out, s, s.newId(0), 10, 20, 420, 140, 0xFF1E1E28);
     try testing.expectEqual(op_create_window, out.items[0]);
     try testing.expectEqual(@as(u8, 24), out.items[1]); // depth
