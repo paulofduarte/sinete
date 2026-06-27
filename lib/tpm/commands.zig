@@ -34,10 +34,16 @@ const cc_load: u32 = 0x00000157;
 const cc_sign: u32 = 0x0000015D;
 const cc_read_public: u32 = 0x00000173;
 const cc_nv_define_space: u32 = 0x0000012A;
+const cc_nv_write: u32 = 0x00000137;
 const cc_nv_increment: u32 = 0x00000134;
 const cc_nv_read: u32 = 0x0000014E;
 const cc_nv_read_public: u32 = 0x00000169;
 const cc_flush_context: u32 = 0x00000165;
+const cc_start_auth_session: u32 = 0x00000176;
+const cc_policy_secret: u32 = 0x00000151; // TPM_CC_PolicySecret (confirmed on swtpm via the digest)
+
+const se_policy: u8 = 0x01; // TPM_SE_POLICY: a real policy session
+const se_trial: u8 = 0x03; // TPM_SE_TRIAL: computes a policy digest without authorizing anything
 
 // Object attributes (TPMA_OBJECT).
 const attr_fixed_tpm: u32 = 1 << 1;
@@ -52,16 +58,33 @@ const primary_attrs: u32 = attr_fixed_tpm | attr_fixed_parent | attr_sensitive_o
     attr_user_with_auth | attr_restricted | attr_decrypt;
 const sign_attrs: u32 = attr_fixed_tpm | attr_fixed_parent | attr_sensitive_origin |
     attr_user_with_auth | attr_sign;
+// A signing key authorized only by a policy: userWithAuth cleared (no password), authPolicy set.
+const policy_sign_attrs: u32 = attr_fixed_tpm | attr_fixed_parent | attr_sensitive_origin | attr_sign;
 
-/// Write the empty-password authorization area (a single TPMS_AUTH_COMMAND wrapped in a u32 size):
-/// password session handle, empty nonce, no attributes, empty HMAC. Used for the owner/null
-/// hierarchies and v1 presence-less keys, all of which carry an empty auth value.
-fn putEmptyAuth(m: *wire.Marshal) wire.Error!void {
-    try m.put32(9); // authorizationSize: 4 (handle) + 2 (nonce) + 1 (attrs) + 2 (hmac)
+/// Write a password authorization area (a single TPMS_AUTH_COMMAND wrapped in a u32 size): password
+/// session handle, empty nonce, no attributes, and the cleartext password in the HMAC field. An
+/// empty `secret` is the empty-password auth used for the owner/null hierarchies and v1 keys.
+fn putPasswordAuth(m: *wire.Marshal, secret: []const u8) wire.Error!void {
+    try m.put32(@intCast(9 + secret.len)); // 4 handle + 2 nonce + 1 attrs + (2 + secret.len) hmac
     try m.put32(rs_pw);
     try m.put16(0); // nonce: empty TPM2B
     try m.put8(0); // sessionAttributes
-    try m.put16(0); // hmac: empty TPM2B
+    try m.put2b(secret); // hmac field carries the password
+}
+
+fn putEmptyAuth(m: *wire.Marshal) wire.Error!void {
+    try putPasswordAuth(m, "");
+}
+
+/// Write an authorization area that uses a policy session: the session handle, a fresh caller nonce,
+/// continueSession cleared (so the session auto-flushes after the command), and an EMPTY HMAC --
+/// valid for a pure-PolicySecret session (unbound, unsalted), confirmed on swtpm.
+fn putPolicyAuth(m: *wire.Marshal, session: u32, nonce_caller: []const u8) wire.Error!void {
+    try m.put32(@intCast(4 + (2 + nonce_caller.len) + 1 + 2));
+    try m.put32(session);
+    try m.put2b(nonce_caller);
+    try m.put8(0); // sessionAttributes: continueSession=0
+    try m.put16(0); // hmac: empty
 }
 
 /// Marshal a TPMT_PUBLIC for an ECC NIST P-256 object into `m`. `is_primary` selects the restricted
@@ -241,6 +264,127 @@ pub fn flushContext(buf: []u8, handle: u32) wire.Error![]const u8 {
     return m.bytes();
 }
 
+// --- Policy binding (Z5b): a data key authorized by a TPM policy, not a password ---
+//
+// The data key carries an authPolicy whose only assertion is PolicySecret against a "master" NV
+// index that holds a high-entropy authValue S. Signing therefore requires a policy session that the
+// agent satisfies by proving S after the presence gesture; a copied key file is useless without it.
+// The policy digest is SHA256( SHA256(zeros(32) || TPM_CC_PolicySecret || masterName) ) -- the empty
+// policyRef fold is applied (validated on swtpm).
+
+/// Whether a TPMT_PUBLIC carries a non-empty authPolicy, used to tell a policy-bound data key from a
+/// legacy empty-auth one so both coexist in a key directory.
+pub fn hasAuthPolicy(public: []const u8) Error!bool {
+    var u = wire.Unmarshal{ .data = public };
+    _ = try u.get16(); // type
+    _ = try u.get16(); // nameAlg
+    _ = try u.get32(); // objectAttributes
+    const policy = try u.get2b(); // authPolicy
+    return policy.len > 0;
+}
+
+/// The PolicySecret authPolicy digest for a master whose Name is `master_name`.
+pub fn policySecretDigest(master_name: []const u8) [32]u8 {
+    const Sha256 = std.crypto.hash.sha2.Sha256;
+    var cc: [4]u8 = undefined;
+    std.mem.writeInt(u32, &cc, cc_policy_secret, .big);
+    var h = Sha256.init(.{});
+    h.update(&([_]u8{0} ** 32)); // initial (empty) policyDigest
+    h.update(&cc);
+    h.update(master_name);
+    var d1: [32]u8 = undefined;
+    h.final(&d1);
+    var out: [32]u8 = undefined;
+    Sha256.hash(&d1, &out, .{}); // fold in the empty policyRef
+    return out;
+}
+
+/// A signing-key creation template with the given (non-empty) authPolicy and userWithAuth cleared.
+fn putEccSignTemplate(m: *wire.Marshal, auth_policy: []const u8) wire.Error!void {
+    try m.put16(alg_ecc);
+    try m.put16(alg_sha256);
+    try m.put32(policy_sign_attrs);
+    try m.put2b(auth_policy);
+    try m.put16(alg_null); // symmetric: NULL
+    try m.put16(alg_null); // scheme: NULL (given at Sign)
+    try m.put16(ecc_nist_p256);
+    try m.put16(alg_null); // kdf
+    try m.put16(0); // unique x
+    try m.put16(0); // unique y
+}
+
+/// Create an ECDSA P-256 signing child bound to `auth_policy` (no password). Parsed by createKeyBlobs.
+pub fn createPolicyKey(buf: []u8, parent: u32, auth_policy: []const u8) wire.Error![]const u8 {
+    var m = try wire.startCommand(buf, wire.st_sessions, cc_create);
+    try m.put32(parent);
+    try putEmptyAuth(&m);
+    try putEmptySensitive(&m);
+    const at = try m.beginSized();
+    try putEccSignTemplate(&m, auth_policy);
+    try m.endSized(at);
+    try m.put16(0); // outsideInfo
+    try m.put32(0); // creationPCR
+    wire.finishCommand(&m);
+    return m.bytes();
+}
+
+/// StartAuthSession for a POLICY or TRIAL session (tpmKey=bind=NULL, no salt, SHA-256). `nonce_caller`
+/// must be non-empty (use random bytes the size of the hash).
+pub fn startAuthSession(buf: []u8, session_type: u8, nonce_caller: []const u8) wire.Error![]const u8 {
+    var m = try wire.startCommand(buf, wire.st_no_sessions, cc_start_auth_session);
+    try m.put32(rh_null); // tpmKey
+    try m.put32(rh_null); // bind
+    try m.put2b(nonce_caller);
+    try m.put16(0); // encryptedSalt: empty
+    try m.put8(session_type);
+    try m.put16(alg_null); // symmetric TPMT_SYM_DEF NULL (nothing follows)
+    try m.put16(alg_sha256); // authHash
+    wire.finishCommand(&m);
+    return m.bytes();
+}
+
+/// The session handle and nonceTPM from a StartAuthSession response (a no-sessions response: the
+/// handle is the only handle, then nonceTPM, with no parameterSize field).
+pub fn startAuthSessionResult(resp: []const u8) Error!struct { handle: u32, nonce_tpm: []const u8 } {
+    const r = try wire.parseResponse(resp);
+    if (r.code != 0) return Error.TpmError;
+    var u = wire.Unmarshal{ .data = r.params };
+    const handle = try u.get32();
+    const nonce = try u.get2b();
+    return .{ .handle = handle, .nonce_tpm = nonce };
+}
+
+/// PolicySecret: prove the secret of `auth_handle` (the master, by password) to extend `policy_session`
+/// with the PolicySecret assertion. `expiration` 0 means no ticket (re-proven each window in v1).
+pub fn policySecret(buf: []u8, auth_handle: u32, policy_session: u32, secret: []const u8, nonce_tpm: []const u8, expiration: i32) wire.Error![]const u8 {
+    var m = try wire.startCommand(buf, wire.st_sessions, cc_policy_secret);
+    try m.put32(auth_handle); // the master entity (Auth Index 1, USER role -> needs an auth area)
+    try m.put32(policy_session); // the session being extended (no auth)
+    try putPasswordAuth(&m, secret);
+    try m.put2b(nonce_tpm); // nonceTPM binds any returned ticket
+    try m.put16(0); // cpHashA: empty
+    try m.put16(0); // policyRef: empty
+    try m.put32(@bitCast(expiration)); // signed: negative -> a ticket with that timeout
+    wire.finishCommand(&m);
+    return m.bytes();
+}
+
+/// Sign as `sign`, but authorize the key with a satisfied policy session (empty HMAC) instead of a
+/// password. Parsed by `signResult`.
+pub fn signPolicy(buf: []u8, key: u32, digest: []const u8, session: u32, nonce_caller: []const u8) wire.Error![]const u8 {
+    var m = try wire.startCommand(buf, wire.st_sessions, cc_sign);
+    try m.put32(key);
+    try putPolicyAuth(&m, session, nonce_caller);
+    try m.put2b(digest);
+    try m.put16(alg_ecdsa);
+    try m.put16(alg_sha256);
+    try m.put16(st_hashcheck);
+    try m.put32(rh_null);
+    try m.put16(0);
+    wire.finishCommand(&m);
+    return m.bytes();
+}
+
 // --- NV monotonic counter (the replay epoch) ---
 
 // TPMA_NV for a counter: OWNERWRITE(b1) | NT=COUNTER(b4..7=0x1) | OWNERREAD(b17) | NO_DA(b25).
@@ -305,6 +449,60 @@ pub fn nvReadU64(resp: []const u8) Error!u64 {
 pub fn expectOk(resp: []const u8) Error!void {
     const r = try wire.parseResponse(resp);
     if (r.code != 0) return Error.TpmError;
+}
+
+// --- master NV index (Z5b): an ordinary NV index holding the PolicySecret authValue S ---
+
+// TPMA_NV for the master: OWNERWRITE(b1) | AUTHWRITE(b2) | OWNERREAD(b17) | AUTHREAD(b18) | NO_DA(b25),
+// NT = ordinary (0). WRITTEN is set by the TPM on first write (which stabilizes the Name).
+const nv_master_attrs: u32 = (1 << 1) | (1 << 2) | (1 << 17) | (1 << 18) | (1 << 25);
+
+/// Define the master NV index with a 32-byte authValue `secret` (owner-authorized). Idempotent via
+/// checkOrDefined like the counter.
+pub fn nvDefineMaster(buf: []u8, index: u32, secret: []const u8) wire.Error![]const u8 {
+    var m = try wire.startCommand(buf, wire.st_sessions, cc_nv_define_space);
+    try m.put32(rh_owner); // authHandle
+    try putEmptyAuth(&m);
+    try m.put2b(secret); // auth: the NV index's authValue = S
+    const at = try m.beginSized(); // publicInfo
+    try m.put32(index);
+    try m.put16(alg_sha256);
+    try m.put32(nv_master_attrs);
+    try m.put16(0); // authPolicy: empty
+    try m.put16(32); // dataSize
+    try m.endSized(at);
+    wire.finishCommand(&m);
+    return m.bytes();
+}
+
+/// Write `data` to the master NV index, authorized by its own authValue `secret` (sets WRITTEN, so
+/// the Name stabilizes). The data content is unused -- a single write is enough.
+pub fn nvWrite(buf: []u8, index: u32, secret: []const u8, data: []const u8) wire.Error![]const u8 {
+    var m = try wire.startCommand(buf, wire.st_sessions, cc_nv_write);
+    try m.put32(index); // authHandle = the index itself (AUTHWRITE)
+    try m.put32(index); // nvIndex
+    try putPasswordAuth(&m, secret);
+    try m.put2b(data);
+    try m.put16(0); // offset
+    wire.finishCommand(&m);
+    return m.bytes();
+}
+
+pub fn nvReadPublic(buf: []u8, index: u32) wire.Error![]const u8 {
+    var m = try wire.startCommand(buf, wire.st_no_sessions, cc_nv_read_public);
+    try m.put32(index);
+    wire.finishCommand(&m);
+    return m.bytes();
+}
+
+/// The NV index's Name (nameAlg || hash) from an NV_ReadPublic response. The Name feeds the
+/// PolicySecret digest. Aliases `resp`.
+pub fn nvReadPublicName(resp: []const u8) Error![]const u8 {
+    const r = try wire.parseResponse(resp);
+    if (r.code != 0) return Error.TpmError;
+    var u = wire.Unmarshal{ .data = r.params };
+    _ = try u.get2b(); // nvPublic: TPM2B_NV_PUBLIC
+    return u.get2b(); // nvName: TPM2B_NAME
 }
 
 const testing = std.testing;
@@ -513,4 +711,120 @@ test "pointFromPublic rejects a non-P256 curve" {
     try m.put2b(&([_]u8{0x22} ** 24));
     var point: [65]u8 = undefined;
     try testing.expectError(Error.Unsupported, pointFromPublic(m.bytes(), &point));
+}
+
+// --- Z5b policy commands ---
+
+test "policySecretDigest matches the swtpm-confirmed name -> digest" {
+    // From the 5b spike: a master NV index Name and the policy digest the TPM computed for it.
+    const name = [_]u8{ 0x00, 0x0b } ++ hexToBytes("dac66d4cb73148bc0f8850853b61f0292e5e591ebfa5911df9388738dd65d0f0");
+    const want = hexToBytes("da520d948b3cc7f137f9217bc4cf998d1d05e02512972e76dd35d126d689cd51");
+    try testing.expectEqualSlices(u8, &want, &policySecretDigest(&name));
+}
+
+fn hexToBytes(comptime s: []const u8) [s.len / 2]u8 {
+    var out: [s.len / 2]u8 = undefined;
+    _ = std.fmt.hexToBytes(&out, s) catch unreachable;
+    return out;
+}
+
+test "startAuthSession marshals a policy/trial session with no auth area" {
+    var buf: [128]u8 = undefined;
+    const c = try startAuthSession(&buf, se_policy, &[_]u8{0xAA} ** 32);
+    var u = wire.Unmarshal{ .data = c };
+    try testing.expectEqual(wire.st_no_sessions, try u.get16());
+    _ = try u.get32(); // size
+    try testing.expectEqual(cc_start_auth_session, try u.get32());
+    try testing.expectEqual(rh_null, try u.get32()); // tpmKey
+    try testing.expectEqual(rh_null, try u.get32()); // bind
+    try testing.expectEqualSlices(u8, &[_]u8{0xAA} ** 32, try u.get2b()); // nonceCaller
+    try testing.expectEqual(@as(u16, 0), try u.get16()); // salt empty
+    try testing.expectEqual(@as(u8, se_policy), try u.get8());
+    try testing.expectEqual(alg_null, try u.get16()); // symmetric
+    try testing.expectEqual(alg_sha256, try u.get16()); // authHash
+
+    // the response parser: header(10) + sessionHandle(4) + nonceTPM(2b), no parameterSize
+    const resp = [_]u8{ 0x80, 0x01, 0, 0, 0, 18, 0, 0, 0, 0, 0x03, 0x00, 0x01, 0x00, 0x00, 0x02, 0xBB, 0xBB };
+    const sr = try startAuthSessionResult(&resp);
+    try testing.expectEqual(@as(u32, 0x03000100), sr.handle);
+    try testing.expectEqualSlices(u8, &[_]u8{ 0xBB, 0xBB }, sr.nonce_tpm);
+}
+
+test "policySecret carries both handles, the password auth, and a signed expiration" {
+    var buf: [128]u8 = undefined;
+    const c = try policySecret(&buf, 0x018E7E7F, 0x03000100, "secret", &[_]u8{0xCC} ** 32, -30);
+    var u = wire.Unmarshal{ .data = c };
+    _ = try u.get16();
+    _ = try u.get32();
+    try testing.expectEqual(cc_policy_secret, try u.get32());
+    try testing.expectEqual(@as(u32, 0x018E7E7F), try u.get32()); // authHandle (master)
+    try testing.expectEqual(@as(u32, 0x03000100), try u.get32()); // policySession
+    try testing.expectEqual(@as(u32, 9 + 6), try u.get32()); // authorizationSize = 9 + len("secret")
+    try testing.expectEqual(rs_pw, try u.get32());
+    _ = try u.get16(); // nonce
+    _ = try u.get8(); // attrs
+    try testing.expectEqualStrings("secret", try u.get2b()); // password in the hmac field
+    _ = try u.get2b(); // nonceTPM
+    _ = try u.get16(); // cpHashA
+    _ = try u.get16(); // policyRef
+    try testing.expectEqual(@as(u32, @bitCast(@as(i32, -30))), try u.get32()); // expiration two's complement
+}
+
+test "signPolicy authorizes with the session handle and an empty HMAC" {
+    var buf: [128]u8 = undefined;
+    const c = try signPolicy(&buf, 0x80000002, &([_]u8{0xAB} ** 32), 0x03000100, &[_]u8{0xDD} ** 32);
+    var u = wire.Unmarshal{ .data = c };
+    _ = try u.get16();
+    _ = try u.get32();
+    try testing.expectEqual(cc_sign, try u.get32());
+    try testing.expectEqual(@as(u32, 0x80000002), try u.get32()); // keyHandle
+    _ = try u.get32(); // authorizationSize
+    try testing.expectEqual(@as(u32, 0x03000100), try u.get32()); // the policy session, not rs_pw
+    _ = try u.get2b(); // nonceCaller
+    try testing.expectEqual(@as(u8, 0), try u.get8()); // continueSession=0
+    try testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x00 }, c[u.pos .. u.pos + 2]); // empty HMAC TPM2B
+}
+
+test "putEccSignTemplate clears userWithAuth and sets a 32-byte authPolicy; hasAuthPolicy detects it" {
+    var buf: [256]u8 = undefined;
+    var m = wire.Marshal{ .buf = &buf };
+    const policy = [_]u8{0xEE} ** 32;
+    try putEccSignTemplate(&m, &policy);
+    var u = wire.Unmarshal{ .data = m.bytes() };
+    try testing.expectEqual(alg_ecc, try u.get16());
+    try testing.expectEqual(alg_sha256, try u.get16());
+    try testing.expectEqual(@as(u32, 0x00040032), try u.get32()); // policy_sign_attrs (no user_with_auth)
+    try testing.expectEqualSlices(u8, &policy, try u.get2b());
+    try testing.expect(try hasAuthPolicy(m.bytes()));
+
+    // a legacy empty-auth template has no policy
+    var b2: [256]u8 = undefined;
+    var m2 = wire.Marshal{ .buf = &b2 };
+    try putEccTemplate(&m2, false);
+    try testing.expect(!try hasAuthPolicy(m2.bytes()));
+}
+
+test "nvDefineMaster + nvWrite + nvReadPublicName" {
+    var buf: [128]u8 = undefined;
+    const d = try nvDefineMaster(&buf, 0x018E7E7F, &([_]u8{0x5A} ** 32));
+    var ud = wire.Unmarshal{ .data = d };
+    _ = try ud.get16();
+    _ = try ud.get32();
+    try testing.expectEqual(cc_nv_define_space, try ud.get32());
+    try testing.expectEqual(rh_owner, try ud.get32());
+
+    var buf2: [128]u8 = undefined;
+    const w = try nvWrite(&buf2, 0x018E7E7F, "secret", "data");
+    var uw = wire.Unmarshal{ .data = w };
+    _ = try uw.get16();
+    _ = try uw.get32();
+    try testing.expectEqual(cc_nv_write, try uw.get32());
+    try testing.expectEqual(@as(u32, 0x018E7E7F), try uw.get32()); // authHandle = index
+    try testing.expectEqual(@as(u32, 0x018E7E7F), try uw.get32()); // nvIndex
+
+    // NV_ReadPublic response: nvPublic(2b) then nvName(2b) -> return the Name
+    const resp = [_]u8{ 0x80, 0x01, 0, 0, 0, 10 + 4 + 5, 0, 0, 0, 0 } ++
+        [_]u8{ 0x00, 0x02, 0xAA, 0xBB } ++ // nvPublic 2b
+        [_]u8{ 0x00, 0x03, 0x00, 0x0b, 0x99 }; // nvName 2b
+    try testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x0b, 0x99 }, try nvReadPublicName(&resp));
 }
