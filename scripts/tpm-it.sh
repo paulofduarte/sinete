@@ -36,6 +36,7 @@ zig build -Doptimize=ReleaseFast "-Dtarget=${arch}-linux-musl"
 # profile blocks. A real Linux host has io_uring; this only relaxes the container for the test.
 docker run --rm --security-opt seccomp=unconfined -v "$repo/zig-out/bin:/host:ro" alpine:latest sh -c '
   set -e
+  set -o pipefail  # so a failing command on the left of a | is not masked by grep (busybox ash supports it)
   apk add --no-cache swtpm openssh-client >/dev/null 2>&1
   mkdir -p /tmp/t1 /tmp/t2 /root; export HOME=/root
   for d in t1 t2; do
@@ -45,13 +46,16 @@ docker run --rm --security-opt seccomp=unconfined -v "$repo/zig-out/bin:/host:ro
   sleep 2
   B=/host/sinete
 
-  # Z5b policy binding, on its own fresh TPM (defines its own master).
-  SINETE_TPM=/tmp/t1/sock "$B" _tpm-policy-selftest | grep -q "POLICY SELFTEST PASS"
+  # Z5b policy binding, on its own fresh TPM (defines its own master). Run first (set -e enforces a
+  # zero exit), then check the output, so a non-zero exit cannot be hidden by the grep.
+  pol=$(SINETE_TPM=/tmp/t1/sock "$B" _tpm-policy-selftest)
+  echo "$pol" | grep -q "POLICY SELFTEST PASS"
   echo "ok: policy binding (empty-auth sign rejected, policy-session sign verifies)"
 
   # Z4 crypto + the key lifecycle, on a second fresh TPM.
   export SINETE_TPM=/tmp/t2/sock
-  "$B" _tpm-selftest | grep -q "SELFTEST PASS"
+  self=$("$B" _tpm-selftest)
+  echo "$self" | grep -q "SELFTEST PASS"
   echo "ok: selftest"
 
   "$B" generate ztest >/dev/null
