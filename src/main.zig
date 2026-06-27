@@ -138,7 +138,9 @@ fn cmdAgent() !void {
         var fp = fprintd.Fprintd{ .io = g_io, .gpa = g_gpa };
         var lg = logind.Logind{ .io = g_io, .gpa = g_gpa, .self_uid = std.os.linux.getuid() };
         const display = g_env.get("DISPLAY") orelse "";
-        var orch = authorizer_linux.Authorizer.init(g_io, g_gpa, &fp, &lg, display);
+        var xauth_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const xauth = xauthPath(&xauth_buf);
+        var orch = authorizer_linux.Authorizer.init(g_io, g_gpa, &fp, &lg, display, xauth);
         try serveAgent(sock, be.processor(), orch.authorizer(), lg.localSession(), orch.presenter());
     } else {
         // No secure element: advertise one freshly generated identity so the protocol path works.
@@ -415,6 +417,23 @@ fn cmdTpmPolicySelftest() !void {
         try stderrWrite("error: _tpm-policy-selftest is only supported on Linux\n");
         std.process.exit(2);
     }
+}
+
+/// The Xauthority file for the built-in X11 modal: $XAUTHORITY, else $HOME/.Xauthority. Returns ""
+/// when neither is resolvable (the modal then connects without a cookie and likely fails closed).
+fn xauthPath(buf: []u8) []const u8 {
+    if (g_env.get("XAUTHORITY")) |x| {
+        if (x.len > 0 and x.len <= buf.len) {
+            @memcpy(buf[0..x.len], x);
+            return buf[0..x.len];
+        }
+    }
+    const home = g_env.get("HOME") orelse return "";
+    const suffix = "/.Xauthority";
+    if (home.len + suffix.len > buf.len) return "";
+    @memcpy(buf[0..home.len], home);
+    @memcpy(buf[home.len..][0..suffix.len], suffix);
+    return buf[0 .. home.len + suffix.len];
 }
 
 fn cmdPinentrySelftest() !void {

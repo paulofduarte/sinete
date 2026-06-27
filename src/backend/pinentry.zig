@@ -35,9 +35,11 @@ pub const Pinentry = struct {
         return self.run(reason, false);
     }
 
-    /// Show a one-shot message (a refusal/failure) via a one-button dialog. Best-effort.
-    pub fn message(self: *Pinentry, reason: presenter.Reason) void {
-        _ = self.run(reason, true) catch {};
+    /// Show a one-shot message (a refusal/failure) via a one-button dialog. Returns normally once the
+    /// dialog was shown; PinentryUnavailable if it could not be presented (so the caller can fall
+    /// through to another channel).
+    pub fn message(self: *Pinentry, reason: presenter.Reason) Error!void {
+        _ = try self.run(reason, true);
     }
 
     fn run(self: *Pinentry, reason: presenter.Reason, one_button: bool) Error!presenter.Outcome {
