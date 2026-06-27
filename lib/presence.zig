@@ -54,6 +54,24 @@ fn isGraphical(session_type: []const u8) bool {
         std.mem.eql(u8, session_type, "mir");
 }
 
+/// Normalize a logind session TTY into an absolute device path, copied into `out`. logind reports
+/// TTY relative to /dev ("tty2", "pts/3"), so prefix "/dev/"; an already-absolute value is taken
+/// as-is. Returns null if `tty` is empty or does not fit in `out`.
+pub fn absoluteTty(tty: []const u8, out: []u8) ?[]const u8 {
+    if (tty.len == 0) return null;
+    if (tty[0] == '/') {
+        if (tty.len > out.len) return null;
+        @memcpy(out[0..tty.len], tty);
+        return out[0..tty.len];
+    }
+    const prefix = "/dev/";
+    const total = prefix.len + tty.len;
+    if (total > out.len) return null;
+    @memcpy(out[0..prefix.len], prefix);
+    @memcpy(out[prefix.len..total], tty);
+    return out[0..total];
+}
+
 test "selectGesture: fingerprint only with reader + an enrolled finger" {
     try std.testing.expectEqual(Gesture.fingerprint, selectGesture(.{ .reader = true, .enrolled = true }));
     try std.testing.expectEqual(Gesture.confirm, selectGesture(.{ .reader = true, .enrolled = false })); // present, no fingers
@@ -73,4 +91,14 @@ test "pickChannel: graphical type wins; otherwise a tty is a terminal; else grap
     try std.testing.expectEqual(Channel.terminal, pickChannel("tty", "/dev/tty3")); // local console
     try std.testing.expectEqual(Channel.graphical, pickChannel("tty", "")); // typeless, no tty -> modal/log
     try std.testing.expectEqual(Channel.graphical, pickChannel("", "")); // unknown -> graphical
+}
+
+test "absoluteTty prefixes /dev unless already absolute" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("/dev/tty2", absoluteTty("tty2", &buf).?);
+    try std.testing.expectEqualStrings("/dev/pts/3", absoluteTty("pts/3", &buf).?);
+    try std.testing.expectEqualStrings("/dev/tty2", absoluteTty("/dev/tty2", &buf).?); // already absolute
+    try std.testing.expect(absoluteTty("", &buf) == null); // empty -> none
+    var tiny: [3]u8 = undefined;
+    try std.testing.expect(absoluteTty("pts/9", &tiny) == null); // does not fit
 }

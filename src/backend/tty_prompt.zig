@@ -55,7 +55,7 @@ const Term = struct {
         if (path.len + 1 > zbuf.len) return error.TtyUnavailable;
         @memcpy(zbuf[0..path.len], path);
         zbuf[path.len] = 0;
-        const rc = linux.open(@ptrCast(&zbuf), .{ .ACCMODE = .RDWR, .NOCTTY = true }, 0);
+        const rc = linux.open(@ptrCast(&zbuf), .{ .ACCMODE = .RDWR, .NOCTTY = true, .CLOEXEC = true }, 0);
         if (failed(rc)) return error.TtyUnavailable;
         return .{ .fd = @intCast(rc) };
     }
@@ -69,6 +69,10 @@ const Term = struct {
         rawt.lflag.ECHO = false; // do not echo the keystroke
         rawt.lflag.ICANON = false; // deliver each key without waiting for a newline
         rawt.lflag.ISIG = false; // deliver Ctrl-C/Ctrl-D as bytes (-> .cancelled), not as signals
+        // In non-canonical mode read() blocks until VMIN bytes arrive; set MIN=1, TIME=0 so it waits
+        // for exactly one key rather than honoring an inherited VMIN==0 (which returns immediately).
+        rawt.cc[@intFromEnum(std.posix.V.MIN)] = 1;
+        rawt.cc[@intFromEnum(std.posix.V.TIME)] = 0;
         try std.posix.tcsetattr(self.fd, .FLUSH, rawt);
     }
     fn restore(self: *Term) void {

@@ -143,14 +143,19 @@ pub const Logind = struct {
         var sess_buf: [256]u8 = undefined;
         const sess = switch (self.sessionByPid(&conn, pid, &sess_buf)) {
             .session => |p| p,
-            .no_session, .err => return null, // sessionless (graphical app) or error -> not a terminal
+            // No session for the pid (a sessionless local app, e.g. under user@.service) or a D-Bus
+            // error: the session TTY cannot be resolved, so this is not a terminal channel.
+            .no_session, .err => return null,
         };
 
         var type_buf: [64]u8 = undefined;
+        var tty_buf: [128]u8 = undefined;
         const type_str = self.sessionStrProp(&conn, sess, "Type", &type_buf) catch return null;
-        const tty = self.sessionStrProp(&conn, sess, "TTY", out) catch return null;
+        const tty = self.sessionStrProp(&conn, sess, "TTY", &tty_buf) catch return null;
         return switch (presence.pickChannel(type_str, tty)) {
-            .terminal => tty,
+            // logind reports TTY relative to /dev (e.g. "tty2", "pts/3"); make it an absolute device
+            // path for open(). The pure normalizer lives in lib so it rides the coverage gate.
+            .terminal => presence.absoluteTty(tty, out),
             .graphical => null,
         };
     }
