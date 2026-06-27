@@ -33,17 +33,13 @@ pub fn promptConfirm(tty_path: []const u8, reason: presenter.Reason) Error!prese
     return outcome;
 }
 
-/// Write a one-shot message line (a refusal/failure) to `tty_path`. Best-effort: a missing/unwritable
-/// tty is silently skipped (the caller falls back to the log).
-pub fn showMessage(tty_path: []const u8, text: []const u8, detail: []const u8) void {
+/// Write a one-shot message line (a refusal/failure) to `tty_path`. The text is the curated
+/// presenter.message() only -- diagnostic detail (error names) goes to the log, never the user's
+/// terminal. Best-effort: a missing/unwritable tty is silently skipped (the caller logs instead).
+pub fn showMessage(tty_path: []const u8, text: []const u8) void {
     var t = Term.open(tty_path) catch return;
     defer t.close();
     t.write(text);
-    if (detail.len > 0) {
-        t.write(" (");
-        t.write(detail);
-        t.write(")");
-    }
     t.write("\n");
 }
 
@@ -72,6 +68,7 @@ const Term = struct {
         var rawt = cur;
         rawt.lflag.ECHO = false; // do not echo the keystroke
         rawt.lflag.ICANON = false; // deliver each key without waiting for a newline
+        rawt.lflag.ISIG = false; // deliver Ctrl-C/Ctrl-D as bytes (-> .cancelled), not as signals
         try std.posix.tcsetattr(self.fd, .FLUSH, rawt);
     }
     fn restore(self: *Term) void {

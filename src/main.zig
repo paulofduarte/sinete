@@ -117,30 +117,30 @@ fn cmdAgent() !void {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const sock = if (opt_sock.len > 0) opt_sock else try defaultSockPath(g_io, g_env, &path_buf);
 
-    var lp = presenter_log.LogPresenter{ .io = g_io };
-    const pr = lp.presenter();
-
     if (builtin.os.tag == .macos) {
+        var lp = presenter_log.LogPresenter{ .io = g_io };
         var be = darwin.Darwin{};
-        try serveAgent(sock, be.processor(), be.authorizer(), null, pr);
+        try serveAgent(sock, be.processor(), be.authorizer(), null, lp.presenter());
     } else if (builtin.os.tag == .linux) {
         var kbuf: [std.fs.max_path_bytes]u8 = undefined;
         var be = linuxBackend(try linuxKeyDir(&kbuf));
         // The orchestrator is both the Authorizer (fingerprint or a typed confirm) and the Presenter
-        // (refusal/failure messages on the peer's terminal). Remote/SSH sessions are refused via logind.
+        // (refusal/failure messages on the peer's terminal; it owns its own log fallback). Remote/SSH
+        // sessions are refused via logind.
         var fp = fprintd.Fprintd{ .io = g_io, .gpa = g_gpa };
         var lg = logind.Logind{ .io = g_io, .gpa = g_gpa, .self_uid = std.os.linux.getuid() };
         var orch = authorizer_linux.Authorizer.init(g_io, g_gpa, &fp, &lg);
         try serveAgent(sock, be.processor(), orch.authorizer(), lg.localSession(), orch.presenter());
     } else {
         // No secure element: advertise one freshly generated identity so the protocol path works.
+        var lp = presenter_log.LogPresenter{ .io = g_io };
         var arena = std.heap.ArenaAllocator.init(g_gpa);
         defer arena.deinit();
         const blob = try demoEcdsaBlob(g_io, arena.allocator());
         const keys = [_]sinete.crypto.KeyInfo{.{ .blob = blob, .comment = "sinete demo (fake backend)" }};
         var cp = sinete.crypto.Fake{ .keys = &keys };
         var az = sinete.authz.Fake{};
-        try serveAgent(sock, cp.processor(), az.authorizer(), null, pr);
+        try serveAgent(sock, cp.processor(), az.authorizer(), null, lp.presenter());
     }
 }
 
