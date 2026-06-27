@@ -301,13 +301,15 @@ const Conn = struct {
     fn sendWithFd(self: *Conn, bytes: []const u8, fd: i32) !void {
         var iov = [_]std.posix.iovec_const{.{ .base = bytes.ptr, .len = bytes.len }};
         const hdr = @sizeOf(linux.cmsghdr);
+        const data_off = cmsgAlign(hdr); // CMSG_DATA offset
         const space = cmsgAlign(hdr) + cmsgAlign(@sizeOf(i32)); // CMSG_SPACE(sizeof fd)
-        var ctrl = [_]u8{0} ** 64;
+        // The buffer must be cmsghdr-aligned for the @alignCast below to be sound.
+        var ctrl: [64]u8 align(@alignOf(linux.cmsghdr)) = [_]u8{0} ** 64;
         const ch: *linux.cmsghdr = @ptrCast(@alignCast(&ctrl));
         ch.level = linux.SOL.SOCKET;
         ch.type = linux.SCM.RIGHTS;
         ch.len = @intCast(hdr + @sizeOf(i32)); // CMSG_LEN(sizeof fd)
-        @memcpy(ctrl[hdr .. hdr + 4], std.mem.asBytes(&fd));
+        @memcpy(ctrl[data_off .. data_off + 4], std.mem.asBytes(&fd));
         var msg = linux.msghdr_const{
             .name = null,
             .namelen = 0,
@@ -346,7 +348,7 @@ const Conn = struct {
         if (self.rx.items.len >= max_rx) return error.WaylandUnavailable;
         var tmp: [4096]u8 = undefined;
         var iov = [_]std.posix.iovec{.{ .base = &tmp, .len = tmp.len }};
-        var ctrl: [256]u8 align(8) = undefined;
+        var ctrl: [256]u8 align(@alignOf(linux.cmsghdr)) = undefined;
         var msg = linux.msghdr{
             .name = null,
             .namelen = 0,
@@ -381,11 +383,13 @@ fn reapFds(msg: *linux.msghdr) void {
     if (ch.level != linux.SOL.SOCKET or ch.type != linux.SCM.RIGHTS) return;
     const len: usize = @intCast(ch.len);
     if (len < hdr or len > clen) return; // malformed/truncated: do not read past the buffer
-    const fd_bytes = len - hdr;
+    const data_off = cmsgAlign(hdr); // CMSG_DATA offset (== hdr on common ABIs, but be explicit)
+    if (data_off > len) return;
+    const fd_bytes = len - data_off;
     var i: usize = 0;
     while (i + 4 <= fd_bytes) : (i += 4) {
         var fd: i32 = undefined;
-        @memcpy(std.mem.asBytes(&fd), base[hdr + i .. hdr + i + 4]);
+        @memcpy(std.mem.asBytes(&fd), base[data_off + i .. data_off + i + 4]);
         _ = linux.close(fd);
     }
 }
