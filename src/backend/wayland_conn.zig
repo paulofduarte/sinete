@@ -372,25 +372,30 @@ fn cmsgAlign(n: usize) usize {
 }
 
 /// Close every fd delivered in the recvmsg ancillary data (SCM_RIGHTS), so received keymap/etc. fds
-/// don't accumulate in the agent. Guards the cmsg length against truncation/corruption so it never
-/// reads past the control buffer.
+/// don't accumulate in the agent. Walks ALL control messages (a recvmsg can carry several), guarding
+/// each cmsg length against truncation/corruption so it never reads past the control buffer.
 fn reapFds(msg: *linux.msghdr) void {
     const clen: usize = @intCast(msg.controllen);
     const hdr = @sizeOf(linux.cmsghdr);
-    if (clen < hdr) return;
-    const base: [*]u8 = @ptrCast(msg.control.?);
-    const ch: *const linux.cmsghdr = @ptrCast(@alignCast(base));
-    if (ch.level != linux.SOL.SOCKET or ch.type != linux.SCM.RIGHTS) return;
-    const len: usize = @intCast(ch.len);
-    if (len < hdr or len > clen) return; // malformed/truncated: do not read past the buffer
-    const data_off = cmsgAlign(hdr); // CMSG_DATA offset (== hdr on common ABIs, but be explicit)
-    if (data_off > len) return;
-    const fd_bytes = len - data_off;
-    var i: usize = 0;
-    while (i + 4 <= fd_bytes) : (i += 4) {
-        var fd: i32 = undefined;
-        @memcpy(std.mem.asBytes(&fd), base[data_off + i .. data_off + i + 4]);
-        _ = linux.close(fd);
+    const data_off = cmsgAlign(hdr); // CMSG_DATA offset
+    const base: [*]u8 = @ptrCast(msg.control orelse return);
+
+    var off: usize = 0;
+    while (off + hdr <= clen) {
+        const ch: *const linux.cmsghdr = @ptrCast(@alignCast(base + off));
+        const len: usize = @intCast(ch.len);
+        if (len < hdr or off + len > clen) break; // malformed/truncated: stop, never read past
+        if (ch.level == linux.SOL.SOCKET and ch.type == linux.SCM.RIGHTS and len >= data_off) {
+            var i: usize = data_off;
+            while (i + 4 <= len) : (i += 4) {
+                var fd: i32 = undefined;
+                @memcpy(std.mem.asBytes(&fd), base[off + i .. off + i + 4]);
+                _ = linux.close(fd);
+            }
+        }
+        const next = off + cmsgAlign(len);
+        if (next <= off) break; // no forward progress (defensive against a zero-aligned length)
+        off = next;
     }
 }
 

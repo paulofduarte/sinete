@@ -86,15 +86,31 @@ pub fn parseReply(line: []const u8) Reply {
     return .unknown;
 }
 
-/// The outcome of a CONFIRM dialog from a terminal reply, or null to keep reading (status/comment
-/// lines precede the final OK/ERR). OK => the user approved; ERR => not approved (a cancel or the
-/// no/second button) which is a decline.
-pub fn confirmOutcome(reply: Reply) ?Outcome {
-    return switch (reply) {
-        .ok => .confirmed,
-        .err => .declined,
-        else => null, // S/D/#/INQUIRE: not terminal, keep reading
-    };
+/// How a CONFIRM dialog resolved, distinguishing a user decline (Cancel / the no button) from a
+/// failure to even present the dialog -- the latter must fall through to another channel, not be
+/// reported as a refusal.
+pub const Confirm = enum { confirmed, declined, failed, pending };
+
+// libgpg-error codes (masked to the low 16 bits) that mean the user dismissed the dialog rather
+// than a presentation failure: CANCELED, FULLY_CANCELED, NOT_CONFIRMED.
+const err_canceled: u16 = 277;
+const err_fully_canceled: u16 = 278;
+const err_not_confirmed: u16 = 114;
+
+/// Classify a CONFIRM reply: OK => confirmed; an ERR with a user-cancel code => declined; any other
+/// ERR (e.g. the dialog could not be shown) => failed; a non-terminal line => pending (keep reading).
+pub fn confirmResult(reply: Reply) Confirm {
+    switch (reply) {
+        .ok => return .confirmed,
+        .err => |e| {
+            const code: u16 = @truncate(e.code & 0xffff);
+            return switch (code) {
+                err_canceled, err_fully_canceled, err_not_confirmed => .declined,
+                else => .failed,
+            };
+        },
+        else => return .pending, // S/D/#/INQUIRE: not terminal, keep reading
+    }
 }
 
 /// True if `line` is exactly `tok` or `tok` followed by a space (so "OK" and "OK text" both match
@@ -162,8 +178,13 @@ test "parseReply classifies each reply kind" {
     try testing.expectEqualStrings("Timeout <Pinentry>", e.err.desc);
 }
 
-test "confirmOutcome: OK approves, ERR declines, status keeps reading" {
-    try testing.expectEqual(Outcome.confirmed, confirmOutcome(parseReply("OK")).?);
-    try testing.expectEqual(Outcome.declined, confirmOutcome(parseReply("ERR 114 canceled")).?);
-    try testing.expect(confirmOutcome(parseReply("S PINENTRY_LAUNCHED 1234")) == null);
+test "confirmResult: OK confirms, cancel codes decline, other ERR fails, status pends" {
+    try testing.expectEqual(Confirm.confirmed, confirmResult(parseReply("OK")));
+    try testing.expectEqual(Confirm.declined, confirmResult(parseReply("ERR 277 canceled")));
+    try testing.expectEqual(Confirm.declined, confirmResult(parseReply("ERR 114 not confirmed")));
+    // a user-cancel code carried with a source in the high bits still masks to the cancel code
+    // (0x05000115 = source 5 | 277); only the low 16 bits matter.
+    try testing.expectEqual(Confirm.declined, confirmResult(parseReply("ERR 83886357 canceled")));
+    try testing.expectEqual(Confirm.failed, confirmResult(parseReply("ERR 83886142 Timeout")));
+    try testing.expectEqual(Confirm.pending, confirmResult(parseReply("S PINENTRY_LAUNCHED 1234")));
 }

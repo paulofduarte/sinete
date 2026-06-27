@@ -101,7 +101,14 @@ pub const Pinentry = struct {
     fn awaitConfirm(self: *Pinentry, stdout: *std.Io.File, rbuf: []u8) !presenter.Outcome {
         while (true) {
             const l = try self.readLine(stdout, rbuf);
-            if (assuan.confirmOutcome(assuan.parseReply(l))) |o| return o;
+            switch (assuan.confirmResult(assuan.parseReply(l))) {
+                .confirmed => return .confirmed,
+                .declined => return .declined,
+                // The dialog could not be presented (not a user decline) -> unavailable, so the
+                // orchestrator falls through to the next graphical channel rather than refusing.
+                .failed => return error.PinentryUnavailable,
+                .pending => {},
+            }
         }
     }
 
