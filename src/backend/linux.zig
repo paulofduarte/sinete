@@ -169,10 +169,12 @@ const master_secret_file = "master.secret";
 /// the response buffer, so the digest is computed before any further transact.
 fn masterPolicy(t: *Tpm, secret: []const u8) ![32]u8 {
     const def = try cmd.nvDefineMaster(&t.cmdbuf, master_index, secret);
-    if (try cmd.checkOrDefined(try t.transact(def)) == .ok) {
-        const w = try cmd.nvWrite(&t.cmdbuf, master_index, secret, &[_]u8{0}); // any write sets WRITTEN
-        try cmd.expectOk(try t.transact(w));
-    }
+    _ = try cmd.checkOrDefined(try t.transact(def)); // define if absent (idempotent)
+    // Always write (idempotent) so TPMA_NV.WRITTEN is set and the Name is stable, even if a prior run
+    // defined the index but crashed before its first write -- otherwise the derived policy digest
+    // would change once WRITTEN is eventually set, stranding keys created in between.
+    const w = try cmd.nvWrite(&t.cmdbuf, master_index, secret, &[_]u8{0});
+    try cmd.expectOk(try t.transact(w));
     const rp = try cmd.nvReadPublic(&t.cmdbuf, master_index);
     const name = try cmd.nvReadPublicName(try t.transact(rp));
     return cmd.policySecretDigest(name);
@@ -316,26 +318,28 @@ pub const Linux = struct {
     pub fn loadMasterSecret(self: *Linux) void {
         var dir = std.Io.Dir.cwd().openDir(self.io, self.keydir, .{}) catch return;
         defer dir.close(self.io);
-        const data = dir.readFileAlloc(self.io, master_secret_file, self.gpa, .limited(64)) catch return;
-        defer self.gpa.free(data);
-        if (data.len != 32) return;
-        @memcpy(&self.master_secret, data);
-        self.has_master = true;
+        _ = self.readMasterSecret(&dir) catch return; // best-effort: absent/invalid leaves has_master false
     }
 
     /// Return the master secret S, generating + persisting it (0600) on first use so the policy
-    /// binding is on by default with no separate enroll step.
+    /// binding is on by default with no separate enroll step. If master.secret already exists (a
+    /// concurrent generate won the race, or it was present at startup), its 32 bytes are loaded; a
+    /// wrong-size file is a clear error rather than a silent overwrite.
     fn ensureMasterSecret(self: *Linux) ![32]u8 {
         if (self.has_master) return self.master_secret;
-        var s: [32]u8 = undefined;
-        try randomBytes(&s);
         const old_umask = osUmask(0o077);
         defer _ = osUmask(old_umask);
         try std.Io.Dir.cwd().createDirPath(self.io, self.keydir);
         try std.Io.Dir.cwd().setFilePermissions(self.io, self.keydir, @enumFromInt(0o700), .{ .follow_symlinks = false });
         var dir = try std.Io.Dir.cwd().openDir(self.io, self.keydir, .{});
         defer dir.close(self.io);
-        var file = try dir.createFile(self.io, master_secret_file, .{ .exclusive = true });
+
+        var s: [32]u8 = undefined;
+        try randomBytes(&s);
+        var file = dir.createFile(self.io, master_secret_file, .{ .exclusive = true }) catch |e| switch (e) {
+            error.PathAlreadyExists => return self.readMasterSecret(&dir), // existing/raced file wins
+            else => return e,
+        };
         errdefer dir.deleteFile(self.io, master_secret_file) catch {};
         defer file.close(self.io);
         try file.writeStreamingAll(self.io, &s);
@@ -343,6 +347,16 @@ pub const Linux = struct {
         self.master_secret = s;
         self.has_master = true;
         return s;
+    }
+
+    /// Load and validate the existing master.secret (exactly 32 bytes), recording it on success.
+    fn readMasterSecret(self: *Linux, dir: *std.Io.Dir) ![32]u8 {
+        const data = try dir.readFileAlloc(self.io, master_secret_file, self.gpa, .limited(64));
+        defer self.gpa.free(data);
+        if (data.len != 32) return error.BadMasterSecret;
+        @memcpy(&self.master_secret, data);
+        self.has_master = true;
+        return self.master_secret;
     }
 
     /// Generate a new policy-bound ECDSA P-256 key, persist it as a TSS2 key file named `name`, and
