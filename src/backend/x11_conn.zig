@@ -195,8 +195,7 @@ fn readCookie(io: std.Io, path: []const u8, dnum: u32, buf: []u8) ![]const u8 {
     var fallback: ?[]const u8 = null;
     var p: usize = 0;
     while (p + 2 <= data.len) {
-        if (p + 2 > data.len) break;
-        p += 2; // family
+        p += 2; // family (the loop condition already guarantees these 2 bytes)
         const addr = readField(data, &p) orelse break;
         const number = readField(data, &p) orelse break;
         const name = readField(data, &p) orelse break;
