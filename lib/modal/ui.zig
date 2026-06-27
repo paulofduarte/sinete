@@ -57,7 +57,7 @@ pub const Modal = struct {
         // The message, left-aligned at the top margin, truncated to the panel width. Compute the
         // available width in u32, then a usize cap for slicing (avoid a signed/unsigned mix).
         const avail: usize = width - 2 * @as(usize, @intCast(margin));
-        const max_chars: usize = avail / font.width;
+        const max_chars: usize = avail / @as(usize, font.width);
         const msg = if (self.message.len > max_chars) self.message[0..max_chars] else self.message;
         c.text(msg, margin, margin + 6, col_fg);
 
