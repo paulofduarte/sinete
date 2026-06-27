@@ -13,6 +13,9 @@ const std = @import("std");
 
 pub const Error = error{ Truncated, BadMessage };
 
+// Wayland is a local IPC and uses the HOST byte order on the wire (both peers share endianness).
+const native_end = @import("builtin").cpu.arch.endian();
+
 // The fixed display object id, and the format/enum values the modal uses.
 pub const display_id: u32 = 1;
 pub const format_argb8888: u32 = 0;
@@ -50,7 +53,7 @@ pub const layer_surface_configure: u16 = 0;
 const Encoder = std.ArrayList(u8);
 
 fn putU32(out: *Encoder, gpa: std.mem.Allocator, v: u32) !void {
-    try out.appendSlice(gpa, &std.mem.toBytes(std.mem.nativeToLittle(u32, v)));
+    try out.appendSlice(gpa, &std.mem.toBytes(v)); // native byte order (Wayland is host-endian)
 }
 
 /// A length-prefixed Wayland string: u32 length INCLUDING the NUL terminator, the bytes, the NUL,
@@ -211,7 +214,7 @@ pub const Msg = struct { obj: u32, opcode: u16, body: []const u8 };
 /// The total byte length of the message at the front of `data`, or null if it is not yet complete.
 pub fn frameLen(data: []const u8) Error!?usize {
     if (data.len < 8) return null;
-    const word2 = std.mem.readInt(u32, data[4..8], .little);
+    const word2 = std.mem.readInt(u32, data[4..8], native_end);
     const size: usize = word2 >> 16;
     if (size < 8) return error.BadMessage;
     if (data.len < size) return null;
@@ -221,8 +224,8 @@ pub fn frameLen(data: []const u8) Error!?usize {
 /// Parse the message at the front of `data` (which must hold a full frame per frameLen).
 pub fn parse(data: []const u8) Error!Msg {
     const size = (try frameLen(data)) orelse return error.Truncated;
-    const obj = std.mem.readInt(u32, data[0..4], .little);
-    const word2 = std.mem.readInt(u32, data[4..8], .little);
+    const obj = std.mem.readInt(u32, data[0..4], native_end);
+    const word2 = std.mem.readInt(u32, data[4..8], native_end);
     return .{ .obj = obj, .opcode = @intCast(word2 & 0xffff), .body = data[8..size] };
 }
 
@@ -292,7 +295,7 @@ const Reader = struct {
     fn rU32(self: *Reader) Error!u32 {
         if (self.pos + 4 > self.b.len) return error.Truncated;
         defer self.pos += 4;
-        return std.mem.readInt(u32, self.b[self.pos..][0..4], .little);
+        return std.mem.readInt(u32, self.b[self.pos..][0..4], native_end);
     }
     /// A wl_fixed (24.8 signed) truncated to its integer part.
     fn fixedToInt(self: *Reader) Error!i32 {
@@ -325,7 +328,7 @@ test "message header carries object, opcode and a 4-aligned size" {
     const m = try lastMsg(out.items);
     try testing.expectEqual(display_id, m.obj);
     try testing.expectEqual(wl_display_get_registry, m.opcode);
-    try testing.expectEqual(@as(u32, 2), std.mem.readInt(u32, m.body[0..4], .little)); // new registry id
+    try testing.expectEqual(@as(u32, 2), std.mem.readInt(u32, m.body[0..4], native_end)); // new registry id
     try testing.expectEqual(@as(usize, out.items.len), (try frameLen(out.items)).?);
 }
 
