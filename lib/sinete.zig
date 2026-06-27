@@ -12,6 +12,8 @@ pub const version = "0.0.0-dev";
 pub const authz = @import("authz.zig");
 pub const crypto = @import("crypto.zig");
 pub const session = @import("session.zig");
+pub const presenter = @import("presenter.zig");
+pub const presence = @import("presence.zig");
 pub const wire = @import("ssh/wire.zig");
 pub const ecdsa_key = @import("ssh/ecdsa_key.zig");
 pub const ecdsa_sig = @import("ssh/ecdsa_sig.zig");
@@ -40,6 +42,8 @@ test {
     _ = authz;
     _ = crypto;
     _ = session;
+    _ = presenter;
+    _ = presence;
     _ = wire;
     _ = ecdsa_key;
     _ = ecdsa_sig;

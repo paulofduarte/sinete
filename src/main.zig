@@ -23,6 +23,9 @@ const linux = if (builtin.os.tag == .linux) @import("backend/linux.zig") else st
 const fprintd = if (builtin.os.tag == .linux) @import("backend/fprintd.zig") else struct {};
 const logind = if (builtin.os.tag == .linux) @import("backend/logind.zig") else struct {};
 const dbus_conn = if (builtin.os.tag == .linux) @import("backend/dbus_conn.zig") else struct {};
+// Cross-platform log-only presenter: records every refusal/failure reason to the agent log until the
+// real channel presenters (pinentry / modal / tty) land.
+const presenter_log = @import("backend/presenter_log.zig");
 
 // zig-cli action callbacks are bare `fn() !void`, so the process context and the parsed argument
 // values live in file scope (the same pattern as zig-cli's own examples).
@@ -113,16 +116,19 @@ fn cmdAgent() !void {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const sock = if (opt_sock.len > 0) opt_sock else try defaultSockPath(g_io, g_env, &path_buf);
 
+    var lp = presenter_log.LogPresenter{ .io = g_io };
+    const pr = lp.presenter();
+
     if (builtin.os.tag == .macos) {
         var be = darwin.Darwin{};
-        try serveAgent(sock, be.processor(), be.authorizer(), null);
+        try serveAgent(sock, be.processor(), be.authorizer(), null, pr);
     } else if (builtin.os.tag == .linux) {
         var kbuf: [std.fs.max_path_bytes]u8 = undefined;
         var be = linuxBackend(try linuxKeyDir(&kbuf));
         // Presence is a fingerprint via fprintd; remote/SSH sessions are refused via logind.
         var fp = fprintd.Fprintd{ .io = g_io, .gpa = g_gpa };
         var lg = logind.Logind{ .io = g_io, .gpa = g_gpa, .self_uid = std.os.linux.getuid() };
-        try serveAgent(sock, be.processor(), fp.authorizer(), lg.localSession());
+        try serveAgent(sock, be.processor(), fp.authorizer(), lg.localSession(), pr);
     } else {
         // No secure element: advertise one freshly generated identity so the protocol path works.
         var arena = std.heap.ArenaAllocator.init(g_gpa);
@@ -131,14 +137,14 @@ fn cmdAgent() !void {
         const keys = [_]sinete.crypto.KeyInfo{.{ .blob = blob, .comment = "sinete demo (fake backend)" }};
         var cp = sinete.crypto.Fake{ .keys = &keys };
         var az = sinete.authz.Fake{};
-        try serveAgent(sock, cp.processor(), az.authorizer(), null);
+        try serveAgent(sock, cp.processor(), az.authorizer(), null, pr);
     }
 }
 
 /// Wire a Cryptoprocessor + Authorizer into an Agent and serve it over the libxev transport until
 /// the loop ends. A reclaiming allocator backs the per-connection state (leak-detecting in safe
 /// builds, the fast smp_allocator in release); an arena would grow RSS without bound.
-fn serveAgent(sock: []const u8, cp: sinete.crypto.Cryptoprocessor, az: sinete.authz.Authorizer, session: ?sinete.session.LocalSession) !void {
+fn serveAgent(sock: []const u8, cp: sinete.crypto.Cryptoprocessor, az: sinete.authz.Authorizer, session: ?sinete.session.LocalSession, present: ?sinete.presenter.Presenter) !void {
     var debug_alloc: std.heap.DebugAllocator(.{}) = .init;
     const gpa, const debug_gpa = switch (builtin.mode) {
         .Debug, .ReleaseSafe => .{ debug_alloc.allocator(), true },
@@ -153,6 +159,7 @@ fn serveAgent(sock: []const u8, cp: sinete.crypto.Cryptoprocessor, az: sinete.au
         .max_ms = 3_600_000, // 1 h absolute cap
     });
     agent.session = session; // remote-session gate (Linux); null elsewhere leaves it inactive
+    agent.presenter = present; // user-facing refusal/failure messages (log-only for now)
     defer agent.deinit();
 
     var msg_buf: [std.fs.max_path_bytes + 64]u8 = undefined;
