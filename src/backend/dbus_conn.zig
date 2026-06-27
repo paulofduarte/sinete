@@ -75,6 +75,19 @@ pub const Conn = struct {
         }
     }
 
+    /// Like awaitReply, but returns the reply even when it is an ERROR so the caller can inspect
+    /// its error_name. The logind gate uses this to distinguish login1's NoSessionForPID (a normal
+    /// "this pid has no session" condition that triggers the user-sessions fallback) from a real
+    /// failure. The returned Parsed aliases internal storage until the next read.
+    pub fn awaitReplyAllowError(self: *Conn, serial: u32) Error!message.Parsed {
+        while (true) {
+            const p = try self.readMessage();
+            const rs = p.reply_serial orelse continue;
+            if (rs != serial) continue;
+            return p;
+        }
+    }
+
     /// Block until a signal whose member is `member` arrives. An error reply (e.g. a failed
     /// VerifyStart) aborts. The returned Parsed aliases internal storage until the next read.
     pub fn recvSignal(self: *Conn, member: []const u8) Error!message.Parsed {
