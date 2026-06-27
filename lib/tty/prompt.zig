@@ -21,14 +21,15 @@ pub fn confirmLine(reason: presenter.Reason) []const u8 {
     };
 }
 
-/// Map a single input byte to an Outcome, or null to keep waiting for a decisive key. Enter/y/Y
-/// approve; Esc/n/N/Ctrl-C/Ctrl-D refuse. Everything else is ignored (null).
+/// Map a single input byte to an Outcome, or null to keep waiting for a decisive key. Only an
+/// explicit y/Y approves -- Enter is deliberately NOT an approval, so a stray newline cannot sign;
+/// n/N/Esc deny; Ctrl-C/Ctrl-D cancel. Everything else (including Enter) is ignored (null).
 pub fn keyOutcome(b: u8) ?Outcome {
     return switch (b) {
-        'y', 'Y', '\r', '\n' => .confirmed,
+        'y', 'Y' => .confirmed,
         'n', 'N', 0x1b => .declined, // Esc
         0x03, 0x04 => .cancelled, // Ctrl-C, Ctrl-D
-        else => null,
+        else => null, // includes Enter: never approve on a stray newline
     };
 }
 
@@ -44,14 +45,15 @@ pub fn outcomeLine(o: Outcome) []const u8 {
 
 const testing = std.testing;
 
-test "keyOutcome maps approve/deny/cancel and ignores noise" {
+test "keyOutcome maps approve/deny/cancel and never approves on Enter" {
     try testing.expectEqual(Outcome.confirmed, keyOutcome('y').?);
-    try testing.expectEqual(Outcome.confirmed, keyOutcome('\r').?);
-    try testing.expectEqual(Outcome.confirmed, keyOutcome('\n').?);
+    try testing.expectEqual(Outcome.confirmed, keyOutcome('Y').?);
     try testing.expectEqual(Outcome.declined, keyOutcome('n').?);
     try testing.expectEqual(Outcome.declined, keyOutcome(0x1b).?);
     try testing.expectEqual(Outcome.cancelled, keyOutcome(0x03).?);
     try testing.expectEqual(Outcome.cancelled, keyOutcome(0x04).?);
+    try testing.expect(keyOutcome('\r') == null); // Enter must not approve a signature
+    try testing.expect(keyOutcome('\n') == null);
     try testing.expect(keyOutcome('x') == null);
     try testing.expect(keyOutcome(' ') == null);
 }
