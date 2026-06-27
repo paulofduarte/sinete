@@ -74,6 +74,7 @@ const Conn = struct {
     cur: std.ArrayList(u8) = .empty,
 
     // session object ids (0 = not yet created)
+    registry: u32 = 0,
     surface: u32 = 0,
     layer_surface: u32 = 0,
     seat: u32 = 0,
@@ -133,16 +134,16 @@ const Conn = struct {
     /// get_registry + sync; collect the names/versions of the globals the modal needs, returning once
     /// the sync callback fires (all globals delivered).
     fn discoverGlobals(self: *Conn) !Globals {
-        const registry = self.alloc(); // 2
-        const cb = self.alloc(); // 3
-        try self.req(wl.getRegistry, .{registry});
+        self.registry = self.alloc();
+        const cb = self.alloc();
+        try self.req(wl.getRegistry, .{self.registry});
         try self.req(wl.sync, .{cb});
 
         var g = Globals{};
         while (true) {
             const m = try self.readMsg();
             if (m.obj == cb and m.opcode == wl.wl_callback_done) return g;
-            if (m.obj == registry and m.opcode == wl.wl_registry_global) {
+            if (m.obj == self.registry and m.opcode == wl.wl_registry_global) {
                 const gl = wl.parseGlobal(m.body) catch continue;
                 if (std.mem.eql(u8, gl.interface, "wl_compositor")) {
                     g.compositor = gl.name;
@@ -281,7 +282,7 @@ const Conn = struct {
     fn reqBind(self: *Conn, name: u32, iface: []const u8, version: u32, new_id: u32) !void {
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(self.gpa);
-        try wl.registryBind(&out, self.gpa, 2, name, iface, version, new_id); // registry is object id 2
+        try wl.registryBind(&out, self.gpa, self.registry, name, iface, version, new_id);
         try self.writeAll(out.items);
     }
 

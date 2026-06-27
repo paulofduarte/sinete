@@ -25,10 +25,11 @@ const col_ok: u32 = 0xFF2E7D32; // approve = green
 const col_cancel: u32 = 0xFF8E2A2A; // deny = red
 const col_btn_fg: u32 = 0xFFFFFFFF;
 
-// This modal is the built-in fallback, drawn only when the native pinentry dialog is unavailable. A
-// dimmer hint nudges the user toward installing pinentry for a native dialog (no package names --
-// the right pinentry frontend is distro/desktop specific).
-const hint_text = "Tip: install pinentry for a native dialog";
+// This modal is the built-in fallback, drawn only when the native pinentry dialog is unavailable
+// (not installed, or installed but unusable here). A dimmer hint nudges toward setting up pinentry --
+// "set up" covers both install and configuration; no package names, since the right pinentry frontend
+// is distro/desktop specific.
+const hint_text = "Tip: set up pinentry for a native dialog";
 
 const margin: i32 = 16;
 const btn_w: u32 = 110;
